@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+package drain
 
 import (
 	"context"
@@ -27,12 +27,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/drain"
 	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/textlogger"
 )
 
-func runPreStop(args []string) int {
+// Run executes the preStop command and returns its process exit status.
+func Run(args []string) int {
 	// Exec hook output is separate from container logs. Match the original
 	// hook's PID 1 logging, falling back when that descriptor is inaccessible.
 	var output io.Writer = os.Stderr
@@ -44,11 +44,11 @@ func runPreStop(args []string) int {
 }
 
 func executePreStop(args []string, output io.Writer) int {
-	var opts drain.Options
+	var opts Options
 	fs := flag.NewFlagSet("prestop", flag.ContinueOnError)
 	fs.SetOutput(output)
 	fs.Usage = func() {
-		_, _ = fmt.Fprintln(output, "Usage: gateway-plugins prestop [flags]")
+		_, _ = fmt.Fprintln(output, "Usage: prestop [flags]")
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&opts.MetricsURL, "metrics-url", "http://127.0.0.1:8080/metrics", "This Pod's metrics URL.")
@@ -72,7 +72,7 @@ func executePreStop(args []string, output io.Writer) int {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	if err := drain.Wait(klog.NewContext(ctx, logger), opts); err != nil {
+	if err := Wait(klog.NewContext(ctx, logger), opts); err != nil {
 		logger.Error(err, "preStop interrupted")
 		return 1
 	}

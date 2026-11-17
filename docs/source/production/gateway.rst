@@ -68,19 +68,21 @@ positive, leaving 10 seconds for cleanup within the default Kubernetes
 
 For longer streams, enable ``gatewayPlugin.gracefulShutdown.enabled`` in the
 Helm chart and set ``gateway.envoyAsSideCar=false``. This requires a rebuilt
-gateway image supporting ``/gateway-plugins prestop``. The Go subcommand waits for
+gateway image containing the standalone ``/prestop`` binary. This command waits for
 endpoint propagation, then polls the Pod-local ``gateway_in_flight_requests``
 metric until three consecutive valid zero samples or its deadline. The plugin
 initializes the metric to zero so a Pod that has never served a request can
 drain. Missing or invalid samples and fetch failures reset the zero count.
 
-The subcommand accepts ``--metrics-url``, ``--propagation-delay``, ``--timeout``,
+The command accepts ``--metrics-url``, ``--propagation-delay``, ``--timeout``,
 and ``--poll-interval``. The last three flags accept Go durations such as ``10s``;
 the Helm values remain integer seconds. Each fetch bypasses proxies, rejects
 redirects, and is limited to 5 seconds and the remaining hook budget. Responses
 larger than 8 MiB are treated as failed fetches. Upgrade the image and chart
-together; custom hooks invoking ``/prestop.sh`` must switch to the subcommand.
-The image no longer includes the shell hook or BusyBox.
+together; custom hooks invoking ``/prestop.sh`` must switch to ``/prestop``.
+The image no longer includes the shell hook or BusyBox. The existing
+``/gateway-plugins prestop`` subcommand remains available for custom hooks;
+the chart uses the smaller binary to avoid gateway package initialization.
 
 The Helm hook defaults to a 300-second total budget, including a 10-second
 propagation delay, and polls every 2 seconds. When enabled, the chart sets
@@ -97,8 +99,12 @@ capacity for the extra Pod. The bounded gRPC drain and shutdown ordering apply
 to rebuilt gateway images even when the Helm hook is disabled.
 
 Configure separately deployed Envoy proxies with
-``gateway.envoyProxy.gracefulShutdown.enabled``. This uses Envoy Gateway's
-native shutdown manager and preserves its generated lifecycle hooks. See the
+``gateway.envoyProxy.gracefulShutdown.enabled``. This requires Envoy Gateway
+v1.2.0 or later with matching ``EnvoyProxy`` CRDs, uses its native shutdown
+manager, and preserves its generated lifecycle hooks. Upgrade the controller
+and CRDs together: older CRDs may prune ``spec.shutdown`` without enabling
+draining. Recheck the generated hooks and shutdown-manager arguments when
+upgrading Envoy Gateway. See the
 `Helm chart shutdown settings <https://github.com/vllm-project/aibrix/blob/main/dist/chart/README.md#gateway-plugin-graceful-shutdown>`_
 for configuration examples and budget constraints. Validate plugin and Envoy
 rolling updates separately with long SSE streams, including an idle Pod and

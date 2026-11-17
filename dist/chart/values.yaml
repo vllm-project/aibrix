@@ -49,7 +49,7 @@ controllerManager:
 
 gatewayPlugin:
   replicaCount: 1
-  # Requires a gateway image supporting the /gateway-plugins prestop subcommand.
+  # Requires a gateway image containing the standalone /prestop binary.
   # Only supported with a separate Envoy deployment (envoyAsSideCar=false).
   gracefulShutdown:
     enabled: false
@@ -191,6 +191,7 @@ gateway:
       http: 10080
   envoyProxy:
     # Uses Envoy Gateway's native shutdown-manager (independent deployment only).
+    # Requires Envoy Gateway >= v1.2.0 with matching EnvoyProxy CRDs.
     gracefulShutdown:
       enabled: false
       terminationGracePeriodSeconds: 330

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+package drain
 
 import (
 	"bytes"
@@ -41,7 +41,7 @@ func TestPreStopArguments(t *testing.T) {
 	}
 	var output bytes.Buffer
 	require.Zero(t, executePreStop([]string{"--help"}, &output))
-	require.Contains(t, output.String(), "Usage: gateway-plugins prestop")
+	require.Contains(t, output.String(), "Usage: prestop")
 	require.Contains(t, output.String(), "default 5m0s")
 }
 

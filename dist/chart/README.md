@@ -23,7 +23,7 @@ This chart is not intended for upgrades from earlier deployments that used Kusto
 
 The Helm hook is disabled by default and requires `gateway.envoyAsSideCar=false`.
 Rebuild the gateway image with `build/container/Dockerfile.gateway` to include
-the `/gateway-plugins prestop` subcommand, then configure:
+the standalone `/prestop` binary, then configure:
 
 ```yaml
 gatewayPlugin:
@@ -41,7 +41,7 @@ gatewayPlugin:
     metricsURL: http://127.0.0.1:8080/metrics
 ```
 
-The Go preStop subcommand waits for endpoint propagation, then polls this Pod's local
+The standalone Go preStop command waits for endpoint propagation, then polls this Pod's local
 `gateway_in_flight_requests` metric until three consecutive zero samples or the
 hook timeout. The plugin initializes the metric to zero before accepting RPCs,
 so an idle Pod can drain without waiting for the deadline. Missing or invalid
@@ -82,13 +82,16 @@ reserve capacity for a surge Pod. With the hook disabled, the chart retains
 This hook does not coordinate Envoy or model backend termination.
 
 The Helm value names and budget rules are unchanged. Upgrade the chart and gateway
-image together. Custom hooks that invoke `/prestop.sh` must switch to the Go
-subcommand; the gateway image no longer includes that script or `/busybox`.
+image together. Custom hooks that invoke `/prestop.sh` must switch to `/prestop`;
+the gateway image no longer includes that script or `/busybox`. The existing
+`/gateway-plugins prestop` subcommand remains available for custom hooks, but the
+chart uses the smaller binary to avoid gateway package initialization and its logs.
 
 Run the core drain and command tests without Docker:
 
 ```sh
-go test ./pkg/plugins/gateway/drain ./cmd/plugins
+go test ./pkg/plugins/gateway/drain ./cmd/prestop ./cmd/plugins
+go test ./pkg/plugins/gateway -run TestProcessInFlightMetricLabelContract
 ```
 
 Run image smoke tests for the command entrypoint, proxy bypass, and hook logging:
@@ -98,13 +101,16 @@ docker build -f build/container/Dockerfile.gateway -t aibrix/gateway-plugins:pre
 python3 build/container/entrypoints/test_prestop.py
 ```
 
-The chart CI runs the smoke tests against its freshly built gateway image. Override
-`AIBRIX_PRESTOP_TEST_IMAGE` to test another rebuilt gateway image.
+These image smoke tests are run manually. Override `AIBRIX_PRESTOP_TEST_IMAGE`
+to test another rebuilt gateway image.
 
 ### Envoy proxy graceful shutdown
 
 Disabled by default; applies only to Envoy Gateway-managed deployments with
-`gateway.enable=true` and `gateway.envoyAsSideCar=false`. Enable separately:
+`gateway.enable=true` and `gateway.envoyAsSideCar=false`. Requires Envoy Gateway
+**v1.2.0 or later** with the matching `EnvoyProxy` CRDs. Upgrade the controller and
+CRDs together: older CRDs may prune `spec.shutdown` while leaving the longer Pod
+grace period in place, without enabling draining. Enable separately:
 
 ```yaml
 gateway:
@@ -124,7 +130,9 @@ connections can prolong draining; requests still running at timeout may be cut o
 
 All durations are integer seconds. Required constraints:
 
-- `terminationGracePeriodSeconds > drainTimeoutSeconds + 10`
+- `terminationGracePeriodSeconds > drainTimeoutSeconds + 10` (includes the
+  shutdown-manager readiness wait in the supported v1.2 baseline; inspect the
+  generated hooks and arguments when upgrading Envoy Gateway)
 - `drainTimeoutSeconds > minDrainDurationSeconds`
 
 Enabling sets `maxUnavailable: 0` and `maxSurge: 1`; reserve capacity for an extra
@@ -136,6 +144,31 @@ Before relying on either feature, test Envoy and plugin rolling updates separate
 with long SSE requests. Verify that existing streams finish, new requests succeed,
 and over-budget streams terminate within the configured budgets. Inspect Envoy's
 generated Deployment and `kubectl logs -c shutdown-manager` for drain behavior.
+
+#### Rollout verification procedure
+
+Use a test cluster with two plugin replicas, two Envoy replicas, and capacity for
+the surge Pods. Record Kubernetes and Envoy Gateway versions, image digests,
+rendered shutdown settings, and the generated Envoy lifecycle hooks and
+shutdown-manager arguments. Keep the backend and the other Deployment running
+while testing each Deployment separately.
+
+Use an SSE backend with a controlled response duration. Wait for the first event
+and identify the serving plugin Pod from its request logs before starting
+`kubectl rollout restart deployment/<plugin-deployment> -n <namespace>`.
+Repeat with `<envoy-deployment>`, and send new requests throughout each rollout.
+Ensure request and route timeouts exceed the tested shutdown budgets.
+
+| Case | Stream remaining when termination starts | Required observation |
+| --- | --- | --- |
+| Idle Pod | No requests have reached the plugin | After propagation, three zero samples end the hook; it does not use the full 300-second budget. |
+| Within budget | 120 seconds with the default 300-second hook / Envoy drain budget | The client receives the final SSE completion marker; new requests succeed through replacement replicas. |
+| Over budget | At least 400 seconds with the default budgets | The stream is interrupted when draining is exhausted; record the client exit status, last event and elapsed time, and confirm Pod termination remains bounded. |
+
+For each case, save the client output, rollout status, Pod termination timestamps,
+plugin hook logs and Envoy shutdown-manager logs. Report observed durations and
+outcomes separately for plugin and Envoy rollouts. Unit tests and image smoke
+tests do not establish these cluster-level results.
 
 ### Envoy Service NodePorts
 

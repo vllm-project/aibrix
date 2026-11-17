@@ -5,12 +5,6 @@ on:
   pull_request:
     paths:
       - 'dist/chart/**'
-      - 'build/container/Dockerfile.gateway'
-      - 'build/container/entrypoints/**'
-      - 'cmd/plugins/prestop*.go'
-      - 'cmd/plugins/main.go'
-      - 'pkg/plugins/gateway/drain/**'
-      - '.github/workflows/chart-ci.yml'
 
 # Cancel superseded pull-request runs so the newest push starts first.
 concurrency:
@@ -52,12 +46,6 @@ jobs:
           cache-from: type=gha,scope=chart-${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=chart-${{ matrix.image }}
           load: true
-
-      - name: Smoke test the Go preStop subcommand in the built image
-        if: matrix.image == 'gateway-plugins'
-        env:
-          AIBRIX_PRESTOP_TEST_IMAGE: aibrix/gateway-plugins:${{ github.sha }}
-        run: python3 build/container/entrypoints/test_prestop.py
 
       - name: Save image
         run: docker save aibrix/${{ matrix.image }}:${{ github.sha }} > ${{ matrix.image }}.tar

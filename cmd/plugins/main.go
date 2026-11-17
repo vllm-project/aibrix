@@ -47,6 +47,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/drain"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/statesync"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -170,7 +171,7 @@ func (o kubeAPIOptions) applyTo(config *rest.Config) {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "prestop" {
-		os.Exit(runPreStop(os.Args[2:]))
+		os.Exit(drain.Run(os.Args[2:]))
 	}
 	runGateway()
 }

@@ -1,7 +1,10 @@
 {{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) }}
 {{- $shutdown := .Values.gateway.envoyProxy.gracefulShutdown | default dict }}
 {{- if $shutdown.enabled }}
-{{- /* Envoy Gateway v1.2 adds 10 seconds to the shutdown-manager readiness wait. */}}
+{{- /* Budget for the shutdown-manager's extra 10s readiness wait in the supported
+Envoy Gateway v1.2+ baseline; recheck generated hooks when upgrading EG.
+See envoyproxy/gateway v1.2.0 internal/infrastructure/kubernetes/proxy/resource.go,
+expectedShutdownManagerArgs. */}}
 {{- if or (le (int $shutdown.terminationGracePeriodSeconds) (int (add $shutdown.drainTimeoutSeconds 10))) (le (int $shutdown.drainTimeoutSeconds) (int $shutdown.minDrainDurationSeconds)) }}
 {{- fail "gateway.envoyProxy.gracefulShutdown requires terminationGracePeriodSeconds > drainTimeoutSeconds + 10 and drainTimeoutSeconds > minDrainDurationSeconds." }}
 {{- end }}

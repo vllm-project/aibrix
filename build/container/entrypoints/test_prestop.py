@@ -1,6 +1,6 @@
 """Smoke-test the Go preStop command in the shipped, unprivileged gateway image.
 
-Core drain cases run without Docker: go test ./pkg/plugins/gateway/drain ./cmd/plugins
+Core drain cases run without Docker: go test ./pkg/plugins/gateway/drain ./cmd/prestop ./cmd/plugins
 Build: docker build -f build/container/Dockerfile.gateway -t aibrix/gateway-plugins:prestop-test .
 Run: python3 build/container/entrypoints/test_prestop.py
 """
@@ -16,12 +16,23 @@ IMAGE = os.environ.get("AIBRIX_PRESTOP_TEST_IMAGE", "aibrix/gateway-plugins:pres
 
 
 class PreStopImageTests(unittest.TestCase):
+    def test_gateway_entrypoint_compatibility(self):
+        for args in [["--help"], ["prestop", "--help"]]:
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    ["docker", "run", "--rm", "--pull=never", "--read-only",
+                     "--cap-drop=ALL", "--user=65532:65532", IMAGE, *args],
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Usage", result.stdout + result.stderr)
+
     def test_exec_hook_logging(self):
         for pid1_user in ["65532:65532", "0:0"]:
             with self.subTest(pid1_user=pid1_user):
                 result = subprocess.run(
                     ["docker", "run", "-d", "--rm", "--pull=never", "--read-only",
-                     "--cap-drop=ALL", "--user", pid1_user, IMAGE, "prestop",
+                     "--cap-drop=ALL", "--user", pid1_user, "--entrypoint=/prestop", IMAGE,
                      "--metrics-url=http://127.0.0.1:1/metrics", "--propagation-delay=0s",
                      "--timeout=60s", "--poll-interval=1s"],
                     capture_output=True, text=True, timeout=15, check=True,
@@ -30,7 +41,7 @@ class PreStopImageTests(unittest.TestCase):
                 try:
                     hook = subprocess.run(
                         ["docker", "exec", "--user", "65532:65532", container,
-                         "/gateway-plugins", "prestop", "extra"],
+                         "/prestop", "extra"],
                         capture_output=True, text=True, timeout=15,
                     )
                     self.assertEqual(hook.returncode, 2, hook.stdout + hook.stderr)
@@ -70,10 +81,11 @@ class PreStopImageTests(unittest.TestCase):
         try:
             result = subprocess.run(
                 ["docker", "run", "--rm", "--pull=never", "--read-only", "--cap-drop=ALL",
-                 "--user=65532:65532", "--add-host=host.docker.internal:host-gateway",
+                 "--user=65532:65532", "--entrypoint=/prestop",
+                 "--add-host=host.docker.internal:host-gateway",
                  "-e", "http_proxy=http://127.0.0.1:1", "-e", "HTTP_PROXY=http://127.0.0.1:1",
                  "-e", "KUBECONFIG=/does-not-exist", "-e", "REDIS_HOST=does-not-exist.invalid",
-                 IMAGE, "prestop",
+                 IMAGE,
                  f"--metrics-url=http://host.docker.internal:{server.server_port}/metrics",
                  "--propagation-delay=0s", "--timeout=8s", "--poll-interval=100ms"],
                 capture_output=True, text=True, timeout=15,
@@ -81,6 +93,8 @@ class PreStopImageTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("drain complete", result.stdout + result.stderr)
             self.assertEqual(requests, ["/metrics"] * 3)
+            self.assertNotIn("AIBRIX_", result.stdout + result.stderr)
+            self.assertNotIn("maxprocs", result.stdout + result.stderr)
         finally:
             server.shutdown()
             server.server_close()

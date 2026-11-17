@@ -35,7 +35,7 @@ tests:
           value: ["--graceful-shutdown-timeout=30s"]
       - equal:
           path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
-          value: ["/gateway-plugins", "prestop", "--metrics-url=http://127.0.0.1:8080/metrics", "--propagation-delay=10s", "--timeout=300s", "--poll-interval=2s"]
+          value: ["/prestop", "--metrics-url=http://127.0.0.1:8080/metrics", "--propagation-delay=10s", "--timeout=300s", "--poll-interval=2s"]
       - notExists:
           path: spec.template.spec.initContainers[0].lifecycle
   - it: accepts a null graceful shutdown configuration
@@ -64,7 +64,7 @@ tests:
           value: ["--graceful-shutdown-timeout=10s"]
       - equal:
           path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
-          value: ["/gateway-plugins", "prestop", "--metrics-url=http://127.0.0.1:9090/metrics", "--propagation-delay=5s", "--timeout=100s", "--poll-interval=1s"]
+          value: ["/prestop", "--metrics-url=http://127.0.0.1:9090/metrics", "--propagation-delay=5s", "--timeout=100s", "--poll-interval=1s"]
   - it: rejects a timeout consuming the entire Pod grace period
     set:
       gatewayPlugin.gracefulShutdown.enabled: true

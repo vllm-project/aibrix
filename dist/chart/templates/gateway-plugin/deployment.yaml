@@ -99,8 +99,7 @@ spec:
             preStop:
               exec:
                 command:
-                  - /gateway-plugins
-                  - prestop
+                  - /prestop
                   - {{ printf "--metrics-url=%s" $shutdown.metricsURL | quote }}
                   - {{ printf "--propagation-delay=%ds" (int $shutdown.propagationDelaySeconds) | quote }}
                   - {{ printf "--timeout=%ds" (int $shutdown.timeoutSeconds) | quote }}
