@@ -103,6 +103,7 @@ func (r *ModelClaimReconciler) claimFeasibleForPlacement(
 	if !valid {
 		return false
 	}
+	shared = podsFreeForModelName(ctx, claim, shared, readings)
 	admissible, _ := admissibleCandidates(shared, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(claim))
 	if len(admissible) > 0 {
 		return true
@@ -137,6 +138,7 @@ func (r *ModelClaimReconciler) claimFeasibleForPlacementWithPolicy(
 	if !valid {
 		return false
 	}
+	shared = podsFreeForModelName(ctx, claim, shared, readings)
 	admissible, _ := admissibleCandidates(shared, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(claim))
 	if len(admissible) > 0 {
 		return true

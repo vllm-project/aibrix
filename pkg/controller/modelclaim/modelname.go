@@ -17,6 +17,7 @@ limitations under the License.
 package modelclaim
 
 import (
+	"context"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -168,34 +169,72 @@ func engineOfAnotherClaim(snapshot *RuntimeSnapshot, pm *modelv1alpha1.ModelClai
 	return nil
 }
 
-// withoutTakenPods leaves out of admissible the Pods that still run an engine
-// under pm's model name for another claim, in any phase, and adds a refusal
-// that names that claim for each. A Pod runs one engine per model name, and the
-// runtime refuses to start pm's engine next to another claim's, even one that
-// failed, until that engine is stopped. pm is placed on another Pod, or is
-// refused as a claim that finds no room is, and tries again later.
+// podsFreeForModelName returns the pods on which the runtime reports no engine
+// under claim's model name for another claim. claim cannot be placed on the
+// others until those engines are stopped, so no room is made for it there
+// either, and it does not count as one that could use them.
+func podsFreeForModelName(
+	ctx context.Context,
+	claim *modelv1alpha1.ModelClaim,
+	pods []corev1.Pod,
+	readings *runtimeReadings,
+) []corev1.Pod {
+	snapshots := readings.ofPods(ctx, pods)
+	free := make([]corev1.Pod, 0, len(pods))
+	for i := range pods {
+		if engineOfAnotherClaim(snapshots[pods[i].Name], claim) == nil {
+			free = append(free, pods[i])
+		}
+	}
+	return free
+}
+
+// withoutTakenPods leaves out of admissible the candidate Pods that still run an
+// engine under pm's model name for another claim, in any phase. A Pod runs one
+// engine per model name, and the runtime refuses to start pm's engine next to
+// another claim's, even one that failed, until that engine is stopped. That is
+// what keeps pm off such a Pod, whatever room it has, so its refusal names the
+// claim the engine runs for in place of any other. pm is placed on another Pod,
+// or is refused as a claim that finds no room is, and tries again later.
 func withoutTakenPods(
 	pm *modelv1alpha1.ModelClaim,
-	admissible []corev1.Pod,
+	candidates, admissible []corev1.Pod,
 	refusals []podRefusal,
 	snapshots map[string]*RuntimeSnapshot,
 	ledgers map[string]podLedger,
 ) ([]corev1.Pod, []podRefusal) {
+	taken := map[string]podRefusal{}
+	for i := range candidates {
+		pod := &candidates[i]
+		if owner := engineOfAnotherClaim(snapshots[pod.Name], pm); owner != nil {
+			taken[pod.Name] = podRefusal{
+				pod:       pod.Name,
+				roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+				known:     true,
+				couldHold: true,
+				reason:    fmt.Sprintf("%s still runs model %s for ModelClaim %s", pod.Name, servedModelName(pm), owner.Name),
+			}
+		}
+	}
+	if len(taken) == 0 {
+		return admissible, refusals
+	}
 	kept := make([]corev1.Pod, 0, len(admissible))
 	for i := range admissible {
-		pod := &admissible[i]
-		owner := engineOfAnotherClaim(snapshots[pod.Name], pm)
-		if owner == nil {
-			kept = append(kept, *pod)
-			continue
+		if _, isTaken := taken[admissible[i].Name]; !isTaken {
+			kept = append(kept, admissible[i])
 		}
-		refusals = append(refusals, podRefusal{
-			pod:       pod.Name,
-			roomBytes: ledgers[pod.Name].maximumRoomBytes(),
-			known:     true,
-			couldHold: true,
-			reason:    fmt.Sprintf("%s still runs model %s for ModelClaim %s", pod.Name, servedModelName(pm), owner.Name),
-		})
 	}
-	return kept, refusals
+	reasons := make([]podRefusal, 0, len(refusals)+len(taken))
+	for _, refusal := range refusals {
+		if _, isTaken := taken[refusal.pod]; !isTaken {
+			reasons = append(reasons, refusal)
+		}
+	}
+	for i := range candidates {
+		if refusal, isTaken := taken[candidates[i].Name]; isTaken {
+			reasons = append(reasons, refusal)
+		}
+	}
+	return kept, reasons
 }

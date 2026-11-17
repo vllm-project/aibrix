@@ -29,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -449,4 +450,99 @@ func TestAClaimThatWaitsForItsModelNameLeavesTheGaugesAlone(t *testing.T) {
 	require.NoError(t, r.Delete(context.Background(), getModel(t, r, waiting.Name)))
 	reconcileOnce(t, r, waiting.Name)
 	assert.Equal(t, 1.0, ready(), "deleting the waiting claim keeps the holder's gauges")
+}
+
+// A Pod still holds a failed engine under the name x for a claim that is gone,
+// beside a resident model. A claim for x cannot use that Pod, so no room is made
+// for it there: the resident stays awake, whatever the room and the policy.
+func TestNoRoomIsMadeOnAPodTakenByAnotherClaimsEngine(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		residents []serving
+		policy    modelv1alpha1.ModelClaimPreemptionPolicy
+	}{
+		{"Never with room", []serving{{"a", "warm-1", 300, 100, at0758}}, modelv1alpha1.ModelClaimPreemptionNever},
+		{"Never without room", []serving{{"a", "warm-1", 300, 100, at0758}, {"b", "warm-1", 300, 100, at0759}},
+			modelv1alpha1.ModelClaimPreemptionNever},
+		{"SleepLowerPriority without room", []serving{{"a", "warm-1", 300, 100, at0758}, {"b", "warm-1", 300, 100, at0759}},
+			modelv1alpha1.ModelClaimPreemptionSleepLowerPriority},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, runtime := servingPool(t, keepNoWakeReserve, 1, tt.residents...)
+			ip := podNamed(t, r, "warm-1").Status.PodIP
+			runtime.snapshots[ip].Models = append(runtime.snapshots[ip].Models, RuntimeSnapshotModel{
+				ModelName: "x", Phase: "failed", Alive: false,
+				KVUsedBytes: kvLimitUnknown, KVCapacityBytes: kvLimitUnknown,
+				ClaimRef: &ModelClaimRef{Namespace: testNamespace, Name: "gone", UID: "gone-uid"},
+			})
+			claim := withFinalizer(claimOnPod("newcomer", "", modelv1alpha1.ModelClaimActive, 300, 100))
+			claim.UID = "newcomer-uid"
+			claim.Status.Instances = nil
+			claim.Spec.ModelName = ptr.To("x")
+			claim.Spec.Priority = 10
+			claim.Spec.PreemptionPolicy = tt.policy
+			require.NoError(t, r.Create(context.Background(), claim))
+
+			reconcileOnce(t, r, claim.Name)
+
+			assert.Empty(t, runtime.sleepCalls, "the residents stay awake")
+			assert.Empty(t, runtime.activateCalls)
+			assert.Empty(t, getModel(t, r, claim.Name).Status.Instances)
+			condition := scheduledOf(t, r, claim.Name)
+			assert.NotEqual(t, scheduledReasonMakingRoom, condition.Reason)
+			assert.Contains(t, condition.Message, "warm-1 still runs model x for ModelClaim gone")
+			assert.NotContains(t, condition.Message, "other pod", "warm-1 is turned away once")
+		})
+	}
+}
+
+// takenForX gives the pool's warm-1 a failed engine under the name x for a
+// claim that is gone, and adds an older claim for x, which cannot use warm-1,
+// and a newer claim for y, which can.
+func takenForX(t *testing.T, r *ModelClaimReconciler, runtime *fakeRuntime) (older, newer *modelv1alpha1.ModelClaim) {
+	t.Helper()
+	ip := podNamed(t, r, "warm-1").Status.PodIP
+	runtime.snapshots[ip].Models = append(runtime.snapshots[ip].Models, RuntimeSnapshotModel{
+		ModelName: "x", Phase: "failed", Alive: false,
+		KVUsedBytes: kvLimitUnknown, KVCapacityBytes: kvLimitUnknown,
+		ClaimRef: &ModelClaimRef{Namespace: testNamespace, Name: "gone", UID: "gone-uid"},
+	})
+	for _, c := range []struct {
+		name, model string
+		created     time.Time
+	}{{"older", "x", at0758}, {"newer", "y", at0759}} {
+		claim := withFinalizer(claimOnPod(c.name, "", modelv1alpha1.ModelClaimActive, 300, 100))
+		claim.UID = types.UID(c.name + "-uid")
+		claim.Status.Instances = nil
+		claim.CreationTimestamp = metav1.NewTime(c.created)
+		claim.Spec.ModelName = ptr.To(c.model)
+		claim.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
+		require.NoError(t, r.Create(context.Background(), claim))
+	}
+	return getModel(t, r, "older"), getModel(t, r, "newer")
+}
+
+// An older claim whose only Pod is taken under its name could not be placed,
+// so it does not hold the placement turn of a newer claim.
+func TestAClaimThatOnlyATakenPodCouldHoldKeepsNoTurn(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1, serving{"a", "warm-1", 300, 100, at0758})
+	_, newer := takenForX(t, r, runtime)
+
+	reconcileOnce(t, r, newer.Name)
+
+	assert.Len(t, getModel(t, r, newer.Name).Status.Instances, 1)
+	assert.Len(t, runtime.activateCalls, 1)
+}
+
+// Nor does it come first to have room made: room made on the taken Pod would
+// not help it, so the newer claim has room made for it.
+func TestAClaimThatOnlyATakenPodCouldHoldDoesNotComeFirstForRoom(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	_, newer := takenForX(t, r, runtime)
+
+	reconcileOnce(t, r, newer.Name)
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, newer.Name).Reason)
 }

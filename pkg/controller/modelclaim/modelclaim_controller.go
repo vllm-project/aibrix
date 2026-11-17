@@ -749,7 +749,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 		}
 	}
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
-	admissible, refusals = withoutTakenPods(pm, admissible, refusals, snapshots, ledgers)
+	admissible, refusals = withoutTakenPods(pm, candidates, admissible, refusals, snapshots, ledgers)
 	rankByRoom(placementStates, ledgers)
 
 	// Every pod the claim is on stays out of the ranking, the pods where its
@@ -1085,12 +1085,15 @@ func (r *ModelClaimReconciler) refusePlacement(
 	}
 	if refused.reason == "NoMatchingPods" && len(failed) == 0 {
 		why, making := "", false
+		// Room is not made on a Pod where another claim's engine still runs
+		// under this claim's model name, since the claim could not use it.
+		free := podsFreeForModelName(ctx, pm, candidates, readings)
 		switch preemptionPolicyOf(pm) {
 		case modelv1alpha1.ModelClaimPreemptionSleepLowerPriority:
-			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, candidates, claims,
+			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, free, claims,
 				ledgers, placementStates, readings)
 		default:
-			why, making = r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings)
+			why, making = r.makeRoomToPlace(ctx, pm, perGPU, free, ledgers, readings)
 		}
 		if making {
 			refused.reason, refused.message, refused.eventType = scheduledReasonMakingRoom, why, corev1.EventTypeNormal
