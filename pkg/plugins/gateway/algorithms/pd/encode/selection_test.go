@@ -106,18 +106,18 @@ func TestEncoderSelectionUnderLoad(t *testing.T) {
 			first := make(chan error, 1)
 			req1 := encodeRequest(t, "r1")
 			go func() {
-				first <- executor.Execute(req1, encoders, []string{imageItem}, 5*time.Second)
+				first <- execute(executor, req1, encoders, []string{imageItem}, 5*time.Second)
 			}()
 			require.Equal(t, hostA, <-transport.arrived, "the first item goes to the first encoder")
 
-			require.NoError(t, executor.Execute(encodeRequest(t, "r2"), encoders, []string{imageItem}, 5*time.Second))
+			require.NoError(t, execute(executor, encodeRequest(t, "r2"), encoders, []string{imageItem}, 5*time.Second))
 			<-transport.arrived
 			assert.Equal(t, hostB, transport.host("r2-encode-0"))
 
 			third := make(chan error, 1)
 			req3 := encodeRequest(t, "r3")
 			go func() {
-				third <- executor.Execute(req3, encoders, []string{imageItem}, 5*time.Second)
+				third <- execute(executor, req3, encoders, []string{imageItem}, 5*time.Second)
 			}()
 			assert.Equal(t, tc.wantThird, <-transport.arrived)
 
@@ -157,8 +157,8 @@ func TestLeastRequestSkipsNilEncoders(t *testing.T) {
 	executor := NewExecutor(&http.Client{Transport: newGatedTransport("")})
 	b := encoderPod("encode-b", "10.0.0.2")
 
-	require.NoError(t, executor.Execute(encodeRequest(t, "r1"), []*v1.Pod{nil, b}, []string{imageItem, imageItem}, 5*time.Second))
-	err := executor.Execute(encodeRequest(t, "r2"), []*v1.Pod{nil}, []string{imageItem}, 5*time.Second)
+	require.NoError(t, execute(executor, encodeRequest(t, "r1"), []*v1.Pod{nil, b}, []string{imageItem, imageItem}, 5*time.Second))
+	err := execute(executor, encodeRequest(t, "r2"), []*v1.Pod{nil}, []string{imageItem}, 5*time.Second)
 	require.ErrorContains(t, err, "encode pod is nil")
 	assert.Empty(t, executor.inflight)
 }
@@ -167,7 +167,7 @@ func TestLeastRequestSkipsNilEncoders(t *testing.T) {
 func TestRoundRobinNilEncoderFails(t *testing.T) {
 	t.Setenv("AIBRIX_ENCODE_SELECTION_POLICY", PolicyRoundRobin)
 	executor := NewExecutor(&http.Client{Transport: newGatedTransport("")})
-	err := executor.Execute(encodeRequest(t, "r1"), []*v1.Pod{nil}, []string{imageItem}, 5*time.Second)
+	err := execute(executor, encodeRequest(t, "r1"), []*v1.Pod{nil}, []string{imageItem}, 5*time.Second)
 	require.ErrorContains(t, err, "encode pod is nil")
 }
 
@@ -195,7 +195,7 @@ func TestLeastRequestRotatesTiesAcrossIdleEncoders(t *testing.T) {
 	encoders := []*v1.Pod{encoderPod("encode-a", "10.0.0.1"), encoderPod("encode-b", "10.0.0.2"), encoderPod("encode-c", "10.0.0.3")}
 
 	for i := 0; i < 9; i++ {
-		require.NoError(t, executor.Execute(encodeRequest(t, fmt.Sprintf("r%d", i)), encoders, []string{imageItem}, 5*time.Second))
+		require.NoError(t, execute(executor, encodeRequest(t, fmt.Sprintf("r%d", i)), encoders, []string{imageItem}, 5*time.Second))
 	}
 	assert.Equal(t, map[string]int{"10.0.0.1:8000": 3, "10.0.0.2:8000": 3, "10.0.0.3:8000": 3}, transport.hosts)
 }
@@ -207,7 +207,7 @@ func TestLeastRequestReleasesOnFailure(t *testing.T) {
 	executor := NewExecutor(&http.Client{Transport: &statusTransport{status: http.StatusInternalServerError, hosts: map[string]int{}}})
 	encoders := []*v1.Pod{encoderPod("encode-a", "10.0.0.1"), encoderPod("encode-no-ip", "")}
 
-	err := executor.Execute(encodeRequest(t, "r1"), encoders, []string{imageItem, imageItem}, 5*time.Second)
+	err := execute(executor, encodeRequest(t, "r1"), encoders, []string{imageItem, imageItem}, 5*time.Second)
 	require.Error(t, err)
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
@@ -233,7 +233,7 @@ func TestLeastRequestConcurrentExecute(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for _, req := range reqs {
-				assert.NoError(t, executor.Execute(req, encoders, []string{imageItem, imageItem, imageItem}, 5*time.Second))
+				assert.NoError(t, execute(executor, req, encoders, []string{imageItem, imageItem, imageItem}, 5*time.Second))
 			}
 		}()
 	}
@@ -251,4 +251,12 @@ func TestLeastRequestConcurrentExecute(t *testing.T) {
 func TestUnknownEncoderSelectionPolicyUsesRoundRobin(t *testing.T) {
 	t.Setenv("AIBRIX_ENCODE_SELECTION_POLICY", "fastest")
 	assert.False(t, NewExecutor(nil).leastRequest)
+}
+
+// execute runs Execute for tests that only look at the failures.
+func execute(
+	e *Executor, ctx *types.RoutingContext, encoders []*v1.Pod, items []string, timeout time.Duration,
+) error {
+	_, err := e.Execute(ctx, encoders, items, timeout)
+	return err
 }

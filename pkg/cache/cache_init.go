@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/client_golang/prometheus"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -490,6 +491,11 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			klog.Fatalf("Failed to initialize discovery provider: %v", err)
 		}
 		klog.InfoS("Using discovery provider", "type", provider.Type())
+		if opts.IsGateway {
+			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
+			}
+		}
 		initMetricsCache(store, stopCh)
 
 		// Initialize profile cache if enabled
