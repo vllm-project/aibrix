@@ -68,7 +68,7 @@ func newBenchmarkServer(b *testing.B, requestBody string, routingAlgo types.Rout
 	}
 	mockHTTP.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
 
-	server := &Server{cache: mockCache, gatewayClient: mockGW, podNamespace: defaultAIBrixNamespace}
+	server := &Server{cache: mockCache, gatewayClient: mockGW, gatewayNamespace: "aibrix-system"}
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{

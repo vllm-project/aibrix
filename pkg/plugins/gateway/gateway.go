@@ -47,6 +47,7 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
@@ -62,11 +63,10 @@ import (
 )
 
 const (
-	defaultAIBrixNamespace = "aibrix-system"
-	metricHeaderErr        = "metric-header-err"
-	gatewayRespBody        = "gateway_rsp_body"
-	gatewayRespHeaders     = "gateway_rsp_headers"
-	gatewayReqBody         = "gateway_req_body"
+	metricHeaderErr    = "metric-header-err"
+	gatewayRespBody    = "gateway_rsp_body"
+	gatewayRespHeaders = "gateway_rsp_headers"
+	gatewayReqBody     = "gateway_req_body"
 	// Keep error normalization bounded even when an upstream emits a large body.
 	maxUpstreamErrorBodySize = 64 * 1024
 	defaultHTTPRouteCacheTTL = 30 * time.Second
@@ -89,7 +89,7 @@ type Server struct {
 	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
-	podNamespace        string
+	gatewayNamespace    string
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	modelListMode       ModelListMode
@@ -376,7 +376,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
-		podNamespace:        utils.LoadEnv("POD_NAMESPACE", defaultAIBrixNamespace),
+		gatewayNamespace:    config.LoadGatewayNamespace(),
 		requestCountTracker: map[string]int{},
 		cache:               c,
 		modelListMode:       mode,
@@ -390,6 +390,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
+	klog.InfoS("HTTPRoute lookup namespace configured", "namespace", s.gatewayNamespace)
 	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
 	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
@@ -1173,15 +1174,16 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
-		// Preserve the default for servers initialized without the constructor.
-		namespace := s.podNamespace
+		// Tests may construct Server directly, bypassing the constructor default.
+		namespace := s.gatewayNamespace
 		if namespace == "" {
-			namespace = defaultAIBrixNamespace
+			namespace = config.DefaultGatewayNamespace
 		}
 		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
 		defer cancel()
 		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(namespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
+			err = fmt.Errorf("httproute %s/%s: %w", namespace, name, err)
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				ttl := s.httprouteErrorTTL
 				if ttl <= 0 {

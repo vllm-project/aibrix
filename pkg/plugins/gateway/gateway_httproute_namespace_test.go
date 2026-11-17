@@ -24,6 +24,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,13 +38,13 @@ import (
 	gatewayapi "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
-func TestHTTPRoutePodNamespace(t *testing.T) {
+func TestHTTPRouteGatewayNamespace(t *testing.T) {
 	cache.InitForTest()
 	const model = "vendor/Exact-Model.v1"
 	routeName := utils.ModelRouterName(model)
 	tests := []struct {
 		name               string
-		podNamespace       string
+		gatewayNamespace   string
 		inferenceNamespace string
 		unset              bool
 		wantNamespace      string
@@ -51,17 +52,18 @@ func TestHTTPRoutePodNamespace(t *testing.T) {
 	}{
 		{name: "unset", unset: true, wantNamespace: "aibrix-system"},
 		{name: "empty", wantNamespace: "aibrix-system"},
-		{name: "explicit default", podNamespace: "aibrix-system", wantNamespace: "aibrix-system"},
-		{name: "gateway namespace", podNamespace: "gateway-test", wantNamespace: "gateway-test"},
-		{name: "different workload namespace", podNamespace: "gateway-test", inferenceNamespace: "workload-test", wantNamespace: "gateway-test"},
-		{name: "missing route does not fall back", podNamespace: "gateway-test", wantNamespace: "gateway-test", statusCode: http.StatusNotFound},
-		{name: "forbidden route does not fall back", podNamespace: "gateway-test", wantNamespace: "gateway-test", statusCode: http.StatusForbidden},
+		{name: "explicit default", gatewayNamespace: "aibrix-system", wantNamespace: "aibrix-system"},
+		{name: "gateway namespace", gatewayNamespace: "gateway-test", wantNamespace: "gateway-test"},
+		{name: "different workload namespace", gatewayNamespace: "gateway-test", inferenceNamespace: "workload-test", wantNamespace: "gateway-test"},
+		{name: "missing route does not fall back", gatewayNamespace: "gateway-test", wantNamespace: "gateway-test", statusCode: http.StatusNotFound},
+		{name: "forbidden route does not fall back", gatewayNamespace: "gateway-test", wantNamespace: "gateway-test", statusCode: http.StatusForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("POD_NAMESPACE", tt.podNamespace)
+			t.Setenv("POD_NAMESPACE", "relocated-plugin")
+			t.Setenv("AIBRIX_GATEWAY_NAMESPACE", tt.gatewayNamespace)
 			if tt.unset {
-				require.NoError(t, os.Unsetenv("POD_NAMESPACE"))
+				require.NoError(t, os.Unsetenv("AIBRIX_GATEWAY_NAMESPACE"))
 			}
 			// Workload placement must not select the namespace of routing objects.
 			t.Setenv("AIBRIX_INFERENCE_NAMESPACE", tt.inferenceNamespace)
@@ -104,16 +106,19 @@ func TestHTTPRoutePodNamespace(t *testing.T) {
 			require.NoError(t, err)
 			server := NewServerWithOptions(nil, nil, client, ServerOptions{Cache: cache.NewForTest()})
 			t.Cleanup(server.Shutdown)
+			server.httprouteErrorTTL = time.Minute
 			// The server keeps the namespace resolved at construction, as it does
 			// the route cache. Changing the environment must not mix scopes.
-			t.Setenv("POD_NAMESPACE", "another-gateway")
+			t.Setenv("AIBRIX_GATEWAY_NAMESPACE", "another-gateway")
 			for range 2 {
 				err = server.validateHTTPRouteStatus(context.Background(), model)
 				switch tt.statusCode {
 				case http.StatusNotFound:
 					require.True(t, apierrors.IsNotFound(err), "expected NotFound, got %v", err)
+					require.ErrorContains(t, err, "httproute "+tt.wantNamespace+"/"+routeName+": ")
 				case http.StatusForbidden:
 					require.True(t, apierrors.IsForbidden(err), "expected Forbidden, got %v", err)
+					require.ErrorContains(t, err, "httproute "+tt.wantNamespace+"/"+routeName+": ")
 				default:
 					require.NoError(t, err)
 				}

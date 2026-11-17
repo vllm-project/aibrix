@@ -141,6 +141,24 @@ or
 - `SKIP_KUBECTL_INSTALL=true` - Skip kubectl installation (default: true)
 - `SKIP_KIND_INSTALL=true` - Skip Kind installation (default: true)
 
+#### ModelRouter and gateway namespace integration
+
+The producer/consumer regression uses envtest to run ModelRouter and the
+gateway against the same API server. It covers the default namespace, a
+relocated plugin Pod with default routes, and an explicitly configured route
+namespace. The request uses no routing algorithm override. Envoy status and
+ready backend Pods are supplied by the test because envtest does not run Envoy
+or a kubelet.
+
+```sh
+# Set KUBEBUILDER_ASSETS to the assets installed by make envtest.
+go test -tags=integration ./pkg/plugins/gateway \
+  -run '^TestModelRouterGatewayNamespace$' -count=1
+# Requires Helm; checks both components against the release namespace.
+go test ./test/e2e/installation \
+  -run '^TestGatewayNamespaceManifests$' -count=1
+```
+
 #### ModelRouter Controller E2E
 
 The ModelRouter package runs as part of the default `controller` and `all`
