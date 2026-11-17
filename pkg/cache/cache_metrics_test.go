@@ -1208,7 +1208,7 @@ func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_MinSamplesZero(t *testin
 
 // The default is pinned so a change to it is deliberate.
 func TestLoadBalanceCapacityMinSamplesDefault(t *testing.T) {
-	require.Equal(t, 10, loadBalanceCapacityMinSamplesDefault)
+	require.Equal(t, 8, loadBalanceCapacityMinSamplesDefault)
 }
 
 // No completed requests in the window, or none with known tokens, keeps the previous estimate.

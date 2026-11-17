@@ -92,7 +92,7 @@ gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens     
 - The counters survive a brief pod delete/re-add (informer flap) the same way `completedRequests`
   does.
 - No estimate is published until the pod has completed `AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES` requests with known
-  output tokens (default `10`), so the first one or two requests do not set its capacity. The first
+  output tokens (default `8`), so the first one or two requests do not set its capacity. The first
   estimate then covers everything the pod has completed.
 - A window with no completed tokens carries no information about speed (the replica was idle,
   not slow), so the previous estimate is **kept**, not decayed toward zero. Decaying would make a
@@ -102,9 +102,8 @@ gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens     
 
 | Situation | Behavior |
 |---|---|
-| Pod has no capacity estimate yet (new pod, no usage reported, or fewer than `AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES` completed requests, default `10`) | Scored at the **mean** estimate of the pods that have one, so it competes as an average replica. A fixed fallback such as `1.0` would be off by the estimate's scale (tens of tokens per request-second) and lock the pod out of the traffic it needs to be measured. |
+| Pod has no capacity estimate yet (new pod, no usage reported, or fewer than `AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES` completed requests, default `8`) | Scored at the **mean** estimate of the pods that have one, so it competes as an average replica. A fixed fallback such as `1.0` would be off by the estimate's scale (tens of tokens per request-second) and lock the pod out of the traffic it needs to be measured. |
 | No pod has an estimate | Every pod gets capacity `1.0`; the score reduces to `running × KV penalty`. |
-| Any candidate became routable less than `AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP` (default `60s`) ago | Every candidate gets capacity `1.0`, as when no pod has an estimate. This lasts for a whole rolling update or scale-up plus the window; a mixed-hardware pool routes without the capacity term for that long. `0` disables it. The warm-up was added for the total output-token rate, where pods that became routable at different times were not comparable (#3459). |
 | Engine reports no fresh KV usage, or `NaN` | Treated as fully free: no penalty and no guardrail. |
 | `kvFree < kvCritical` | Score `+Inf` from `load-balance`. When `load-balance` routes alone this skips the pod entirely until it recovers. When `load-balance` is blended with other strategies (the default — see below), it is only a strong penalty, not a guaranteed exclusion. |
 | **Every** pod is below `kvCritical` | The request is **not** failed. Routing falls back to the tie-break over all pods, which picks the one with the least KV usage. This fallback is specific to `load-balance` routing alone; see below for the blended case. |

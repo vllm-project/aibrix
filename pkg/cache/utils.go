@@ -296,15 +296,11 @@ func (c *Store) calculateRatio1m(pod *Pod, numName, denName string, num, den flo
 	if len(numHist) < 2 || len(denHist) != len(numHist) {
 		return -1
 	}
-	base := baseSnapshot1m(numHist, now)
-	if now.Sub(base.Timestamp).Seconds() < window1mMinElapsed {
+	base := baseSnapshotIndex1m(numHist, now)
+	if now.Sub(numHist[base].Timestamp).Seconds() < window1mMinElapsed {
 		return -1
 	}
-	i := 0
-	for i < len(numHist)-1 && &numHist[i] != base {
-		i++
-	}
-	dNum, dDen := num-base.Value, den-denHist[i].Value
+	dNum, dDen := num-numHist[base].Value, den-denHist[base].Value
 	if dNum < 0 || dDen < 0 {
 		// Counters never decrease; treat it as a reset and use the current values as the deltas.
 		dNum, dDen = num, den
@@ -318,7 +314,7 @@ func (c *Store) calculateRatio1m(pod *Pod, numName, denName string, num, den flo
 // The ~1-minute window shared by calculateRate1m, calculateRatio1m and calculateMean1m.
 const (
 	window1mSnapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
-	window1mTarget           = 1 * time.Minute // desired look-back window; load-balance's capacity warm-up default (loadBalanceCapacityWarmupDefault) matches it
+	window1mTarget           = 1 * time.Minute // desired look-back window
 	window1mHistoryMaxAge    = 3 * time.Minute // keep 3 minutes of history
 	window1mHistoryMaxCount  = 36              // 5s × 36 = 3 minutes
 	window1mMinElapsed       = 10.0            // seconds; discard results with too little data
@@ -337,11 +333,17 @@ func appendSnapshot1m(history []MetricSnapshot, snapshot MetricSnapshot) []Metri
 // If we have less than 1 minute of history, this naturally falls back to the oldest
 // snapshot in the buffer. history must hold at least 2 snapshots.
 func baseSnapshot1m(history []MetricSnapshot, now time.Time) *MetricSnapshot {
+	return &history[baseSnapshotIndex1m(history, now)]
+}
+
+// baseSnapshotIndex1m is the index of the snapshot baseSnapshot1m returns. calculateRatio1m uses
+// it to read the same position in two histories that hold snapshots of the same instants.
+func baseSnapshotIndex1m(history []MetricSnapshot, now time.Time) int {
 	target := now.Add(-window1mTarget)
-	base := &history[0]
+	base := 0
 	for i := 1; i < len(history)-1; i++ {
-		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(base.Timestamp.Sub(target)) {
-			base = &history[i]
+		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(history[base].Timestamp.Sub(target)) {
+			base = i
 		}
 	}
 	return base

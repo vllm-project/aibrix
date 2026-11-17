@@ -892,8 +892,12 @@ func (c *Store) updateRealtimeOutputTokenRateEWMA(pod *Pod) {
 
 const (
 	loadBalanceCapacityMinSamplesEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES"
-	// PROVISIONAL: to be set from the first-k analysis on #3450 before this leaves draft.
-	loadBalanceCapacityMinSamplesDefault = 10
+	// From the runs on #3491 (short outputs): once a pod's first seconds are left out, the
+	// per-request rate of its first k completed requests is within 10% of its steady value from
+	// k = 8, for all 70 same-speed (run, pod) pairs and at the 95th percentile of the 14
+	// heterogeneous ones. It covers estimation noise only. A fresh engine's first requests are
+	// slower than its steady state, and no sample count this small averages that out.
+	loadBalanceCapacityMinSamplesDefault = 8
 )
 
 // loadBalanceCapacityMinSamples is how many completed requests with known output tokens a pod
