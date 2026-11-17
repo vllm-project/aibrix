@@ -3627,6 +3627,10 @@ class TestEngineSpecCatalog:
         )
         assert "/v1/audio/translations" in VLLM_OMNI_SPEC.passthrough_endpoints
         assert "/v1/audio/translations" not in SGLANG_OMNI_SPEC.passthrough_endpoints
+        assert VLLM_OMNI_SPEC.kind("/v1/videos/sync") == ForwardKind.MULTIPART
+        assert VLLM_OMNI_SPEC.methods("/v1/videos/sync") == ("POST",)
+        for spec in (VLLM_SPEC, SGLANG_SPEC, SGLANG_OMNI_SPEC, TRTLLM_SPEC):
+            assert not spec.supports("/v1/videos/sync")
         assert not SGLANG_SPEC.passthrough_endpoints & speech
         for path in (
             "/v1/chat/completions",
