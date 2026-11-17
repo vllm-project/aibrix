@@ -152,9 +152,14 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 		if _, derr := s.modelRateLimiter.Incr(ctx, key, -1, window...); derr != nil {
 			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
 		}
+		headers := []string{HeaderErrorModelRPSExceeded, "true"}
+		// Report the profile that config-profile auto selected, as a routed response does.
+		if profile, ok := routingCtx.RespHeaders[HeaderAIBrixConfigProfile]; ok {
+			headers = append(headers, HeaderAIBrixConfigProfile, profile)
+		}
 		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
-			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
+			ErrorCodeRateLimitExceeded, "", headers...)
 	}
 	return nil
 }
