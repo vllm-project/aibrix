@@ -97,6 +97,7 @@ const (
 	ReasonConfigured                = "Configured"
 	ReasonPendingReplicas           = "PendingReplicas"
 	ReasonFailedComputeScale        = "FailedComputeScale"
+	ReasonFailedGetMetrics          = "FailedGetMetrics"
 	maxScalingHistorySize           = 5
 	minScalingHistoryRecordInterval = 5 * time.Second
 	maxMetricWindowSeconds          = int64(3600)
@@ -1017,6 +1018,13 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
+	if len(scaleDecision.FailedMetrics) > 0 {
+		// The recommendation still went ahead on the remaining sources, which
+		// otherwise only the controller log would show.
+		r.EventRecorder.Eventf(pa, corev1.EventTypeWarning, ReasonFailedGetMetrics,
+			"metric sources %s could not be read; %d replicas recommended from the remaining sources",
+			strings.Join(scaleDecision.FailedMetrics, ", "), scaleDecision.DesiredReplicas)
+	}
 
 	// Only emit event if we should scale
 	if scaleDecision.ShouldScale {
@@ -1232,6 +1240,8 @@ type ScaleDecision struct {
 	Reason                    string
 	Algorithm                 string
 	PendingReplicaGuardActive bool
+	// FailedMetrics names the metric sources that could not be read for this decision.
+	FailedMetrics []string
 }
 
 // getScaleResource retrieves the scale resource for the PodAutoscaler target
@@ -1351,6 +1361,10 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 			reason = fmt.Sprintf("%s above target", metricName)
 		} else {
 			reason = "All metrics below target"
+			if len(replicaResult.FailedMetrics) > 0 {
+				reason = fmt.Sprintf("Available metrics below target (%s could not be read)",
+					strings.Join(replicaResult.FailedMetrics, ", "))
+			}
 		}
 	} else if pendingGuardActive {
 		reason = replicaResult.Reason
@@ -1364,6 +1378,7 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		Reason:                    reason,
 		Algorithm:                 metricName,
 		PendingReplicaGuardActive: pendingGuardActive,
+		FailedMetrics:             replicaResult.FailedMetrics,
 	}, nil
 }
 
