@@ -456,10 +456,7 @@ func continuousNoTargetsDiagnostic(missing map[string]missingTarget) (string, st
 		return "TargetsUnavailableOrUnauthorized", "no eligible targets resolved; control-plane nodes are not eligible for ModelWarmup"
 	}
 	if len(missing) > 0 {
-		return "TargetsUnavailableOrUnauthorized", fmt.Sprintf(
-			"no authorized targets resolved; verify Node names, %s labels, and %s=%s",
-			ResourcePoolLabelKey, WarmupEnabledLabelKey, WarmupEnabledLabelValue,
-		)
+		return "TargetsUnavailableOrUnauthorized", noAuthorizedTargetsMessage
 	}
 	return "NoTargetsResolved", "waiting for target nodes to match the configured selectors"
 }
