@@ -292,6 +292,12 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 
+	// The model name is kept for as long as the request is tracked (routing
+	// context, in-flight gauges, log fields), but the validate* helpers decode
+	// with sonic's default config, which does not copy strings: model would be a
+	// slice of sonic's private copy of the entire request body and keep it alive.
+	model = strings.Clone(model)
+
 	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "messageBytes", len(message), "stream", stream)
 	if v := klog.V(6); v.Enabled() {
 		text, truncated := truncateForLog([]byte(message))
