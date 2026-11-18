@@ -71,13 +71,6 @@ spec:
                     additionalProperties:
                       type: string
                     type: object
-                    x-kubernetes-validations:
-                    - message: engineConfig.env cannot override runtime-managed environment
-                        variables
-                      rule: '!(''ENABLE_KVCACHED'' in self || ''KVCACHED_AUTOPATCH''
-                        in self || ''KVCACHED_IPC_NAME'' in self || ''CUDA_VISIBLE_DEVICES''
-                        in self || ''NVIDIA_VISIBLE_DEVICES'' in self || ''VLLM_SERVER_DEV_MODE''
-                        in self)'
                 type: object
               modelName:
                 type: string

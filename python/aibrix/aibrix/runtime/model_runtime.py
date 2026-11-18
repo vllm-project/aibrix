@@ -229,7 +229,6 @@ class SharedMemoryKVController(KVController):
 # --------------------------------------------------------------------------- #
 # Real implementations (require a GPU + kvcached + engine at runtime)
 # --------------------------------------------------------------------------- #
-# Keep in sync with the reserved keys in the ModelClaim CRD.
 _RESERVED_ENGINE_ENV_KEYS = frozenset(
     {
         "ENABLE_KVCACHED",

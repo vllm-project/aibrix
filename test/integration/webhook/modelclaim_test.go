@@ -86,10 +86,13 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		ginkgo.Entry("parallel alias", func(c *modelapi.ModelClaim) {
 			c.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Args: map[string]string{"-tp": "0"}}
 		}, "spec.engineConfig.args"),
-		ginkgo.Entry("protected engine environment", func(c *modelapi.ModelClaim) {
-			c.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{"KVCACHED_IPC_NAME": "override"}}
-		}, "spec.engineConfig.env"),
 	)
+
+	ginkgo.It("leaves engine environment checks to the runtime", func() {
+		claim := newClaim("engine-env")
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{"KVCACHED_IPC_NAME": "override"}}
+		gomega.Expect(k8sClient.Create(ctx, claim, client.DryRunAll)).To(gomega.Succeed())
+	})
 
 	ginkgo.It("preserves defaults, perGPU updates and CEL immutability", func() {
 		claim := newClaim("valid")
