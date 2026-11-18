@@ -23,6 +23,7 @@ import (
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"go.opentelemetry.io/otel/attribute"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -174,4 +175,37 @@ func (s *Server) filterSaturatedReplicaInflight(routeCtx *types.RoutingContext, 
 		}
 	}
 	return kept
+}
+
+// narrowToInflightCapacity drops the pods already at the per-replica cap and reports
+// errReplicaInflightExceeded when none is left. scope names the set being filtered
+// (inflightScopeFleet or inflightScopeCandidates).
+//
+// For non-exclusive strategies selectTargetPod runs it on the candidate set, so the read it
+// performs is the bounded one; it is the first reader of the per-decision snapshot, so whatever
+// the candidate stage kept is what the rest of the decision reuses. Filtering before
+// SelectCandidates reads every ready pod and leaves the stage nothing to save (#3463).
+func (s *Server) narrowToInflightCapacity(routeCtx *types.RoutingContext, pods []*v1.Pod, scope string) ([]*v1.Pod, error) {
+	limit := replicaInflightLimit(routeCtx)
+	if limit <= 0 {
+		return pods, nil
+	}
+	kept := s.filterSaturatedReplicaInflight(routeCtx, pods, limit)
+	if len(kept) > 0 {
+		return kept, nil
+	}
+	// Every pod considered is at the cap. A full-fleet fallback would read every ready
+	// pod at the load where Redis is hottest, and a second K-pod sample would miss this
+	// decision's snapshot, so keep the existing 429 (#3463). The span records how many
+	// pods were considered, and the counter records which set that was, so a sampled-set
+	// rejection can be told from a fleet-wide one after the fact: ready_pods, set at the
+	// top of selectTargetPod, is the fleet.
+	recordInflightRejection(routeCtx.Model, scope)
+	if routeCtx.Span != nil {
+		routeCtx.Span.SetAttributes(
+			attribute.Int("inflight_cap", int(limit)),
+			attribute.Int("inflight_considered_pods", len(pods)),
+		)
+	}
+	return nil, errReplicaInflightExceeded
 }

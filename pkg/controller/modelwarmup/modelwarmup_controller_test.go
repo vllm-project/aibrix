@@ -1232,11 +1232,12 @@ func TestUpdateStatusDescribesFailuresByKind(t *testing.T) {
 		}}}
 		return job
 	}
+	notAuthorizedTarget := missingTarget{Reason: "NodeNotAuthorized", Message: "node is not authorized for this namespace"}
 
 	for _, tc := range []struct {
 		name        string
 		targets     map[string][]string
-		missing     map[string]string
+		missing     map[string]missingTarget
 		jobs        func(*modelv1alpha1.ModelWarmup) []batchv1.Job
 		wantPhase   modelv1alpha1.ModelWarmupPhase
 		wantMessage string
@@ -1244,20 +1245,20 @@ func TestUpdateStatusDescribesFailuresByKind(t *testing.T) {
 	}{
 		{
 			name:        "excluded target",
-			missing:     map[string]string{"node-a": "NodeNotAuthorized"},
+			missing:     map[string]missingTarget{"node-a": notAuthorizedTarget},
 			wantPhase:   modelv1alpha1.ModelWarmupFailed,
 			wantMessage: noAuthorizedTargetsMessage,
 		},
 		{
 			name:        "missing node",
-			missing:     map[string]string{"node-a": "NodeNotFound"},
+			missing:     map[string]missingTarget{"node-a": {Reason: "NodeNotFound", Message: "node was not found"}},
 			wantPhase:   modelv1alpha1.ModelWarmupFailed,
 			wantMessage: noAuthorizedTargetsMessage,
 		},
 		{
 			name:        "warmed and excluded",
 			targets:     map[string][]string{"node-a": {"target[0]"}},
-			missing:     map[string]string{"node-b": "NodeNotAuthorized"},
+			missing:     map[string]missingTarget{"node-b": notAuthorizedTarget},
 			jobs:        func(w *modelv1alpha1.ModelWarmup) []batchv1.Job { return []batchv1.Job{*jobFor(w, true)} },
 			wantPhase:   modelv1alpha1.ModelWarmupDegraded,
 			wantMessage: "1 of 2 targets warmed; 1 excluded before a warmup job was created",
@@ -1266,7 +1267,7 @@ func TestUpdateStatusDescribesFailuresByKind(t *testing.T) {
 		{
 			name:        "failed job and excluded",
 			targets:     map[string][]string{"node-a": {"target[0]"}},
-			missing:     map[string]string{"node-b": "NodeNotAuthorized"},
+			missing:     map[string]missingTarget{"node-b": notAuthorizedTarget},
 			jobs:        func(w *modelv1alpha1.ModelWarmup) []batchv1.Job { return []batchv1.Job{*jobFor(w, false)} },
 			wantPhase:   modelv1alpha1.ModelWarmupFailed,
 			wantMessage: "one or more warmup jobs failed; 1 excluded before a warmup job was created",
