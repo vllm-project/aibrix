@@ -32,6 +32,8 @@ const (
 	excludeProbeDegraded = "probe_degraded"
 	excludeLoadOutlier   = "load_outlier"
 	excludeFlakyReAdd    = "flaky_readd"
+	// excludeRequestFailures: the pod answered requests with upstream failures in a row.
+	excludeRequestFailures = "request_failures"
 )
 
 // The reasons an exclusion is lifted before its deadline, as the reason label of
@@ -69,9 +71,9 @@ func emitProbeVerdict(pod *v1.Pod, result ProbeResult) {
 	emitPodBlacklistCounter(metrics.GatewayPodBlacklistProbeTotal, pod, "verdict", verdict)
 }
 
-// countExcludedNow is how many entries exclude their pod at now: load-excluded, or open
-// with a block that has yet to end. It looks at every entry, which are few, so it runs once
-// per sweep and not per request.
+// countExcludedNow is how many entries exclude their pod at now: load-excluded, open or
+// blocked by request failures with a block that has yet to end. It looks at every entry,
+// which are few, so it runs once per sweep and not per request.
 func (b *PodBlacklist) countExcludedNow(now time.Time) int64 {
 	var n int64
 	b.pods.Range(func(_, v any) bool {
@@ -80,7 +82,7 @@ func (b *PodBlacklist) countExcludedNow(now time.Time) int64 {
 			return true
 		}
 		state.mu.RLock()
-		if state.loadExcluded || (state.state == circuitOpen && now.Before(state.openUntil)) {
+		if state.blocksLocked(now) {
 			n++
 		}
 		state.mu.RUnlock()

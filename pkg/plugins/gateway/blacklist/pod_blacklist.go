@@ -39,7 +39,7 @@ import (
 
 const (
 	// EnvPodBlacklistEnabled is the master switch for the whole pod blacklist:
-	// probe sweep, load-outlier sweep, flaky re-add and quarantine. Unset,
+	// probe sweep, load-outlier sweep, flaky re-add, request failures and quarantine. Unset,
 	// empty, false or 0 leaves every path a no-op so a healthy fleet matches
 	// pre-blacklist routing.
 	EnvPodBlacklistEnabled = "AIBRIX_POD_BLACKLIST_ENABLED"
@@ -52,6 +52,13 @@ const (
 	// together. 100 turns the cap off; every pod excluded is still routed across.
 	EnvPodBlacklistMaxExcludedPercent = "AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT"
 	defaultMaxExcludedPercent         = 50
+
+	// EnvPodBlacklistRequestFailureThreshold is how many upstream failures in a row (see
+	// IsPodFailureStatus) block the pod that served them. Any other response from the pod
+	// starts the count over. 0 turns the request-failure source off and leaves the probe sweep,
+	// the load-outlier sweep and the flaky re-add as they are.
+	EnvPodBlacklistRequestFailureThreshold = "AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD"
+	defaultRequestFailureThreshold         = 5
 
 	podBlacklistBaseDuration = 1 * time.Minute
 	podBlacklistMaxDuration  = 10 * time.Minute
@@ -92,6 +99,12 @@ const (
 	// podProbeFailureIterations dead sweeps renew the hour, so a pod that stays
 	// dead stays out.
 	podProbeDeadBlacklistDuration = time.Hour
+	// podRequestRecoverySuccesses is how many responses that are not failures, in a row, end a
+	// pod's probation after a request-failure block: until then one more failure blocks it again
+	// at once, with the next backoff, instead of needing the full threshold. Only responses
+	// count, never a healthy probe sweep: a pod that passes /health and fails inference is the
+	// case the request source exists for.
+	podRequestRecoverySuccesses = 10
 	// podProbeConcurrency bounds the probes in flight during one sweep.
 	podProbeConcurrency = 16
 	// podProbeTimeout is how long the sweep waits for each request of a probe.
@@ -112,6 +125,19 @@ var Enabled = utils.LoadEnvBool(EnvPodBlacklistEnabled, false)
 // maxExcludedPercent is the share of the pods a request considers that the blacklist may
 // exclude, loaded once from AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT (default 50, at most 100).
 var maxExcludedPercent = min(utils.LoadEnvNonNegativeInt(EnvPodBlacklistMaxExcludedPercent, defaultMaxExcludedPercent), 100)
+
+// requestFailureThreshold is the consecutive failures that block a pod, loaded once from
+// AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD (default 5). 0 turns the source off.
+var requestFailureThreshold = utils.LoadEnvNonNegativeInt(EnvPodBlacklistRequestFailureThreshold, defaultRequestFailureThreshold)
+
+// SetRequestFailureThresholdForTest sets the threshold and returns a function that puts the
+// previous one back, for tests in other packages. It writes a process global: the test must not
+// be parallel.
+func SetRequestFailureThresholdForTest(threshold int) (restore func()) {
+	prev := requestFailureThreshold
+	requestFailureThreshold = threshold
+	return func() { requestFailureThreshold = prev }
+}
 
 // MaxExcludedPercent is the cap ExclusionOverCap applies, for the log line that reports it.
 func MaxExcludedPercent() int { return maxExcludedPercent }
@@ -143,10 +169,11 @@ const (
 )
 
 // podFailureState is the exclusion state of one pod. The pod is excluded while
-// its breaker is open and openUntil has not passed, or while loadExcluded is
-// set. Once openUntil passes the pod is admitted again with no probe request:
-// nothing reports a request's outcome, so the next background sweep (see
-// RecordProbeResult) is what decides whether it is excluded again.
+// its breaker is open and openUntil has not passed, while requestBlockedUntil has
+// not passed, or while loadExcluded is set. Once a deadline passes the pod is
+// admitted again with no probe request: the next background sweep (see
+// RecordProbeResult) or the next failing response (see RecordResponse) is what
+// decides whether it is excluded again.
 type podFailureState struct {
 	// mu is a read-write lock: Allow, which routing calls for every candidate, only reads, so
 	// one request never waits for another to finish with the entry. The lock's own counter is
@@ -180,6 +207,23 @@ type podFailureState struct {
 	// quarantinedUntil is when the one-hour block the sweep gives a dead pod
 	// ends (zero for any other kind of exclusion). IsQuarantined reads it.
 	quarantinedUntil time.Time
+
+	// The request-failure source (RecordResponse) is kept apart from the breaker above on
+	// purpose: it has its own deadline and its own backoff, so a healthy probe sweep neither
+	// lifts the block nor resets the escalation. A pod that passes /health and fails inference
+	// is exactly what this source is for, and the sweep would call it healthy.
+	//
+	// requestBlockedUntil is when the block ends (zero when there is none). requestFailures
+	// counts the failures in a row since the last response that was not one. requestTrips
+	// counts blocks in a row and drives the backoff; while it is above zero the pod is on
+	// probation (one failure blocks it again), until requestSuccesses reaches
+	// podRequestRecoverySuccesses.
+	requestBlockedUntil time.Time
+	requestBlockReason  string
+	requestFailures     int
+	requestTrips        int
+	requestSuccesses    int
+
 	// lastUpdated is when the entry was last changed by a sweep or an event. Reading it
 	// through Allow does not count: an entry that routing keeps looking at but nothing
 	// changes must still age out (see sweepStale).
@@ -192,16 +236,19 @@ type podFailureState struct {
 }
 
 // blocksLocked reports whether state keeps its pod out of routing at now: it is
-// load-excluded, or its breaker is open with a block that has yet to end. Allow and
-// IsBlacklisted both answer from it, so routing has one definition of "excluded".
-// Caller must hold state.mu, for reading or writing.
+// load-excluded, its breaker is open with a block that has yet to end, or the request
+// path has blocked it and that block has yet to end. Allow and IsBlacklisted both answer
+// from it, so routing has one definition of "excluded". Caller must hold state.mu, for
+// reading or writing.
 func (state *podFailureState) blocksLocked(now time.Time) bool {
-	return state.loadExcluded || (state.state == circuitOpen && now.Before(state.openUntil))
+	return state.loadExcluded ||
+		(state.state == circuitOpen && now.Before(state.openUntil)) ||
+		now.Before(state.requestBlockedUntil)
 }
 
-// excludingLocked reports whether state can exclude its pod: its breaker is open (even
-// if the block has ended and nothing has closed it yet) or it is load-excluded. Caller
-// must hold state.mu.
+// excludingLocked reports whether state can exclude its pod: its breaker is open or a
+// request-failure block is set (even if the block has ended and nothing has closed it
+// yet) or it is load-excluded. Caller must hold state.mu.
 //
 // It is what PodBlacklist.excluded counts, and it has no clock: the count only changes
 // when an entry is written, and nothing writes one when its block ends. It is therefore a
@@ -211,16 +258,19 @@ func (state *podFailureState) blocksLocked(now time.Time) bool {
 // is still counted, and keeps every request off the fast path, until a writer closes it
 // with lapseLocked (a probe sweep result, a flaky re-add) or sweepStale does.
 func (state *podFailureState) excludingLocked() bool {
-	return !state.removed && (state.loadExcluded || state.state == circuitOpen)
+	return !state.removed && (state.loadExcluded || state.state == circuitOpen || !state.requestBlockedUntil.IsZero())
 }
 
-// lapseLocked closes an open breaker whose block has ended, so the writers that
-// branch on the breaker state see a pod that is already admitted as closed. The
-// trip count is kept: a pod that is blocked again by the next sweeps still
-// escalates its backoff. Caller must hold state.mu.
+// lapseLocked closes an open breaker, and a request-failure block, whose block has
+// ended, so the writers that branch on the state see a pod that is already admitted as
+// closed. The trip counts are kept: a pod that is blocked again still escalates its
+// backoff. Caller must hold state.mu.
 func (state *podFailureState) lapseLocked(now time.Time) {
 	if state.state == circuitOpen && !now.Before(state.openUntil) {
 		state.state = circuitClosed
+	}
+	if !state.requestBlockedUntil.IsZero() && !now.Before(state.requestBlockedUntil) {
+		state.requestBlockedUntil = time.Time{}
 	}
 }
 
@@ -639,6 +689,9 @@ func (b *PodBlacklist) BlacklistReason(pod *v1.Pod) string {
 			reasons = append(reasons, "circuit breaker open")
 		}
 	}
+	if time.Now().Before(state.requestBlockedUntil) {
+		reasons = append(reasons, state.requestBlockReason)
+	}
 	return strings.Join(reasons, "; ")
 }
 
@@ -771,6 +824,134 @@ func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
 		klog.InfoS("pod briefly excluded after a flaky delete/re-add",
 			"pod", key, "addr", addr, "model", model, "duration", flakyReAddOpenDuration)
 	}
+}
+
+// IsPodFailureStatus reports whether an HTTP status from the upstream, as the gateway sees it
+// in the response headers, counts against the pod that served it: a 5xx, except 501. That is
+// the pod's own failure (the engine's 500 and 503) and the failures Envoy reports on the pod's
+// behalf: a 502 or 503 for a connection that could not be made or was reset before any
+// response, and a 504 for one that timed out.
+//
+// Nothing else counts. A 4xx is the request's fault, not the pod's: a pod that answers 400 is
+// alive. A 429 is load, which every replica of the model shares, and ejecting for it would push
+// the traffic onto the pods that are least able to take it. A 501 says the engine does not
+// implement the route, a configuration matter for every request. How a stream ends does not
+// count either (see RecordResponse).
+func IsPodFailureStatus(status int) bool {
+	return status >= http.StatusInternalServerError && status != http.StatusNotImplemented
+}
+
+// RecordResponse applies the status of an upstream response received from pod, the pod a
+// request was routed to. It reports whether this response blocked the pod.
+//
+// A response with a failing status (IsPodFailureStatus) adds to the pod's count of failures in
+// a row; any other response starts that count over. When the count reaches
+// AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD the pod is blocked for the backoff
+// (backoffDuration: 1 minute, doubling per block, at most 10 minutes). The block ends on its
+// deadline, with no probe request, and the pod is then on probation: one more failure blocks it
+// again, with the next backoff, until podRequestRecoverySuccesses responses in a row that are not
+// failures end it. A healthy probe sweep neither lifts a request block nor shortens the backoff.
+//
+//   - A response that arrives while the pod is already excluded, by any source, is ignored. Those
+//     are requests that were in flight when the block began, and counting them would stack
+//     blocks for one incident, or, for the successes, end a probation that has not started.
+//   - Only a failure creates an entry. A success looks for one and returns when there is none,
+//     so a healthy fleet allocates nothing and FilterBlacklisted stays on its no-lookup path.
+//   - Nothing here looks at how a stream ends. A client that gives up, an ext_proc stream
+//     closed with EOF or cancelled, and a request that never got headers are not recorded: the
+//     gateway cannot tell them from an upstream failure, as Envoy half-closes and resets the
+//     stream together when a downstream client leaves.
+//   - A pod the blacklist ignores (see ignoredPod) is never recorded.
+//
+// The block is soft like every other: routing falls back to the pods it excluded when too few
+// are left (see ExclusionOverCap). Nothing is probed on the request path.
+func (b *PodBlacklist) RecordResponse(pod *v1.Pod, status int) (blocked bool) {
+	if !Enabled || requestFailureThreshold == 0 || pod == nil {
+		return false
+	}
+	failed := IsPodFailureStatus(status)
+	if !failed && b.tracked.Load() == 0 {
+		// Nothing is tracked, so there is no count to start over, and a success must not make
+		// an entry. This is a healthy fleet: no key is built, nothing is allocated.
+		return false
+	}
+	key := PodKey(pod)
+
+	var v any
+	if failed {
+		if ignoredPod(pod) {
+			return false
+		}
+		v = b.entry(key)
+	} else {
+		var ok bool
+		if v, ok = b.pods.Load(key); !ok {
+			return false
+		}
+	}
+	state, ok := v.(*podFailureState)
+	if !ok {
+		klog.Errorf("PodBlacklist: unexpected type %T stored for pod %s; skipping", v, podDesc(pod, "", ""))
+		return false
+	}
+
+	if !failed {
+		// Most entries have nothing to start over; look before taking the write lock.
+		state.mu.RLock()
+		idle := state.requestFailures == 0 && state.requestTrips == 0
+		state.mu.RUnlock()
+		if idle {
+			return false
+		}
+	}
+
+	var failures, trips int
+	var duration time.Duration
+	state.mu.Lock()
+	func() {
+		defer state.mu.Unlock()
+		defer b.syncCountLocked(state) // deferred after the unlock, so it runs before it
+		now := time.Now()
+		state.lapseLocked(now)
+		if state.blocksLocked(now) {
+			return
+		}
+		state.lastUpdated = now
+		if !failed {
+			state.requestFailures = 0
+			if state.requestTrips > 0 {
+				state.requestSuccesses++
+				if state.requestSuccesses >= podRequestRecoverySuccesses {
+					state.requestTrips, state.requestSuccesses = 0, 0
+				}
+			}
+			return
+		}
+		state.requestFailures++
+		state.requestSuccesses = 0
+		limit := requestFailureThreshold
+		if state.requestTrips > 0 {
+			limit = 1 // probation
+		}
+		if state.requestFailures < limit {
+			return
+		}
+		failures = state.requestFailures
+		state.requestTrips++
+		trips = state.requestTrips
+		duration = backoffDuration(trips)
+		state.requestBlockedUntil = now.Add(duration)
+		state.requestFailures = 0
+		state.requestBlockReason = fmt.Sprintf("%d upstream failures in a row, last status %d; blocked for %s (request trip #%d)", failures, status, duration, trips)
+		blocked = true
+	}()
+
+	if blocked {
+		emitExclusion(pod, excludeRequestFailures)
+		klog.Warningf("pod %s blacklisted for %s: %d upstream failures in a row, last status %d (request trip #%d)",
+			podDesc(pod, "", ""), duration, failures, status, trips)
+	}
+	return blocked
 }
 
 // recordHealthySweep applies a healthy sweep to state, the entry stored for pod. It starts
@@ -997,6 +1178,9 @@ func (b *PodBlacklist) sweepStale(now time.Time) {
 		last := state.lastUpdated
 		if state.openUntil.After(last) {
 			last = state.openUntil
+		}
+		if state.requestBlockedUntil.After(last) {
+			last = state.requestBlockedUntil
 		}
 		// The delete happens under state.mu: a writer that refreshes the entry takes the
 		// same lock, so it either lands before this check and keeps the entry alive, or

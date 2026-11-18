@@ -17,6 +17,7 @@ limitations under the License.
 package gateway
 
 import (
+	"net/http"
 	"sync"
 	"time"
 
@@ -94,6 +95,30 @@ func (s *Server) unregisterFromCache() {
 // blacklist.PodBlacklist.OnPodFlakyReAdd.
 func (s *Server) OnPodFlakyReAdd(pod *v1.Pod) {
 	s.podBlacklist.OnPodFlakyReAdd(pod)
+}
+
+// recordPodResponse reports the upstream status of st's request to the pod blacklist, which
+// blocks a pod after enough failing statuses in a row (see blacklist.PodBlacklist.RecordResponse).
+// It is called once, when the response headers arrive, and it is the only place the gateway
+// reports a request's outcome.
+//
+// The stream's own ending is deliberately not reported (handleRecvError records nothing): Envoy
+// half-closes and resets the ext_proc stream together when a downstream client leaves, so an EOF
+// or a cancel cannot be told from an upstream failure. A response that began with 200 and then
+// broke mid-body is therefore counted as the success its headers said it was.
+//
+// Only a request routed to a pod is reported; one whose routing has not finished, or that
+// failed before it, has no pod to blame. HasRouted is what guards TargetPod, which would
+// otherwise wait for a pod that is never set.
+func (s *Server) recordPodResponse(st *processState) {
+	if !blacklist.Enabled || st.routerCtx == nil || !st.routerCtx.HasRouted() {
+		return
+	}
+	code := http.StatusOK
+	if st.isRespError {
+		code = st.respErrorCode
+	}
+	s.podBlacklist.RecordResponse(st.routerCtx.TargetPod(), code)
 }
 
 // getGlobalRunningRequestsByPod is the live cross-gateway running-request count of
