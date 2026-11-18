@@ -93,6 +93,10 @@ type Store struct {
 
 	disableModelClaimBindings bool // Whether to ignore ModelClaim Pod annotations
 
+	// outputRateMinSamples overrides AIBRIX_OUTPUT_RATE_MIN_SAMPLES for this store when set
+	// (see minOutputRateSamples).
+	outputRateMinSamples *int
+
 	// Metrics related fields
 	subscribers          []metrics.MetricSubscriber    // List of metric subscribers
 	metrics              map[string]any                // Generic metric storage
@@ -501,6 +505,9 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		if opts.IsGateway {
 			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
 				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
+			}
+			if err := initPodOutputRateCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod output rate collector")
 			}
 		}
 		initMetricsCache(store, stopCh)

@@ -1429,6 +1429,35 @@ func TestDonePodStatsAccumulatesBusyTimeOnlyWithKnownTokens(t *testing.T) {
 	assert.Equal(t, int64(1), atomic.LoadInt64(&metaPod.completedOutputRequests), "and no sample counted")
 }
 
+// A pod that serves several models on different ports has one set of completion counters: a
+// request routed to a port is credited to the pod like any other.
+func TestDonePodStatsCreditsOutputCountersOnMultiPortPods(t *testing.T) {
+	cache := NewForTest()
+	pod := warmModelClaimPod("multi-0", "default", map[string]int{"model-a": 9001, "model-b": 9002})
+	cache.addPod(pod)
+	metaPod, ok := cache.metaPods.Load("default/multi-0")
+	require.True(t, ok)
+
+	for i, target := range []struct {
+		model string
+		port  int
+	}{{"model-a", 9001}, {"model-b", 9002}} {
+		requestID := fmt.Sprintf("req-%d", i)
+		ctx := types.NewRoutingContext(context.Background(), "least-request", target.model, "", requestID, "")
+		ctx.SetTargetPod(pod)
+		ctx.SetTargetPort(target.port)
+		term := cache.AddRequestCount(ctx, requestID, target.model)
+		time.Sleep(5 * time.Millisecond)
+		cache.DoneRequestTrace(ctx, requestID, target.model, 10, 20, term)
+	}
+
+	counters := cache.readOutputRateCounters(metaPod)
+	require.Equal(t, 40.0, counters.tokens)
+	require.Equal(t, 2.0, counters.requests)
+	require.Equal(t, 2.0, counters.finished)
+	require.GreaterOrEqual(t, counters.busySeconds, 0.010)
+}
+
 // A request that finishes while its pod is briefly out of the cache (a same-IP flap) is credited
 // to the pending snapshot. The tokens, the time on the pod and the sample must all land there,
 // or the pod would resume with tokens that have no time behind them and read as faster than it is.

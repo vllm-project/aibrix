@@ -264,75 +264,78 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 	return delta / elapsed
 }
 
-// calculateDeltas1m returns how much each of several monotonically increasing counters grew over
-// the same approximate 1-minute window as calculateRate1m. ok is false when there is not enough
-// history yet.
+// outputRateCounters are the gateway-tracked completion counters of one pod that the per-request
+// output-token rate is derived from.
+type outputRateCounters struct {
+	tokens      float64 // completedOutputTokens
+	busySeconds float64 // completedOutputBusyNanos
+	requests    float64 // completedOutputRequests
+	finished    float64 // completedRequests
+}
+
+// outputRateSnapshot is the counters at one instant. A pod has one history of these, so the
+// values of a snapshot always belong to the same instant.
+type outputRateSnapshot struct {
+	counters outputRateCounters
+	at       time.Time
+}
+
+func (s outputRateSnapshot) snapshotTime() time.Time { return s.at }
+func (s MetricSnapshot) snapshotTime() time.Time     { return s.Timestamp }
+
+// timestamped is a snapshot of either kind of rate history.
+type timestamped interface{ snapshotTime() time.Time }
+
+// outputRateDeltas1m returns how much the pod's completion counters grew over the same
+// approximate 1-minute window as calculateRate1m. ok is false when there is not enough history
+// yet.
 //
-// The counters are snapshotted together, at the same instants and under one lock, and every delta
-// is taken against the same baseline snapshot. Independent calculateRate1m histories could each
-// admit their throttled snapshot on a different refresh tick, and values derived from two of them
-// (a ratio, a count that gates it) would then describe different windows. names identify the
-// series; their histories are only written here, as one group. names and values must be non-empty
-// and of the same length; otherwise nothing is recorded and ok is false.
-func (c *Store) calculateDeltas1m(pod *Pod, names []string, values []float64) (deltas []float64, ok bool) {
-	if len(names) == 0 || len(names) != len(values) {
-		return nil, false
-	}
-	keys := make([]string, len(names))
-	for i, name := range names {
-		keys[i] = rateHistoryKey(pod, "", name)
-	}
+// The counters are snapshotted together and every delta is taken against the same baseline
+// snapshot, so values derived from several of them (a ratio, a count that gates it) describe one
+// window. Independent calculateRate1m histories could each admit their throttled snapshot on a
+// different refresh tick.
+func (c *Store) outputRateDeltas1m(pod *Pod, cur outputRateCounters) (delta outputRateCounters, ok bool) {
+	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	now := time.Now()
 
 	rateCalculator.mu.Lock()
 	defer rateCalculator.mu.Unlock()
 
-	hists := make([][]MetricSnapshot, len(keys))
-	for i, key := range keys {
-		hists[i] = rateCalculator.history[key]
-		if len(hists[i]) != len(hists[0]) {
-			// Never written apart, so this should not happen. Start the group over rather than
-			// pair snapshots of different instants.
-			for j := range hists {
-				hists[j] = nil
-			}
-			break
+	history := rateCalculator.outputRate[key]
+	if len(history) == 0 || now.Sub(history[len(history)-1].at) >= window1mSnapshotInterval {
+		// The history only changes when a snapshot is admitted, so that is the only time it is
+		// pruned and stored: cleanupOldSnapshots copies it, and between two snapshots (at most
+		// window1mSnapshotInterval) nothing can age out of a 3-minute history that matters to a
+		// 1-minute baseline.
+		history = cleanupOldSnapshots(append(history, outputRateSnapshot{counters: cur, at: now}),
+			now, window1mHistoryMaxAge, window1mHistoryMaxCount)
+		if rateCalculator.outputRate == nil {
+			rateCalculator.outputRate = make(map[string][]outputRateSnapshot)
 		}
-	}
-	if len(hists[0]) == 0 || now.Sub(hists[0][len(hists[0])-1].Timestamp) >= window1mSnapshotInterval {
-		// The histories only change when a snapshot is admitted, so that is the only time they are
-		// pruned and stored: cleanupOldSnapshots copies the history, and between two snapshots
-		// (at most window1mSnapshotInterval) nothing new can age out of a 3-minute history that
-		// matters to a 1-minute baseline.
-		for i, key := range keys {
-			hists[i] = append(hists[i], MetricSnapshot{Value: values[i], Timestamp: now})
-			// Same timestamps in every series, so the same snapshots are dropped from each.
-			hists[i] = cleanupOldSnapshots(hists[i], now, window1mHistoryMaxAge, window1mHistoryMaxCount)
-			rateCalculator.history[key] = hists[i]
-		}
+		rateCalculator.outputRate[key] = history
 	}
 
-	if len(hists[0]) < 2 {
-		return nil, false
+	if len(history) < 2 {
+		return delta, false
 	}
-	base := baseSnapshotIndex1m(hists[0], now)
-	if now.Sub(hists[0][base].Timestamp).Seconds() < window1mMinElapsed {
-		return nil, false
+	base := history[baseSnapshotIndex1m(history, now)]
+	if now.Sub(base.at).Seconds() < window1mMinElapsed {
+		return delta, false
 	}
-	deltas = make([]float64, len(values))
-	reset := false
-	for i := range values {
-		deltas[i] = values[i] - hists[i][base].Value
-		reset = reset || deltas[i] < 0
+	delta = outputRateCounters{
+		tokens:      cur.tokens - base.counters.tokens,
+		busySeconds: cur.busySeconds - base.counters.busySeconds,
+		requests:    cur.requests - base.counters.requests,
+		finished:    cur.finished - base.counters.finished,
 	}
-	if reset {
-		// Counters never decrease; treat it as a reset of the group and use the current values.
-		copy(deltas, values)
+	if delta.tokens < 0 || delta.busySeconds < 0 || delta.requests < 0 || delta.finished < 0 {
+		// Counters never decrease; treat it as a reset of all of them and use the current values.
+		delta = cur
 	}
-	return deltas, true
+	return delta, true
 }
 
-// The ~1-minute window shared by calculateRate1m, calculateDeltas1m and calculateMean1m.
+// The ~1-minute window shared by calculateRate1m, outputRateDeltas1m and calculateMean1m.
 const (
 	window1mSnapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
 	window1mTarget           = 1 * time.Minute // desired look-back window; load-balance's capacity warm-up default (loadBalanceCapacityWarmupDefault) matches it
@@ -357,13 +360,13 @@ func baseSnapshot1m(history []MetricSnapshot, now time.Time) *MetricSnapshot {
 	return &history[baseSnapshotIndex1m(history, now)]
 }
 
-// baseSnapshotIndex1m is the index of the snapshot baseSnapshot1m returns. calculateDeltas1m uses
-// it to read the same position in several histories that hold snapshots of the same instants.
-func baseSnapshotIndex1m(history []MetricSnapshot, now time.Time) int {
+// baseSnapshotIndex1m is the index of the snapshot baseSnapshot1m returns, for either kind of
+// rate history.
+func baseSnapshotIndex1m[T timestamped](history []T, now time.Time) int {
 	target := now.Add(-window1mTarget)
 	base := 0
 	for i := 1; i < len(history)-1; i++ {
-		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(history[base].Timestamp.Sub(target)) {
+		if absDuration(history[i].snapshotTime().Sub(target)) < absDuration(history[base].snapshotTime().Sub(target)) {
 			base = i
 		}
 	}
@@ -378,13 +381,13 @@ func absDuration(d time.Duration) time.Duration {
 }
 
 // cleanupOldSnapshots removes snapshots that are too old or exceed the maximum count
-func cleanupOldSnapshots(history []MetricSnapshot, now time.Time, maxAge time.Duration, maxCount int) []MetricSnapshot {
+func cleanupOldSnapshots[T timestamped](history []T, now time.Time, maxAge time.Duration, maxCount int) []T {
 	cutoffTime := now.Add(-maxAge)
 
 	// Remove snapshots older than maxAge
-	var filtered []MetricSnapshot
+	var filtered []T
 	for _, snapshot := range history {
-		if snapshot.Timestamp.After(cutoffTime) {
+		if snapshot.snapshotTime().After(cutoffTime) {
 			filtered = append(filtered, snapshot)
 		}
 	}

@@ -44,7 +44,7 @@ type Pod struct {
 	completedOutputBusyNanos int64
 	// completedOutputRequests counts the finished requests behind the two counters above: those
 	// with known output tokens. A rate window updates the estimate only if it holds at least
-	// loadBalanceCapacityMinSamples of them (see updateRealtimeOutputTokensPerRequestSecondEWMA).
+	// minOutputRateSamples of them (see updateRealtimeOutputTokensPerRequestSecondEWMA).
 	completedOutputRequests int64
 
 	// statsGeneration identifies this cache object's request-tracking counters.
