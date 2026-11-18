@@ -321,11 +321,17 @@ The sample claims:
        a per-engine ``KVCACHED_IPC_NAME`` after applying model overrides. These
        runtime values take precedence over any values in the claim.
 
-       The runtime rejects model overrides for ``CUDA_VISIBLE_DEVICES`` and
-       ``NVIDIA_VISIBLE_DEVICES`` to preserve the device visibility set by the
-       pool, and for ``VLLM_SERVER_DEV_MODE``, which enables the vLLM sleep and
-       wake endpoints. The runtime defaults ``VLLM_SERVER_DEV_MODE`` to ``1``
-       when the container does not set it.
+       Kubernetes rejects ``CUDA_VISIBLE_DEVICES`` and
+       ``NVIDIA_VISIBLE_DEVICES`` in this field to preserve the pool's device
+       visibility. It also rejects ``VLLM_SERVER_DEV_MODE``, which enables the
+       vLLM sleep and wake endpoints. The runtime defaults
+       ``VLLM_SERVER_DEV_MODE`` to ``1`` when the container does not set it.
+
+       Environment settings such as GPU allocator options can change memory
+       usage. Measure ``perGPU.maximumFootprint`` and ``perGPU.kvFloor`` with
+       the final effective engine configuration, including
+       ``engineConfig.args`` and ``engineConfig.env``. Placement uses these
+       declarations to decide whether the engine fits alongside other models.
 
        Grant ModelClaim write access only to trusted operators because engine
        environment variables can affect code loading. Do not use this field for
