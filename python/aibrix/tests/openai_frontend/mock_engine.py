@@ -28,13 +28,15 @@ import signal
 import subprocess
 import sys
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 app = FastAPI()
 _stream_gates: dict[str, asyncio.Event] = {}
+_video_jobs: dict[str, bytes] = {}
 app.last_chat_request = None  # type: ignore[attr-defined]
 app.allowed_media_dir = None  # type: ignore[attr-defined]
 
@@ -183,6 +185,63 @@ async def transcriptions(request: Request):
 
         return StreamingResponse(events(), media_type="text/event-stream")
     return JSONResponse(result)
+
+
+@app.post("/v1/videos")
+async def video_sync(request: Request):
+    """Create a video job whose content describes the ordered input files."""
+    import hashlib
+
+    async with request.form() as form:
+        if "output" in form:
+            return JSONResponse(
+                {"detail": "frontend output field leaked"}, status_code=400
+            )
+        references = []
+        for upload in form.getlist("input_references"):
+            if isinstance(upload, str):
+                return JSONResponse({"detail": "expected a file"}, status_code=400)
+            digest = hashlib.sha256()
+            size = 0
+            while chunk := await upload.read(1 << 20):
+                size += len(chunk)
+                digest.update(chunk)
+            references.append(
+                {
+                    "filename": upload.filename,
+                    "size": size,
+                    "sha256": digest.hexdigest(),
+                }
+            )
+        result = {
+            "model": form.get("model"),
+            "references": references,
+            "query": request.url.query,
+        }
+    job_id = f"video_gen_{uuid4().hex}"
+    _video_jobs[job_id] = b"\x00\x00\x00\x18ftypmp42" + json.dumps(result).encode()
+    return JSONResponse(
+        {
+            "id": job_id,
+            "status": "completed",
+            "model": result["model"],
+            "inference_time_s": 0.0,
+        }
+    )
+
+
+@app.get("/v1/videos/{job_id}/content")
+async def video_content(job_id: str):
+    if job_id not in _video_jobs:
+        return JSONResponse({"detail": "unknown video"}, status_code=404)
+    return Response(_video_jobs[job_id], media_type="video/mp4")
+
+
+@app.delete("/v1/videos/{job_id}")
+async def delete_video(job_id: str):
+    if _video_jobs.pop(job_id, None) is None:
+        return JSONResponse({"detail": "unknown video"}, status_code=404)
+    return JSONResponse({"deleted": True})
 
 
 @app.post("/v1/audio/translations")

@@ -24,6 +24,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterable, Mapping
+from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
@@ -67,6 +68,7 @@ from aibrix.openai_frontend.common.artifact_fetcher import (
 )
 from aibrix.openai_frontend.engine.engine import LLMEngine
 from aibrix.openai_frontend.frontend.fastapi.responses import ClosingStreamingResponse
+from aibrix.openai_frontend.proxy.media.multipart_output import MultipartOutputBody
 from aibrix.openai_frontend.proxy.media.request_inspector import (
     MediaURLInspector,
     RequestInspector,
@@ -78,6 +80,7 @@ from aibrix.openai_frontend.proxy.media.request_rewriter import (
     _set_at_path,
 )
 from aibrix.openai_frontend.proxy.output.output_writer import (
+    OUTPUT_CHUNK_SIZE_BYTES,
     OutputWriteError,
     OutputWriter,
     SourceIdentities,
@@ -121,6 +124,7 @@ from aibrix.openai_frontend.schemas.generation import (
     VideoGenerationRequest,
     VideoResponse,
     VideoStatus,
+    VideoSyncOutputResponse,
     output_media_paths,
 )
 from aibrix.openai_frontend.schemas.openai import (
@@ -1062,12 +1066,15 @@ class ProxyEngine(LLMEngine):
     async def forward_multipart(self, path: str, request: "Request") -> Response:
         """Proxy a multipart/form upload (audio transcription or video generation).
 
-        Both directions are streamed: the client's body is relayed to the
+        For ordinary multipart uploads, the client's body is relayed to the
         engine chunk by chunk as it arrives (never buffered or re-encoded, so
         every form field and the query string survive byte-for-byte), and the
         engine's response -- JSON, SSE, or binary media -- is relayed back the
         same way. vLLM-Omni sync video uses an internal async job so disconnect
         can abort generation. Peak memory per upload is one transport chunk.
+
+        Sync video forms are saved to temporary files to check and remove ``output``.
+        If ``output`` gives a save location, we save the video and return JSON.
         """
         kind = self._spec.require(path)
         if kind != ForwardKind.MULTIPART:
@@ -1078,16 +1085,15 @@ class ProxyEngine(LLMEngine):
                 f"Endpoint '{path}' requires multipart/form-data, got "
                 f"{content_type or 'no content-type'}"
             )
+        output_spec = None
+        model = None
         self._check_available()
 
         label = self._kind_label(path)
         req_id, t0 = self._requests_begin()
         streamed_body = _StreamedBody(request)
-        video_job = (
-            VideoSyncJob(self._forward_with_retry, streamed_body.upload_done)
-            if self._spec.name == "vllm-omni" and path == "/v1/videos/sync"
-            else None
-        )
+        client_upload_done = streamed_body.upload_done
+        video_job: Optional[VideoSyncJob] = None
 
         headers: Dict[str, str] = {}
         if (length := request.headers.get("content-length")) is not None:
@@ -1098,11 +1104,12 @@ class ProxyEngine(LLMEngine):
         if request.url.query:
             url = f"{path}?{request.url.query}"
         raw_resp: Optional[httpx.Response] = None
+        result: Optional[JSONResponse] = None
         scope = anyio.CancelScope()
 
         async def cancel_on_disconnect() -> None:
             # The upload must finish before a second coroutine reads receive().
-            await streamed_body.upload_done.wait()
+            await client_upload_done.wait()
             while True:
                 message = await request.receive()
                 if message["type"] == "http.disconnect":
@@ -1112,7 +1119,24 @@ class ProxyEngine(LLMEngine):
         disconnect_task = asyncio.create_task(cancel_on_disconnect())
         try:
             try:
-                with scope:
+                with scope, ExitStack() as uploads:
+                    if path == "/v1/videos/sync":
+                        form_body = MultipartOutputBody(
+                            content_type,
+                            uploads.enter_context(tempfile.TemporaryFile()),
+                            uploads.enter_context(tempfile.TemporaryFile()),
+                        )
+                        await form_body.prepare(streamed_body)
+                        output_spec = form_body.output
+                        model = form_body.model
+                        streamed_body = _StreamedBody(request, body=form_body)
+                        headers["Content-Length"] = str(form_body.length)
+                    if self._spec.name == "vllm-omni" and path == "/v1/videos/sync":
+                        # Job cleanup tracks the engine upload, which starts
+                        # after the client's form has been fully spooled.
+                        video_job = VideoSyncJob(
+                            self._forward_with_retry, streamed_body.upload_done
+                        )
                     kwargs: Dict[str, Any] = dict(
                         method="POST",
                         content=streamed_body,
@@ -1128,6 +1152,18 @@ class ProxyEngine(LLMEngine):
                         if video_job is not None
                         else await self._forward_with_retry(url, True, **kwargs)
                     )
+                    logger.info(
+                        "[req-%s] %s upload relayed (%d bytes, %d chunks)",
+                        req_id,
+                        label,
+                        streamed_body.bytes_sent,
+                        streamed_body.chunks,
+                    )
+                    self._raise_engine_status(raw_resp)
+                    if output_spec is not None:
+                        result = await self._persist_multipart_video(
+                            req_id, output_spec, raw_resp, model=model
+                        )
                 if scope.cancel_called or raw_resp is None:
                     raise ClientDisconnect()
             except ClientDisconnect:
@@ -1155,14 +1191,12 @@ class ProxyEngine(LLMEngine):
                     asyncio.gather(disconnect_task, return_exceptions=True)
                 )
 
-            logger.info(
-                "[req-%s] %s upload relayed (%d bytes, %d chunks)",
-                req_id,
-                label,
-                streamed_body.bytes_sent,
-                streamed_body.chunks,
-            )
-            self._raise_engine_status(raw_resp)
+            if result is not None:
+                if video_job is not None:
+                    job, video_job = video_job, None
+                    await await_thread_completion(job.aclose())
+                self._requests_end(req_id, t0)
+                return result
             # The response is handed to the ASGI server: the in-flight
             # accounting now belongs to the relayed stream, not this call.
             return ClosingStreamingResponse(
@@ -1177,7 +1211,7 @@ class ProxyEngine(LLMEngine):
                 media_type=raw_resp.headers.get("content-type", "application/json"),
                 headers=self._forward_headers(raw_resp, encoded=True),
             )
-        except BaseException:
+        except BaseException as exc:
             try:
                 if raw_resp is not None:
                     await await_thread_completion(raw_resp.aclose())
@@ -1187,7 +1221,85 @@ class ProxyEngine(LLMEngine):
                         await await_thread_completion(video_job.aclose())
                 finally:
                     self._requests_end(req_id, t0)
+            if isinstance(exc, asyncio.CancelledError) and (
+                self._stopping or self._state != EngineState.READY
+            ):
+                raise self._engine_lost_error(req_id, label) from None
             raise
+
+    async def _persist_multipart_video(
+        self,
+        req_id: str,
+        spec: OutputRequest,
+        raw_resp: httpx.Response,
+        *,
+        model: Optional[str],
+    ) -> JSONResponse:
+        """Own the response and temporary MP4 until persistence has settled."""
+        try:
+            media_type = raw_resp.headers.get("content-type", "").split(";")[0]
+            if media_type.strip().lower() != "video/mp4":
+                raise ServerError(
+                    "Video output persistence requires a video/mp4 engine response"
+                )
+            expected_length = raw_resp.headers.get("content-length")
+            if expected_length is not None:
+                try:
+                    expected_bytes = int(expected_length)
+                    if expected_bytes < 0:
+                        raise ValueError
+                except ValueError:
+                    raise ServerError("Invalid video response Content-Length") from None
+            else:
+                expected_bytes = None
+            # Spool decoded media to a private file instead of collecting the
+            # engine stream in memory. The shared writer owns its readers and
+            # waits for storage workers before cleaning the source on cancellation.
+            with tempfile.TemporaryDirectory(prefix="aibrix-video-sync-") as workdir:
+                source = Path(workdir) / "video.mp4"
+                total = 0
+                with source.open("wb") as target:
+                    async for chunk in raw_resp.aiter_bytes(
+                        chunk_size=OUTPUT_CHUNK_SIZE_BYTES
+                    ):
+                        await await_thread_completion(
+                            asyncio.to_thread(target.write, chunk)
+                        )
+                        total += len(chunk)
+                if not total:
+                    raise ServerError("Inner engine returned an empty video")
+                # Content-Length counts encoded transport bytes, including when
+                # aiter_bytes has decompressed the MP4 for storage.
+                if (
+                    expected_bytes is not None
+                    and raw_resp.num_bytes_downloaded != expected_bytes
+                ):
+                    raise ServerError("Inner engine returned an incomplete video")
+                receipt_id = f"video-{uuid.uuid4().hex}"
+                result = await self._write_output(
+                    req_id,
+                    spec,
+                    f"{receipt_id}.json",
+                    None,
+                    [str(source)],
+                    {},
+                )
+            receipt = VideoSyncOutputResponse(
+                id=receipt_id,
+                model=model,
+                created=int(time.time()),
+                output=result,
+            )
+            logger.info("[req-%s] saved synchronous video %s", req_id, receipt_id)
+            return JSONResponse(
+                receipt.model_dump(mode="json"), status_code=raw_resp.status_code
+            )
+        except (httpx.RequestError, httpx.DecodingError, OSError) as exc:
+            raise ServerError(
+                f"Failed to receive video output: {type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            await await_thread_completion(raw_resp.aclose())
 
     async def forward_websocket(self, path: str, websocket: "WebSocket") -> None:
         """Bridge a client WebSocket to the engine's WebSocket (realtime).
@@ -2678,8 +2790,10 @@ class _StreamedBody:
     streamed body cannot be replayed).
     """
 
-    def __init__(self, request: Request) -> None:
-        self._request = request
+    def __init__(
+        self, request: Request, *, body: Optional[AsyncIterable[bytes]] = None
+    ) -> None:
+        self._body = body if body is not None else request.stream()
         self.upload_done = asyncio.Event()
         self.started = False
         self.bytes_sent = 0
@@ -2690,7 +2804,7 @@ class _StreamedBody:
 
     async def _iterate(self) -> AsyncIterator[bytes]:
         self.started = True
-        async for chunk in self._request.stream():
+        async for chunk in self._body:
             if not chunk:
                 continue
             self.bytes_sent += len(chunk)

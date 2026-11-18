@@ -3,7 +3,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 
-"""Minimal image generation and async video job wire models.
+"""Minimal image generation, async video job and sync output receipt models.
 
 Unknown engine fields pass through. Local output paths are declared by SGLang's
 multimodal_gen response schema, not inferred from input fields or filenames.
@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, get_args
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aibrix.openai_frontend.schemas.media import OUTPUT_MEDIA
 from aibrix.openai_frontend.schemas.output import (
@@ -99,6 +99,26 @@ class VideoGenerationRequest(BaseModel):
         if self.output is not None and getattr(self, "stream", False):
             raise ValueError("output requires a non-streaming JSON video response")
         return self
+
+
+class VideoSyncOutputResponse(BaseModel):
+    """Frontend metadata for a persisted native MP4, without an engine envelope."""
+
+    id: str = Field(
+        description=(
+            "Frontend-generated receipt ID, also used in the artifact name; "
+            "not an engine video job ID."
+        )
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Submitted model form text, or null when unavailable; "
+            "not the engine's resolved model name."
+        ),
+    )
+    created: int = Field(description="Unix seconds when the saved receipt was created.")
+    output: OutputResponse
 
 
 class VideoResponse(SglangVideoResponseFields):
