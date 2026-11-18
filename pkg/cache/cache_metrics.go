@@ -842,7 +842,8 @@ func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 	klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
 
 	totalValue := &metrics.SimpleMetricValue{Value: total}
-	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeNumRequestsRunning, totalValue, nil)
+	modelName, _ := getModelNameFromPod(pod.Pod)
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.RealtimeNumRequestsRunning, totalValue, nil)
 	if err := c.updatePodRecord(pod, "", metrics.RealtimeNumRequestsRunning,
 		metrics.PodMetricScope, totalValue); err != nil {
 		klog.V(4).ErrorS(err, "failed to update global running requests", "pod", pod.Name)

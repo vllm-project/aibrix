@@ -278,6 +278,12 @@ var (
 			},
 			Description: "Current number of in-flight gateway requests per model",
 		},
+		RealtimeNumRequestsRunning: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Gauge},
+			Description:  "This gateway's estimate of in-flight requests for the target pod, including recent counts from other gateways",
+		},
 
 		GatewayFirstTokenDelayOver1sTotal: {
 			MetricScope:  PodMetricScope,

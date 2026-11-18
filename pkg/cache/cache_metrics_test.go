@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -340,6 +342,68 @@ func TestEmitMetricToPrometheus_GaugeAndCounter(t *testing.T) {
 	require.Len(t, gaugeCalls, 1)
 	require.Equal(t, metrics.NumRequestsRunning, gaugeCalls[0].name)
 	require.Equal(t, 3.0, gaugeCalls[0].value)
+}
+
+func TestSyncRunningRequestsGloballyExportsGauge(t *testing.T) {
+	tests := []struct {
+		name       string
+		label      string
+		annotation string
+		wantModel  string
+	}{
+		{name: "label", label: "label-model", annotation: "org/annotation-model", wantModel: "label-model"},
+		{name: "annotation", annotation: "org/annotation-model", wantModel: "org/annotation-model"},
+		{name: "no-metadata"},
+	}
+
+	handler := promhttp.Handler()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := namespacedTestPod("inference", "running-gauge-test-"+tt.name)
+			pod.Labels = map[string]string{constants.ModelLabelName: tt.label}
+			pod.Annotations = map[string]string{constants.ModelLabelName: tt.annotation}
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			t.Cleanup(func() {
+				metrics.DeleteGaugeMetricForPod(metrics.RealtimeNumRequestsRunning, &types.RoutingContext{Model: tt.wantModel}, pod.Pod, nil)
+			})
+
+			checkGauge := func(want float64) {
+				t.Helper()
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+				require.Equal(t, http.StatusOK, w.Code)
+				var parser expfmt.TextParser
+				families, err := parser.TextToMetricFamilies(w.Body)
+				require.NoError(t, err)
+				for _, m := range families[metrics.RealtimeNumRequestsRunning].GetMetric() {
+					name, _ := metrics.GetLabelValueForKey(m, "pod")
+					namespace, _ := metrics.GetLabelValueForKey(m, "namespace")
+					if name == pod.Name && namespace == pod.Namespace {
+						model, err := metrics.GetLabelValueForKey(m, "model")
+						require.NoError(t, err)
+						require.Equal(t, tt.wantModel, model)
+						require.NotNil(t, m.Gauge)
+						require.Equal(t, want, m.Gauge.GetValue())
+						return
+					}
+				}
+				t.Fatalf("missing %s for pod %s", metrics.RealtimeNumRequestsRunning, podKey)
+			}
+
+			pod.runningRequests = 1
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+				entries: map[string][]remoteRunningEntry{podKey: {{count: 2, readAt: time.Now()}}},
+			})
+			store.syncRunningRequestsGlobally(pod)
+			checkGauge(3)
+
+			pod.runningRequests = 0
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
+			store.syncRunningRequestsGlobally(pod)
+			checkGauge(0)
+		})
+	}
 }
 
 func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {

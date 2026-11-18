@@ -58,6 +58,9 @@ Labels `target_namespace` and `target_pod` identify the target inference pod;
 value. The count is a pod total across all models and adapters, not a per-model
 request count.
 
+`realtime_num_requests_running` uses the same Pod metadata for `model`. Its
+value estimates the total in-flight requests for the Pod across gateways.
+
 For prefill/decode (PD) disaggregated models, the ledger tracks the selected
 decode pod, not the prefill pod. Prefill-only pods therefore emit zero even
 while serving prefill requests; this metric cannot diagnose load imbalance
