@@ -88,9 +88,23 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		}, "spec.engineConfig.args"),
 	)
 
-	ginkgo.It("leaves engine environment checks to the runtime", func() {
+	ginkgo.DescribeTable("rejects runtime-managed engine environment variables", func(key string) {
 		claim := newClaim("engine-env")
-		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{"KVCACHED_IPC_NAME": "override"}}
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{key: "override"}}
+		err := k8sClient.Create(ctx, claim, client.DryRunAll)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("spec.engineConfig.env"))
+	},
+		ginkgo.Entry("CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"),
+		ginkgo.Entry("NVIDIA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"),
+		ginkgo.Entry("VLLM_SERVER_DEV_MODE", "VLLM_SERVER_DEV_MODE"),
+	)
+
+	ginkgo.It("accepts kvcached environment keys that the runtime overrides", func() {
+		claim := newClaim("engine-env")
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{
+			"ENABLE_KVCACHED": "false", "KVCACHED_AUTOPATCH": "0", "KVCACHED_IPC_NAME": "override",
+		}}
 		gomega.Expect(k8sClient.Create(ctx, claim, client.DryRunAll)).To(gomega.Succeed())
 	})
 
