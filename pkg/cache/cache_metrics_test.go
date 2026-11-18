@@ -1181,6 +1181,32 @@ func TestCalculateDeltas1mPairsTheSameSnapshots(t *testing.T) {
 	require.Equal(t, []float64{50, 2, 1, 1}, deltas)
 }
 
+// A call without series, or with a value count that does not match the series, records nothing.
+func TestCalculateDeltas1mRejectsMismatchedInput(t *testing.T) {
+	c := &Store{}
+	pod := namespacedTestPod("default", "deltas-input")
+	seedOutputRateHistory(t, pod, 100, 4, 3, 5, 30*time.Second)
+
+	for _, tc := range []struct {
+		names  []string
+		values []float64
+	}{
+		{nil, nil},
+		{outputRateSeries, []float64{560, 14, 13}},
+		{outputRateSeries[:2], []float64{560, 14, 13, 20}},
+	} {
+		deltas, ok := c.calculateDeltas1m(pod, tc.names, tc.values)
+		require.False(t, ok)
+		require.Nil(t, deltas)
+	}
+
+	rateCalculator.mu.Lock()
+	for _, name := range outputRateSeries {
+		require.Len(t, rateCalculator.history[rateHistoryKey(pod, "", name)], 1, name)
+	}
+	rateCalculator.mu.Unlock()
+}
+
 // With more than a minute of history the baseline is the snapshot closest to one minute ago, and
 // it is that same snapshot for every series, not each series' oldest.
 func TestCalculateDeltas1mUsesOneBaselineForEverySeries(t *testing.T) {

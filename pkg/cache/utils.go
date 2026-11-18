@@ -272,8 +272,12 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 // is taken against the same baseline snapshot. Independent calculateRate1m histories could each
 // admit their throttled snapshot on a different refresh tick, and values derived from two of them
 // (a ratio, a count that gates it) would then describe different windows. names identify the
-// series; their histories are only written here, as one group.
+// series; their histories are only written here, as one group. names and values must be non-empty
+// and of the same length; otherwise nothing is recorded and ok is false.
 func (c *Store) calculateDeltas1m(pod *Pod, names []string, values []float64) (deltas []float64, ok bool) {
+	if len(names) == 0 || len(names) != len(values) {
+		return nil, false
+	}
 	keys := make([]string, len(names))
 	for i, name := range names {
 		keys[i] = rateHistoryKey(pod, "", name)
