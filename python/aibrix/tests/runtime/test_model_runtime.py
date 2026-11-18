@@ -1101,6 +1101,7 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
     monkeypatch.setattr(runtime_module, "pid_is_alive", lambda _: False)
     monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: False)
     monkeypatch.setenv("OMP_NUM_THREADS", "4")
+    monkeypatch.delenv("MODEL_SPECIFIC_SETTING", raising=False)
     monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path / "cache"))
     launches = []
 
@@ -1115,7 +1116,10 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
     monkeypatch.setattr(api, "get_model_runtime", lambda: runtime)
     client = _engine_env_test_client()
     for name, config in (
-        ("override", {"env": {"OMP_NUM_THREADS": "1"}}),
+        (
+            "override",
+            {"env": {"OMP_NUM_THREADS": "1", "MODEL_SPECIFIC_SETTING": "literal"}},
+        ),
         ("default", {}),
     ):
         response = client.post(
@@ -1142,14 +1146,23 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
         "kvc_override",
         "kvc_default",
     ]
+    assert [env.get("MODEL_SPECIFIC_SETTING") for env in launches] == [
+        "literal",
+        None,
+        "literal",
+        None,
+    ]
     assert os.environ["OMP_NUM_THREADS"] == "4"
+    assert "MODEL_SPECIFIC_SETTING" not in os.environ
 
 
 @pytest.mark.parametrize(
     "env",
     [
         {"KVCACHED_IPC_NAME": "other"},
-        {"PYTHONPATH": "/tmp"},
+        {"CUDA_VISIBLE_DEVICES": "0"},
+        {"VLLM_SERVER_DEV_MODE": "0"},
+        {"INVALID=NAME": "value"},
         {"OMP_NUM_THREADS": "1\0"},
     ],
 )

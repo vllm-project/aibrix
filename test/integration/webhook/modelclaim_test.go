@@ -95,6 +95,9 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		claim := newClaim("valid")
 		claim.Spec.ArtifactURL = "/models/weights"
 		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{"OMP_NUM_THREADS": "1"}}
+		for _, key := range []string{"CUSTOM_A", "CUSTOM_B", "CUSTOM_C", "CUSTOM_D", "CUSTOM_E", "CUSTOM_F", "CUSTOM_G", "CUSTOM_H"} {
+			claim.Spec.EngineConfig.Env[key] = "value"
+		}
 		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
 		gomega.Expect(claim.Spec.Engine).To(gomega.Equal("vllm"))
 		gomega.Expect(claim.Spec.ModelName).To(gomega.BeNil())
