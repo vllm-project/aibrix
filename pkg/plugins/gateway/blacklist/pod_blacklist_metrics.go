@@ -17,6 +17,7 @@ limitations under the License.
 package blacklist
 
 import (
+	"strconv"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -34,6 +35,21 @@ const (
 	excludeFlakyReAdd    = "flaky_readd"
 	// excludeRequestFailures: the pod answered requests with upstream failures in a row.
 	excludeRequestFailures = "request_failures"
+	// excludeRequestFailuresProbation: the same, for a pod that was already blocked once and
+	// failed again on probation, where one failure is enough. Told apart from the first block
+	// so a pod that keeps coming back and failing is visible, and the threshold can be tuned
+	// on first blocks alone.
+	excludeRequestFailuresProbation = "request_failures_probation"
+)
+
+// What became of a failing status, as the outcome label of
+// metrics.GatewayPodBlacklistRequestFailuresTotal.
+const (
+	// failureCounted: the failure added to the pod's count, or blocked it.
+	failureCounted = "counted"
+	// failureIgnored: the pod was already excluded, so the failure was a request that was in
+	// flight when the block began and was not counted.
+	failureIgnored = "ignored"
 )
 
 // The reasons an exclusion is lifted before its deadline, as the reason label of
@@ -54,6 +70,15 @@ func emitPodBlacklistCounter(metric string, pod *v1.Pod, label, value string) {
 
 func emitExclusion(pod *v1.Pod, reason string) {
 	emitPodBlacklistCounter(metrics.GatewayPodBlacklistExclusionsTotal, pod, "reason", reason)
+}
+
+// emitRequestFailure counts a response whose status IsPodFailureStatus accepts. Only failures
+// are emitted, never every response, so a healthy fleet pays nothing here; the status label is
+// one of three values, and there is no pod label, so the series stay few.
+func emitRequestFailure(pod *v1.Pod, status int, outcome string) {
+	_, model := podTarget(pod, "", "")
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metrics.GatewayPodBlacklistRequestFailuresTotal,
+		&metrics.SimpleMetricValue{Value: 1}, map[string]string{"status": strconv.Itoa(status), "outcome": outcome})
 }
 
 func emitRecovery(pod *v1.Pod, reason string) {

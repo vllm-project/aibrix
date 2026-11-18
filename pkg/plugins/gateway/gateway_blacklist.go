@@ -107,6 +107,14 @@ func (s *Server) OnPodFlakyReAdd(pod *v1.Pod) {
 // or a cancel cannot be told from an upstream failure. A response that began with 200 and then
 // broke mid-body is therefore counted as the success its headers said it was.
 //
+// This sees only the response headers Envoy sends to ext_proc. That needs the response header
+// mode to be SEND, which is Envoy's default and what the shipped manifests leave in place (the
+// Helm Envoy config sets it explicitly, the EnvoyExtensionPolicies set only body modes); a custom
+// chain that sets SKIP turns this source off without an error. It also means a response Envoy
+// generates itself, a connect failure, a reset before any response or a timeout, is not seen on
+// the pinned Envoy, which skips ext_proc for its own local replies: only a status the engine, or
+// a proxy in front of it, sent counts.
+//
 // Only a request routed to a pod is reported; one whose routing has not finished, or that
 // failed before it, has no pod to blame. HasRouted is what guards TargetPod, which would
 // otherwise wait for a pod that is never set.

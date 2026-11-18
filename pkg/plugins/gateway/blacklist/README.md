@@ -6,9 +6,9 @@ This directory is the Go package `blacklist`: the per-pod exclusion list, its ba
 
 ## Enablement
 
-The feature is **off by default**. Set `AIBRIX_POD_BLACKLIST_ENABLED=true` (or `1`) on the gateway to turn on the whole stack together: background probe sweep, load-outlier sweep, flaky re-add, request failures and quarantine. The one per-source switch is `AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD`, which is `0` to turn the request-failure source off (section 5). Unset, empty, `false` or `0` leaves every exported method a no-op and starts no background work, so healthy-fleet routing matches the pre-blacklist path. The per-request load-imbalance gate (`ApplyLoadImbalanceGate`) is separate and runs with the blacklist on or off: it narrows the pods the blacklist left (section 4). See [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist).
+The feature is **off by default**. Set `AIBRIX_POD_BLACKLIST_ENABLED=true` (or `1`) on the gateway to turn on the stack: background probe sweep, load-outlier sweep, flaky re-add and quarantine. The request-failure source is the exception: it is **opt-in on top of that**, and stays off until `AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD` is set above `0` (section 5), so turning the blacklist on for the probe sweep does not also turn on ejection by response status. Unset, empty, `false` or `0` leaves every exported method a no-op and starts no background work, so healthy-fleet routing matches the pre-blacklist path. The per-request load-imbalance gate (`ApplyLoadImbalanceGate`) is separate and runs with the blacklist on or off: it narrows the pods the blacklist left (section 4). See [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist).
 
-**What counts as a request failure is narrow.** Only the HTTP status of an upstream response does, and only a 5xx other than 501 (section 5). A 4xx, a 429, an ext_proc stream that closes early (EOF or cancel) and a client that gives up neither blame nor exclude the pod, because the gateway cannot tell them from an upstream failure or they are not the pod's fault. A success never creates an entry. A pod that fails requests but still passes `/health` and `/v1/models` is excluded by the request-failure source, not by the sweeps.
+**What counts as a request failure is narrow.** Only the HTTP status of an upstream response does, and only a 502, 503 or 504 (section 5), and only once the source is turned on. A 500, a 4xx, a 429, an ext_proc stream that closes early (EOF or cancel) and a client that gives up neither blame nor exclude the pod, because the gateway cannot tell them from an upstream failure or they are not evidence against the pod. A success never creates an entry. With the source on, a pod that answers `/health` and `/v1/models` but fails requests with 502, 503 or 504 is excluded by it, not by the sweeps; one that fails them with a 500 is not found by either.
 
 | File | Role |
 |---|---|
@@ -59,7 +59,7 @@ flowchart LR
     B --> S["Per-pod breaker state<br/>closed / open"]
     D --> S
     C --> L["loadExcluded flag"]
-    E --> Q["requestBlockedUntil<br/>own deadline and backoff"]
+    E --> Q["requestBlockedUntil<br/>own deadline and backoff<br/>(off unless a threshold is set)"]
     S --> G{"Allow(pod)"}
     L --> G
     Q --> G
@@ -166,17 +166,24 @@ flowchart TD
 
 `RecordResponse(pod, status)` is called once per request, when the upstream's response headers arrive (`Server.recordPodResponse`, from `handleProcessingRequest`), with the pod the request was routed to. It is the only place the gateway reports how a request went, and it reads the HTTP status, nothing else.
 
-**What counts against a pod** (`IsPodFailureStatus`): a 5xx, except 501. That is the engine's own 500 and 503, and the failures Envoy answers with on the pod's behalf: a 502 or 503 for a connection that could not be made or was reset before any response, and a 504 for a request that timed out. What does **not** count, and so does not block a pod, however many arrive:
+**What counts against a pod** (`IsPodFailureStatus`): a **502, 503 or 504** in the response headers the gateway receives, whoever sent it: an engine that is shedding or has lost its backend, a sidecar or proxy in front of it that cannot reach it, a request that timed out there. What does **not** count, and so does not block a pod, however many arrive:
 
 | Not counted | Why |
 |---|---|
+| 500 | The status engines return for a request-induced exception (a guided-decoding or grammar bug, a multimodal decode failure, a tool-call parser error). A client can shape it: one tenant's deterministic 500s, retried onto the same pod by prefix-cache routing, would eject pods that serve everyone else fine. The cost: an engine that answers **every** request with 500 while `/health` passes is found by neither this source nor the sweeps |
+| Any other 5xx | None of them says a pod cannot serve right now. 501 in particular says the engine does not implement the route, a matter of configuration for every request |
 | 4xx | The request's fault, not the pod's: a pod that answers 400 is alive |
 | 429 | Load, which every replica of the model shares; excluding for it moves traffic onto the pods least able to take it |
-| 501 | The engine does not implement the route: a matter of configuration for every request |
 | The ext_proc stream ending (EOF, cancel, a gRPC error) | Envoy half-closes **and** resets the stream when a downstream client leaves, so the gateway cannot tell a client that gave up from an upstream failure. Nothing is recorded in `handleRecvError` |
 | A 2xx that breaks mid-body | The headers said success. Detecting it needs Envoy's response flags, which the gateway does not request (see the limitations) |
 
-**The rule.** `AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD` (default 5, `0` turns the source off) failures **in a row** block the pod. Any other response from it, a 4xx and a 429 included, starts the count over, so a pod that only now and then returns a 5xx is never blocked for it. The first block lasts the ordinary backoff, 1 minute, and each further one doubles it up to 10 minutes (`backoffDuration`). There is no confirmation probe: nothing waits on the request path, and nothing is sent to a pod that is already failing.
+**Deployment prerequisites and what the source cannot see.** The source reads the response headers ext_proc receives, so:
+
+- The ext_proc **response header mode must be `SEND`**. That is Envoy's default, and the shipped manifests keep it (the Helm Envoy config sets it explicitly; the `EnvoyExtensionPolicy` objects set only body modes). A custom chain that sets `SKIP` turns the source off without an error.
+- **A response Envoy generates itself never arrives.** On the pinned Envoy (`envoyproxy/envoy:v1.33.2` in all four install paths) ext_proc is skipped for Envoy's own local replies (the runtime guard `envoy.reloadable_features.skip_ext_proc_on_local_reply` defaults to true): a connection refused, a reset before any response, a route timeout. Reviewers reproduced this on a live cluster and against a standalone Envoy: those 503s and 504s reach the client but not `RecordResponse`. The probe sweep, not this source, is what finds a pod that refuses connections, at the sweep's pace (minutes), and while it is the only backend the all-excluded fallback still routes to it. The source therefore counts statuses the engine, or a proxy in front of it, sent. Turning that runtime guard off delivered the local replies in the reviewers' control run, but it changes ext_proc behaviour for every local reply, and as reported in review the skip exists because of a security fix; that is a decision for the deployment, with its own end-to-end test, so this package does not assume it and the shipped manifests do not set it.
+- Attribution is to the pod the request was **routed to** (`TargetPod`). A deployment that retries at the route (a `BackendTrafficPolicy` with retries, say) could charge a retried 503 to the pod of the first attempt. That is untested here.
+
+**The rule.** `AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD` (default `0`, which is off) failures **in a row** block the pod. Any other response from it, a 4xx, a 429 and a 500 included, starts the count over, as does a pause of more than `requestFailureStreakGap` (1 minute) between two failures, so failures minutes apart on a pod with little traffic never add up. Resetting on any response keeps the rule simple and flap-resistant, and it has a cost: a pod that alternates failures with successes (503, 200, 503, 200) never reaches a threshold above 1. A failure *rate* over a window, with a floor on the number of samples, would catch it; that is the shape #3390 proposes, and this source does not do it yet. The first block lasts the ordinary backoff, 1 minute, and each further one doubles it up to 10 minutes (`backoffDuration`). There is no confirmation probe: nothing waits on the request path, and nothing is sent to a pod that is already failing.
 
 ```mermaid
 stateDiagram-v2
@@ -186,14 +193,15 @@ stateDiagram-v2
     Blocked --> Blocked: responses while blocked (ignored: in flight when it began)
     Blocked --> Probation: the block ends (no probe request; routable again)
     Probation --> Blocked: one failure (next, longer backoff)
-    Probation --> Counting: 10 responses in a row that are not failures (backoff starts over)
+    Probation --> Counting: 10 responses in a row that are not failures, or 20 min without a block (backoff starts over)
 ```
 
 - **In-flight requests do not stack.** A response that arrives while the pod is already excluded, by any source, is ignored: those requests were routed before the block began, and counting them would escalate the backoff for one incident. The same goes for successes, which must not count towards a recovery that has not begun. This holds under concurrency: many requests finishing at once on a busy pod make one block (tested with 32 goroutines).
-- **Probation.** When a block ends the pod is routable again with no probe. The block's trip count is kept, and **one** more failure blocks it again at once, with the next backoff, rather than needing the full threshold. `podRequestRecoverySuccesses` (10) responses in a row that are not failures end the probation and start the backoff over. The sweeps never end it: a healthy probe says nothing about inference.
+- **Probation.** When a block ends the pod is routable again with no probe. The block's trip count is kept, and **one** more failure blocks it again at once, with the next backoff, rather than needing the full threshold. `podRequestRecoverySuccesses` (10) responses in a row that are not failures end the probation and start the backoff over, and so does `requestTripDecay` (20 minutes, twice the longest backoff) without a block, counted from the end of the last one: at low traffic ten clean responses can take longer than a pod should stay one stray failure from the 10-minute cap. The sweeps never end it: a healthy probe says nothing about inference. Both time bounds are applied when a response arrives, from timestamps only responses and blocks write, so the load sweep, which refreshes the entry's `lastUpdated` for every pod that has one, cannot keep a stale streak or a stale probation alive.
 - **Independent of the probe breaker.** The block has its own deadline (`requestBlockedUntil`), trip count and reason, so a healthy sweep neither lifts it nor shortens its backoff, and a request block does not escalate the sweep's backoff. A pod that passes `/health` and `/v1/models` but fails every request is what this source is for. It is **not** quarantined: it answers, so the cache keeps scraping it. Healthy sweeps do not lift a request block even for the 8 and 10 minute steps, which are longer than two sweeps.
 - **It cannot take the fleet out.** The block is a soft preference like the others: the exclusion cap (section 2) applies, so when more than `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` of a model's pods are excluded, or all of them, or the model has one pod, requests are routed across all of them. A fleet-wide failure, such as an upstream dependency that every replica shares, therefore does not become an outage of the gateway's own making.
-- **Only a failure creates an entry**, and the entry ages out like any other (`podBlacklistEntryTTL` after the later of its last update and its block's end), so probation state does not outlive its use.
+- **Only a failure creates an entry**, and the entry ages out like any other (`podBlacklistEntryTTL` after the later of its last update and the end of its last request block), so probation state does not outlive its use.
+- **State is keyed by namespace/name**, like every entry here. A pod recreated under the same name (a StatefulSet pod, say) inherits an active request block and its trip count until the block ends or the probation decays, at most 10 and 20 minutes. This is the keying the breaker has had since the probe sweep, which the flaky re-add relies on; it is bounded, and not changed here.
 - **Ignored pods** (see above) are never recorded: prefill, decode and encode pods, StormService pods and ModelClaim pods. A PD request's target is its decode pod, so a 5xx from it would otherwise blame a pod for what may be the prefill leg's failure.
 
 ## Constants
@@ -208,6 +216,8 @@ stateDiagram-v2
 | `podProbeRecoveryIterations` | 2 | Consecutive healthy sweeps that lift a block that is still running |
 | `podProbeDeadBlacklistDuration` | 1 h | How long the sweep blacklists a pod it found dead |
 | `podRequestRecoverySuccesses` | 10 | Responses in a row that are not failures that end a pod's probation after a request-failure block |
+| `requestFailureStreakGap` | 1 min | Longest pause between two failures that still count as in a row; a longer one starts the count over |
+| `requestTripDecay` | 20 min | How long after a request block ends its trip count is kept; past it the pod is off probation and the backoff starts over |
 | `podProbeConcurrency` | 16 | Probes in flight during one sweep |
 | `flakyReAddOpenDuration` | 3 s | Hold after a flaky re-add |
 | `podBlacklistEntryTTL` / `podBlacklistSweepInterval` | 30 min / 5 min | An entry is pruned once it has been untouched this long, counted from the later of its last update and its `openUntil`. Each pass also closes a breaker whose block has ended, so it stops counting as excluded |
@@ -215,7 +225,7 @@ stateDiagram-v2
 | `loadOutlierStdDevThreshold` | 2.0 | Standard deviations above the peer mean |
 | `loadOutlierMinPods` | 3 | Fewest ready pods for a model to be scored |
 | `AIBRIX_POD_BLACKLIST_ENABLED` (env) | `false` | Master switch for the whole feature (see [Enablement](#enablement) and [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)) |
-| `AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD` (env) | 5 | Upstream failures in a row (5xx except 501) that block the pod that served them; `0` turns the request-failure source off (see [section 5](#5-request-failures) and [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)) |
+| `AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD` (env) | 0 (off) | Upstream failures in a row (502, 503, 504) that block the pod that served them; the request-failure source is opt-in and `0` leaves it off (see [section 5](#5-request-failures) and [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)) |
 | `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` (env) | 50 | Most of the pods a request considers the blacklist may exclude; past it the request is routed across all of them. `100` turns the cap off (see [Routing gate](#2-routing-gate-allow) and [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)) |
 | `AIBRIX_LOAD_OUTLIER_MIN_GAP` (env) | 16 | Minimum absolute running+waiting gap over the peer mean (see [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)); only used when the master switch is on |
 
@@ -248,7 +258,8 @@ A block that simply ends logs nothing.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `gateway_pod_blacklist_exclusions_total` | counter | `reason`: `probe_dead`, `probe_degraded`, `load_outlier`, `flaky_readd`, `request_failures` | A pod became excluded. Renewing a block, or a flap on a pod that is already excluded, is not counted again. |
+| `gateway_pod_blacklist_exclusions_total` | counter | `reason`: `probe_dead`, `probe_degraded`, `load_outlier`, `flaky_readd`, `request_failures`, `request_failures_probation` | A pod became excluded. Renewing a block, or a flap on a pod that is already excluded, is not counted again. A request block is `request_failures` the first time and `request_failures_probation` when the pod failed again on probation, so a pod that keeps coming back and failing shows apart from first trips. |
+| `gateway_pod_blacklist_request_failures_total` | counter | `status`: `502`, `503`, `504`; `outcome`: `counted`, `ignored` | A failing status the request-failure source saw, by `model`. `counted` added to the pod's streak or blocked it; `ignored` arrived while the pod was already excluded (a request in flight when the block began). Only failures are emitted, never every response, and there is no pod label. Zero while upstream is failing says the source is not seeing it (see the deployment prerequisites in section 5), not that the fleet is healthy. |
 | `gateway_pod_blacklist_recoveries_total` | counter | `reason`: `probe_healthy`, `load_recovered` | A pod's exclusion was lifted before its deadline |
 | `gateway_pod_blacklist_probe_total` | counter | `verdict`: `healthy`, `degraded`, `dead` | Every probe the sweep sends. A burst of `dead` across a whole model is more likely a fault on the gateway's side than a fleet of dead pods. |
 | `gateway_pod_blacklist_excluded_pods` | gauge | | Pods this gateway currently excludes, as of the end of the last sweep |
@@ -264,10 +275,12 @@ go test ./pkg/plugins/gateway/ -run 'Blacklist|handleRecvError|selectTargetPod|U
 ## Known limitations
 
 - Exclusions are per gateway replica, so each replica has to find a bad pod on its own sweeps before it excludes it.
-- The sweep alone finds a pod in about 10 minutes (3 sweeps), and not one that answers `/health` and `/v1/models` correctly but fails inference. The request-failure source covers both within a handful of requests, **for a pod that takes traffic**: a pod that is failing but is sent nothing is found only by the sweep.
+- The sweep alone finds a pod in about 10 minutes (3 sweeps), and not one that answers `/health` and `/v1/models` correctly but fails inference. The request-failure source, **when turned on**, covers both within a handful of requests for a pod that takes traffic and fails with a 502, 503 or 504; a pod that is failing but is sent nothing is found only by the sweep, and one that fails with a 500 or with an Envoy-generated reply is found only by the sweep, if at all.
+- The request-failure source is off by default because its policy is still open (#3390): which statuses are attributable, whether 429 should be counted apart, and whether a consecutive count or a failure rate over a window is the right estimator. It has not been measured on real traffic; the counters above are what an operator would watch when enabling it.
+- The consecutive rule is easy to evade (any response that is not a failure resets it, so an intermittently failing pod never reaches a threshold above 1) and, below the streak gap, easy to reach at low per-pod traffic. Counting only 502, 503 and 504 takes away the case where one client's repeated bad requests do it; it does not make the rule a rate.
 - Request failures are read from the response status alone. A stream that starts with 200 and then breaks, a client that leaves, and a request that never gets response headers are not recorded, so a pod that accepts requests and then hangs or resets them mid-stream is not found this way. Telling those apart needs Envoy's response flags (`response.flags`, `response.code_details`, which separate an upstream reset from a downstream close) requested through the ext_proc `response_attributes` setting; that is a gateway deployment change this source does not depend on.
 - A 503 or 504 that comes from load, an engine that sheds requests when overloaded or a route timeout hit by a long generation, counts like a failure. Five in a row from one pod is what blocks it, and the exclusion cap and the fallback keep the fleet routable meanwhile, but a model that is overloaded everywhere will block pods up to the cap.
-- Request-failure counts are per gateway replica, so each replica has to see the failures on its own traffic; a model with little traffic spread over many replicas may take a while to reach the threshold on any of them.
+- Request-failure state is per gateway replica. With G replicas a pod at a fixed total traffic reaches the threshold on any one of them roughly G times more slowly; while a block runs, one replica excludes the pod and another keeps routing to it; each escalates its own backoff; and the exclusion cap is computed on each replica's own view, so across replicas the union of exclusions can exceed it. That matches the in-process first step #3390 describes, and `gateway_pod_blacklist_exclusions_total` per `gateway_pod` makes the divergence visible.
 - A block that ends is not followed by a probe request. After a request-failure block the pod is on probation, so its next failure blocks it again at once; after a sweep block it takes traffic until the sweeps block it again (3 more failing sweeps in a row).
 - A probe that cannot reach the pod for a reason of the gateway's own (a network problem on the gateway's side) looks like a dead pod. After 3 sweeps every pod so affected is blacklisted, and the cache stops scraping it. The exclusion cap keeps most of the fleet routable meanwhile, the `gateway_pod_blacklist_probe_total{verdict="dead"}` burst shows what happened, and 2 healthy sweeps lift it once the fault clears.
 - A `/health` that takes longer than the sweep's wait (`podProbeTimeout`, 5 s) is judged dead; the sglang pods answer in about 1.5 s, inside the limit. A `/v1/models` body that does not arrive in time is degraded, not dead.

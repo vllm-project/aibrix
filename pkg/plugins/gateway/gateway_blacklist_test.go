@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -410,14 +411,14 @@ func respondWith(t *testing.T, server *Server, pod *v1.Pod, status, reqID string
 }
 
 // Upstream failure statuses, as the gateway sees them in the response headers, block the pod
-// that served them once enough arrive in a row: the engine's own 500 and 503, and the 502, 503
-// and 504 Envoy answers with for a connection that could not be made or a request that timed out.
+// that served them once enough arrive in a row: a 502, 503 or 504, from the engine or from a proxy
+// in front of it. (Envoy's own local replies never get here; see recordPodResponse.)
 func Test_UpstreamFailureStatusesBlacklistThePodThatServedThem(t *testing.T) {
-	defer blacklist.SetRequestFailureThresholdForTest(5)()
 	server := recvErrorServer()
+	server.podBlacklist.SetRequestFailureThreshold(5)
 	failing, bystander := blacklistTestPod("1"), blacklistTestPod("2")
 
-	for i, code := range []string{"500", "502", "503", "504"} {
+	for i, code := range []string{"502", "503", "504", "503"} {
 		respondWith(t, server, failing, code, fmt.Sprintf("fail-%d", i))
 		assert.False(t, server.podBlacklist.IsBlacklisted(failing), "%d failures is one short of the threshold", i+1)
 	}
@@ -432,8 +433,8 @@ func Test_UpstreamFailureStatusesBlacklistThePodThatServedThem(t *testing.T) {
 // A response that is not a failure between two failures starts the count over, so a pod that
 // only now and then returns a 5xx, however often, is not blocked for it.
 func Test_UpstreamFailuresBlockOnlyInARow(t *testing.T) {
-	defer blacklist.SetRequestFailureThresholdForTest(3)()
 	server := recvErrorServer()
+	server.podBlacklist.SetRequestFailureThreshold(3)
 	pod := blacklistTestPod("1")
 
 	for i := 0; i < 20; i++ {
@@ -450,18 +451,20 @@ func Test_UpstreamFailuresBlockOnlyInARow(t *testing.T) {
 	assert.True(t, server.podBlacklist.IsBlacklisted(pod))
 }
 
-// The status says whose fault a failure is. A client error, a rate limit and a route the engine
-// does not implement are not the pod's, and a pod that answers them is alive; none blocks it, with
-// the threshold at its lowest, and none creates an entry.
+// The status says whose fault a failure is. A client error, a rate limit, a route the engine does
+// not implement and a bare 500 (the engine's answer to a request that made it throw, which a client
+// can send on purpose) are not evidence against the pod, and a pod that answers them is alive; none
+// blocks it, with the threshold at its lowest, and none creates an entry. A :status the gateway
+// cannot parse becomes a 500, so it does not count either.
 func Test_StatusesThatAreNotThePodsFaultDoNotBlacklistIt(t *testing.T) {
-	defer blacklist.SetRequestFailureThresholdForTest(1)()
 	routing.Init()
 	pod := blacklistTestPod("1")
 	pods := []*v1.Pod{pod}
 	server := recvErrorServer()
+	server.podBlacklist.SetRequestFailureThreshold(1)
 
 	for i := 0; i < 10; i++ {
-		for _, code := range []string{"200", "204", "301", "400", "401", "404", "413", "422", "429", "501"} {
+		for _, code := range []string{"200", "204", "301", "400", "401", "404", "413", "422", "429", "500", "501", "505", "not-a-status"} {
 			respondWith(t, server, pod, code, fmt.Sprintf("req-%s-%d", code, i))
 		}
 	}
@@ -478,10 +481,10 @@ func Test_StatusesThatAreNotThePodsFaultDoNotBlacklistIt(t *testing.T) {
 // failure: a client that gives up, a stream that closes early and a gRPC error all leave the pod
 // routable, with the threshold at its lowest, whether the stream context is live or cancelled.
 func Test_StreamOutcomesDoNotBlacklistAPod(t *testing.T) {
-	defer blacklist.SetRequestFailureThresholdForTest(1)()
 	pod := blacklistTestPod("1")
 	pods := []*v1.Pod{pod}
 	server := recvErrorServer()
+	server.podBlacklist.SetRequestFailureThreshold(1)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -503,8 +506,8 @@ func Test_StreamOutcomesDoNotBlacklistAPod(t *testing.T) {
 // recordPodResponse blames only the pod a request was routed to. A request that has no pod yet has
 // none to blame, and asking its context for one would wait for a pod that is never set.
 func Test_recordPodResponse_NeedsARoutedPod(t *testing.T) {
-	defer blacklist.SetRequestFailureThresholdForTest(1)()
 	server := recvErrorServer()
+	server.podBlacklist.SetRequestFailureThreshold(1)
 
 	notRouted := &processState{
 		ctx:         context.Background(),
@@ -528,8 +531,8 @@ func Test_recordPodResponse_NeedsARoutedPod(t *testing.T) {
 // pods) are never blamed, whatever their requests return: the PD router handles failures for
 // them per role, and a ModelClaim pod runs one engine per model on one pod.
 func Test_UpstreamFailuresDoNotBlacklistIgnoredPods(t *testing.T) {
-	defer blacklist.SetRequestFailureThresholdForTest(1)()
 	server := recvErrorServer()
+	server.podBlacklist.SetRequestFailureThreshold(1)
 
 	storm := blacklistTestPod("1")
 	storm.Labels = map[string]string{ctrlconstants.StormServiceNameLabelKey: "svc"}
@@ -548,28 +551,36 @@ func Test_UpstreamFailuresDoNotBlacklistIgnoredPods(t *testing.T) {
 	assert.True(t, server.podBlacklist.IsBlacklisted(plain), "the plain pod, same threshold, is blocked")
 }
 
-// AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD=0 turns this source off without touching the
-// others, and the master switch turns every source off.
-func Test_UpstreamFailureSourceCanBeTurnedOff(t *testing.T) {
-	server := recvErrorServer()
+// The request-failure source is opt-in: a Server whose blacklist was never given a threshold, in a
+// process without AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD, never blocks a pod for what its
+// requests return. A threshold of 0 turns it off without touching the other sources, and the
+// master switch turns every source off.
+func Test_UpstreamFailureSourceIsOptIn(t *testing.T) {
+	if _, set := os.LookupEnv(blacklist.EnvPodBlacklistRequestFailureThreshold); set {
+		t.Skipf("%s is set in this environment", blacklist.EnvPodBlacklistRequestFailureThreshold)
+	}
+	untouched := recvErrorServer() // no threshold set: the shipped default
+	off := recvErrorServer()
+	off.podBlacklist.SetRequestFailureThreshold(0)
 	pod := blacklistTestPod("1")
 
-	restore := blacklist.SetRequestFailureThresholdForTest(0)
 	for i := 0; i < 20; i++ {
-		respondWith(t, server, pod, "503", fmt.Sprintf("off-%d", i))
+		respondWith(t, untouched, pod, "503", fmt.Sprintf("default-%d", i))
+		respondWith(t, off, pod, "503", fmt.Sprintf("off-%d", i))
 	}
-	restore()
-	assert.False(t, server.podBlacklist.IsBlacklisted(pod))
-	tripBreaker(&server.podBlacklist, pod)
-	assert.True(t, server.podBlacklist.IsBlacklisted(pod), "the probe source still works with the request source off")
+	assert.False(t, untouched.podBlacklist.IsBlacklisted(pod), "enabling the blacklist does not enable request ejection")
+	assert.False(t, off.podBlacklist.IsBlacklisted(pod))
+	tripBreaker(&off.podBlacklist, pod)
+	assert.True(t, off.podBlacklist.IsBlacklisted(pod), "the probe source still works with the request source off")
 
-	defer blacklist.SetRequestFailureThresholdForTest(1)()
+	on := recvErrorServer()
+	on.podBlacklist.SetRequestFailureThreshold(1)
 	prev := blacklist.Enabled
 	blacklist.Enabled = false
 	defer func() { blacklist.Enabled = prev }()
 	other := blacklistTestPod("2")
-	respondWith(t, server, other, "503", "disabled")
-	assert.False(t, server.podBlacklist.IsBlacklisted(other))
+	respondWith(t, on, other, "503", "disabled")
+	assert.False(t, on.podBlacklist.IsBlacklisted(other), "the master switch is off")
 }
 
 // Test_selectTargetPod_ExcludesBlacklistedPod verifies selectTargetPod drops a
@@ -616,9 +627,9 @@ func Test_selectTargetPod_ExcludesBlacklistedPod(t *testing.T) {
 // A pod blocked by its own responses is kept out of routing like one blocked by a sweep: the
 // router is never handed it while healthy pods remain.
 func Test_selectTargetPod_ExcludesAPodBlockedByUpstreamFailures(t *testing.T) {
-	defer blacklist.SetRequestFailureThresholdForTest(3)()
 	failing, healthy1, healthy2 := blacklistTestPod("failing"), blacklistTestPod("healthy1"), blacklistTestPod("healthy2")
 	server := recvErrorServer()
+	server.podBlacklist.SetRequestFailureThreshold(3)
 	for i := 0; i < 3; i++ {
 		respondWith(t, server, failing, "503", fmt.Sprintf("fail-%d", i))
 	}
