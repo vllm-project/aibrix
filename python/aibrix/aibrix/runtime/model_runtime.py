@@ -229,6 +229,29 @@ class SharedMemoryKVController(KVController):
 # --------------------------------------------------------------------------- #
 # Real implementations (require a GPU + kvcached + engine at runtime)
 # --------------------------------------------------------------------------- #
+# Keep in sync with the ModelClaim CRD. Arbitrary process environment can
+# change Python imports, library loading, or the GPU/KV ownership of an engine.
+_ENGINE_ENV_KEYS = frozenset(
+    {
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "TOKENIZERS_PARALLELISM",
+        "VLLM_LOGGING_LEVEL",
+        "VLLM_IMAGE_FETCH_TIMEOUT",
+        "VLLM_VIDEO_FETCH_TIMEOUT",
+        "VLLM_AUDIO_FETCH_TIMEOUT",
+    }
+)
+
+
+def _validate_engine_env(engine_config: Optional[Dict]) -> None:
+    for key, value in ((engine_config or {}).get("env") or {}).items():
+        if key not in _ENGINE_ENV_KEYS:
+            raise ValueError(f"unsupported engine environment variable {key!r}")
+        if not isinstance(value, str) or "\0" in value:
+            raise ValueError(f"invalid value for engine environment variable {key!r}")
+
+
 def kvcached_env(
     ipc_name: str, extra: Optional[Dict[str, str]] = None
 ) -> Dict[str, str]:
@@ -239,11 +262,11 @@ def kvcached_env(
     on one /dev/shm segment and defeat per-model KV budgets.
     """
     env = dict(os.environ)
+    if extra:
+        env.update(extra)
     env["ENABLE_KVCACHED"] = "true"
     env["KVCACHED_AUTOPATCH"] = "1"
     env["KVCACHED_IPC_NAME"] = ipc_name
-    if extra:
-        env.update(extra)
     return env
 
 
@@ -994,7 +1017,7 @@ class SubprocessEngineLauncher(EngineLauncher):
                 str(inst.port),
                 "--enable-sleep-mode",
             ]
-        env = kvcached_env(inst.ipc_name)
+        env = kvcached_env(inst.ipc_name, (engine_config or {}).get("env"))
         env.setdefault("VLLM_SERVER_DEV_MODE", "1")  # enable /sleep, /wake_up
         cmd = [sys.executable, "-m", module]
         for key, value in _engine_args(engine_config, additional_config).items():
@@ -1946,6 +1969,7 @@ class ModelRuntime:
         additional_config: Optional[Dict[str, str]] = None,
         claim_ref: Optional[Dict[str, str]] = None,
     ) -> ModelInstance:
+        _validate_engine_env(engine_config)
         with self._operation_lock, self._lock:
             if engine == "vllm":
                 validate_vllm_parallelism(engine_config, additional_config)
