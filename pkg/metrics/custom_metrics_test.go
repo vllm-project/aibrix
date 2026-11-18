@@ -330,3 +330,47 @@ func TestEmitHistogramWithoutObservationsExportsNoQuantiles(t *testing.T) {
 		assert.Equal(t, 0, podQuantileSeries(t, TimeToFirstTokenSeconds+q, served.Name), q)
 	}
 }
+
+// A metric name without a definition entry must not vanish silently: the emit is
+// counted on aibrix_metrics_emit_dropped_total with the dropped name as the
+// metric label, while a registered name emits normally and never touches the
+// drop counter (#3506).
+func TestEmitMetricToPrometheus_DroppedEmitCounted(t *testing.T) {
+	droppedName := "test_emit_without_definition"
+	_, registered := Metrics[droppedName]
+	assert.False(t, registered, "fixture metric must not have a definition entry")
+
+	type counterCall struct {
+		name        string
+		value       float64
+		labelNames  []string
+		labelValues []string
+	}
+	var counterCalls []counterCall
+	originalCounterFn := IncrementCounterMetricFnForTest
+	defer func() { IncrementCounterMetricFnForTest = originalCounterFn }()
+	IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		counterCalls = append(counterCalls, counterCall{name: name, value: value, labelNames: labelNames, labelValues: labelValues})
+	}
+
+	var gaugeCalls []string
+	originalGaugeFn := SetGaugeMetricFnForTest
+	defer func() { SetGaugeMetricFnForTest = originalGaugeFn }()
+	SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		gaugeCalls = append(gaugeCalls, name)
+	}
+
+	// A registered name emits its gauge and never touches the drop counter.
+	EmitMetricToPrometheus(nil, nil, NumRequestsRunning, &SimpleMetricValue{Value: 3}, nil)
+	assert.Equal(t, []string{NumRequestsRunning}, gaugeCalls)
+	assert.Empty(t, counterCalls)
+
+	// A name without a definition entry is dropped, and the drop is counted.
+	EmitMetricToPrometheus(nil, nil, droppedName, &SimpleMetricValue{Value: 3}, nil)
+	assert.Len(t, counterCalls, 1)
+	assert.Equal(t, MetricsEmitDroppedTotal, counterCalls[0].name)
+	assert.Equal(t, 1.0, counterCalls[0].value)
+	assert.Equal(t, []string{"metric"}, counterCalls[0].labelNames)
+	assert.Equal(t, []string{droppedName}, counterCalls[0].labelValues)
+	assert.Len(t, gaugeCalls, 1, "the dropped emit must not reach any metric path")
+}
