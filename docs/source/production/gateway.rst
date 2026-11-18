@@ -113,11 +113,13 @@ discovery completes and returns the same 503 while its cache is unavailable.
 This only covers requests that reach the plugin; when no gateway process or
 ready Service endpoint is reachable, the front proxy controls the response.
 
-The gateway plugin serves ``GET /v1/models`` on its HTTP port. The standard
-Kubernetes Envoy route still sends this path to the metadata service; route
-it to the plugin HTTP port if clients should receive the plugin's list. For
-the default Kustomize installation, this optional HTTPRoute sends the exact
-path to the plugin Service on port 8080. The exact match takes precedence over
+The gateway plugin serves both ``GET /v1/models`` and ``GET /v1/models/`` on
+its HTTP port, including query strings, through the same handler without
+redirects. The standard Kubernetes Envoy route still sends model-list requests
+to the metadata service; route them to the plugin HTTP port if clients should
+receive the plugin's list. For the default Kustomize installation, this optional
+HTTPRoute sends the exact ``/v1/models`` path to the plugin Service on port 8080.
+The exact match takes precedence over
 the existing metadata route's prefix match, while ``/v1/files`` and
 ``/v1/batches`` keep their existing destination:
 

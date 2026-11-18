@@ -41,6 +41,42 @@ func (c *verifiedModelListTestCache) ListModelsVerified(_ context.Context, _ boo
 	return c.models, c.err
 }
 
+func TestModelListHTTPRoutes(t *testing.T) {
+	server := &Server{cache: cache.NewForTest(), modelListMode: ModelListKnown}
+	require.NoError(t, server.StartHTTPServer("127.0.0.1:0"))
+	t.Cleanup(server.Shutdown)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{http.MethodGet, "/v1/models", http.StatusOK},
+		{http.MethodGet, "/v1/models/", http.StatusOK},
+		{http.MethodGet, "/v1/models?probe=1", http.StatusOK},
+		{http.MethodGet, "/v1/models/?probe=1", http.StatusOK},
+		{http.MethodPost, "/v1/models", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/v1/models/", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/v1/models/example", http.StatusNotFound},
+		{http.MethodGet, "/v1/models-extra", http.StatusNotFound},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.httpServer.Handler.ServeHTTP(response, httptest.NewRequest(tc.method, tc.path, nil))
+			require.Equal(t, tc.status, response.Code)
+			assert.Empty(t, response.Header().Get("Location"))
+			switch tc.status {
+			case http.StatusOK:
+				assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
+				assert.JSONEq(t, `{"object":"list","data":[]}`, response.Body.String())
+			case http.StatusMethodNotAllowed:
+				assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
+				assert.JSONEq(t, `{"error":"method not allowed"}`, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleListModelsVerificationFailure(t *testing.T) {
 	verified := &verifiedModelListTestCache{
 		Store: cache.NewForTest(),
