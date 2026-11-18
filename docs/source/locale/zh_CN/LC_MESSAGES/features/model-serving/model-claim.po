@@ -605,13 +605,35 @@ msgstr "``engineConfig.env``"
 msgid ""
 "Optional literal string overrides for this engine and its workers. They "
 "override the runtime container's defaults for this engine only and are "
-"reused after an engine restart or reschedule. The runtime sets its kvcached "
-"values after applying overrides and rejects overrides for GPU visibility and "
-"vLLM sleep and wake variables. Grant ModelClaim write access only to trusted "
-"operators because engine environment variables can affect code loading. Do "
-"not use this field for credentials."
+"reused after an engine restart or reschedule."
 msgstr ""
-"可选。为该引擎及其工作进程设置字符串字面值，仅覆盖该引擎继承的 Runtime 容器默认值。引擎重启或重新调度后仍使用这些配置。Runtime 应用覆盖值后会写入自己的 kvcached 配置，并拒绝覆盖 GPU 可见性和 vLLM 休眠唤醒变量。引擎环境变量可以影响代码加载，因此只应向受信任的运维人员授予 ModelClaim 写权限。请勿在此字段中存放凭证。"
+"可选。为该引擎及其工作进程设置字符串字面值，仅覆盖该引擎继承的 Runtime 容器默认值。引擎重启或重新调度后仍使用这些配置。"
+
+#: ../../source/features/model-serving/model-claim.rst:320
+msgid ""
+"The runtime sets ``ENABLE_KVCACHED=true``, ``KVCACHED_AUTOPATCH=1`` and "
+"a per-engine ``KVCACHED_IPC_NAME`` after applying model overrides. These "
+"runtime values take precedence over any values in the claim."
+msgstr ""
+"Runtime 在应用模型的覆盖值后，会设置 ``ENABLE_KVCACHED=true``、``KVCACHED_AUTOPATCH=1`` 和每个引擎独立的 ``KVCACHED_IPC_NAME``。这些 Runtime 设置优先于 Claim 中的值。"
+
+#: ../../source/features/model-serving/model-claim.rst:324
+msgid ""
+"The runtime rejects model overrides for ``CUDA_VISIBLE_DEVICES`` and "
+"``NVIDIA_VISIBLE_DEVICES`` to preserve the device visibility set by the "
+"pool, and for ``VLLM_SERVER_DEV_MODE``, which enables the vLLM sleep and "
+"wake endpoints. The runtime defaults ``VLLM_SERVER_DEV_MODE`` to ``1`` "
+"when the container does not set it."
+msgstr ""
+"Runtime 拒绝通过模型覆盖 ``CUDA_VISIBLE_DEVICES`` 和 ``NVIDIA_VISIBLE_DEVICES``，以保留资源池配置的设备可见范围。用于开启 vLLM 休眠和唤醒端点的 ``VLLM_SERVER_DEV_MODE`` 也不可通过模型覆盖。容器未设置该变量时，Runtime 默认使用 ``1``。"
+
+#: ../../source/features/model-serving/model-claim.rst:330
+msgid ""
+"Grant ModelClaim write access only to trusted operators because engine "
+"environment variables can affect code loading. Do not use this field for "
+"credentials."
+msgstr ""
+"引擎环境变量可以影响代码加载，因此只应向受信任的运维人员授予 ModelClaim 写权限。请勿在此字段中存放凭证。"
 
 #: ../../source/features/model-serving/model-claim.rst:307
 msgid "``perGPU.maximumFootprint``"
