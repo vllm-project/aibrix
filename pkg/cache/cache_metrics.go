@@ -444,6 +444,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 			c.updateRealtimeRunningRequestsDrainRate1m(pod)
 			c.updateRealtimeOutputTokenRateEWMA(pod)
+			c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
 
 			// Handle Prometheus-based metrics separately (these require PromQL queries)
 			if c.prometheusApi != nil {
@@ -893,6 +894,96 @@ func (c *Store) updateRealtimeOutputTokenRateEWMA(pod *Pod) {
 	_ = c.updatePodRecord(pod, "", metrics.RealtimeOutputTokenRateEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: ewma})
 	klog.V(4).InfoS("Updating output token rate metric", "pod", pod.Name,
 		"completed_output_tokens", completed, "rate_1m", rate, metrics.RealtimeOutputTokenRateEWMA, ewma)
+}
+
+const (
+	loadBalanceCapacityMinSamplesEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES"
+	// From the runs on #3491 (short outputs): once a pod's first seconds are left out, the
+	// per-request rate of its first k completed requests is within 10% of its steady value from
+	// k = 8, for all 70 same-speed (run, pod) pairs and at the 95th percentile of the 14
+	// heterogeneous ones. It covers estimation noise only. A fresh engine's first requests are
+	// slower than its steady state, and no sample count this small averages that out.
+	loadBalanceCapacityMinSamplesDefault = 8
+)
+
+// loadBalanceCapacityMinSamples is how many requests with known output tokens a pod must have
+// completed within the rate window for the window to update its per-request rate. 0 lets every
+// window with a completed request update it.
+var loadBalanceCapacityMinSamples = utils.LoadEnvNonNegativeInt(loadBalanceCapacityMinSamplesEnv, loadBalanceCapacityMinSamplesDefault)
+
+// readOutputRateCounters reads the four completion counters as one consistent set. donePodStats
+// updates them under the pod's stats lock, so they are read under it too: a metrics tick never
+// sees a request's tokens without its time or its sample.
+func (c *Store) readOutputRateCounters(pod *Pod) (tokens, busyNanos, samples, finished int64) {
+	mu := c.podStatsLockFor(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	mu.Lock()
+	defer mu.Unlock()
+	return atomic.LoadInt64(&pod.completedOutputTokens),
+		atomic.LoadInt64(&pod.completedOutputBusyNanos),
+		atomic.LoadInt64(&pod.completedOutputRequests),
+		atomic.LoadInt64(&pod.completedRequests)
+}
+
+// outputRateSeries name the four counters whose deltas over one window give the per-request
+// output-token rate and the share of requests that finished without output tokens.
+var outputRateSeries = []string{
+	"output_rate_tokens",       // completedOutputTokens
+	"output_rate_busy_seconds", // completedOutputBusyNanos
+	"output_rate_requests",     // completedOutputRequests
+	"output_rate_finished",     // completedRequests
+}
+
+// updateRealtimeOutputTokensPerRequestSecondEWMA maintains two pod metrics from one window of the
+// gateway-tracked completion counters.
+//
+// RealtimeOutputTokensPerRequestSecondEWMA is the pod's per-request decode rate: the output tokens
+// completed in the window divided by the time those requests spent on the pod. Doubling a pod's
+// traffic doubles both terms, so below saturation it does not depend on how traffic is split,
+// which RealtimeOutputTokenRateEWMA does (#3450). A faster replica finishes each request sooner
+// and measures higher. When requests queue on a saturated replica their time on the pod grows and
+// the estimate falls. No router reads it yet.
+//
+// What it does not see:
+//   - A request that finishes without output tokens (aborted, timed out, failed, or completed
+//     without usage) is in neither term. A pod whose slowest requests are abandoned therefore
+//     reads faster than it is. RealtimeRequestsWithoutOutputTokensFraction1m makes that visible.
+//   - Time on the pod is the whole request, from addPodStats to donePodStats, so it includes
+//     queueing and prompt processing. Pods that receive different request mixes read differently
+//     even on the same hardware.
+//
+// The window updates the rate only if at least loadBalanceCapacityMinSamples requests with known
+// output tokens completed in it. Otherwise the previous estimate is kept, as it is for a window
+// with no completed tokens in updateRealtimeOutputTokenRateEWMA.
+func (c *Store) updateRealtimeOutputTokensPerRequestSecondEWMA(pod *Pod) {
+	tokens, busyNanos, samples, finished := c.readOutputRateCounters(pod)
+	busySeconds := float64(busyNanos) / float64(time.Second)
+
+	deltas, ok := c.calculateDeltas1m(pod, outputRateSeries, []float64{float64(tokens), busySeconds, float64(samples), float64(finished)})
+	if !ok {
+		return
+	}
+	dTokens, dBusy, dSamples, dFinished := deltas[0], deltas[1], deltas[2], deltas[3]
+
+	if dFinished > 0 {
+		without := math.Min(1, math.Max(0, 1-dSamples/dFinished))
+		_ = c.updatePodRecord(pod, "", metrics.RealtimeRequestsWithoutOutputTokensFraction1m, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: without})
+	}
+
+	if dTokens <= 0 || dBusy <= 0 || dSamples < float64(loadBalanceCapacityMinSamples) {
+		return
+	}
+	rate := dTokens / dBusy
+
+	ewma := rate
+	if prev, ok := pod.Metrics.Load(metrics.RealtimeOutputTokensPerRequestSecondEWMA); ok {
+		alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
+		ewma = alpha*rate + (1-alpha)*prev.Value.GetSimpleValue()
+	}
+	_ = c.updatePodRecord(pod, "", metrics.RealtimeOutputTokensPerRequestSecondEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: ewma})
+	klog.V(4).InfoS("Updating per-request output token rate metric", "pod", pod.Name,
+		"window_output_tokens", dTokens, "window_busy_seconds", dBusy, "window_requests", dSamples,
+		"window_finished", dFinished, "rate_1m", rate,
+		metrics.RealtimeOutputTokensPerRequestSecondEWMA, ewma)
 }
 
 // updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage.

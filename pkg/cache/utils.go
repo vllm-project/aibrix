@@ -264,7 +264,71 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 	return delta / elapsed
 }
 
-// The ~1-minute window shared by calculateRate1m and calculateMean1m.
+// calculateDeltas1m returns how much each of several monotonically increasing counters grew over
+// the same approximate 1-minute window as calculateRate1m. ok is false when there is not enough
+// history yet.
+//
+// The counters are snapshotted together, at the same instants and under one lock, and every delta
+// is taken against the same baseline snapshot. Independent calculateRate1m histories could each
+// admit their throttled snapshot on a different refresh tick, and values derived from two of them
+// (a ratio, a count that gates it) would then describe different windows. names identify the
+// series; their histories are only written here, as one group.
+func (c *Store) calculateDeltas1m(pod *Pod, names []string, values []float64) (deltas []float64, ok bool) {
+	keys := make([]string, len(names))
+	for i, name := range names {
+		keys[i] = rateHistoryKey(pod, "", name)
+	}
+	now := time.Now()
+
+	rateCalculator.mu.Lock()
+	defer rateCalculator.mu.Unlock()
+
+	hists := make([][]MetricSnapshot, len(keys))
+	for i, key := range keys {
+		hists[i] = rateCalculator.history[key]
+		if len(hists[i]) != len(hists[0]) {
+			// Never written apart, so this should not happen. Start the group over rather than
+			// pair snapshots of different instants.
+			for j := range hists {
+				hists[j] = nil
+			}
+			break
+		}
+	}
+	if len(hists[0]) == 0 || now.Sub(hists[0][len(hists[0])-1].Timestamp) >= window1mSnapshotInterval {
+		// The histories only change when a snapshot is admitted, so that is the only time they are
+		// pruned and stored: cleanupOldSnapshots copies the history, and between two snapshots
+		// (at most window1mSnapshotInterval) nothing new can age out of a 3-minute history that
+		// matters to a 1-minute baseline.
+		for i, key := range keys {
+			hists[i] = append(hists[i], MetricSnapshot{Value: values[i], Timestamp: now})
+			// Same timestamps in every series, so the same snapshots are dropped from each.
+			hists[i] = cleanupOldSnapshots(hists[i], now, window1mHistoryMaxAge, window1mHistoryMaxCount)
+			rateCalculator.history[key] = hists[i]
+		}
+	}
+
+	if len(hists[0]) < 2 {
+		return nil, false
+	}
+	base := baseSnapshotIndex1m(hists[0], now)
+	if now.Sub(hists[0][base].Timestamp).Seconds() < window1mMinElapsed {
+		return nil, false
+	}
+	deltas = make([]float64, len(values))
+	reset := false
+	for i := range values {
+		deltas[i] = values[i] - hists[i][base].Value
+		reset = reset || deltas[i] < 0
+	}
+	if reset {
+		// Counters never decrease; treat it as a reset of the group and use the current values.
+		copy(deltas, values)
+	}
+	return deltas, true
+}
+
+// The ~1-minute window shared by calculateRate1m, calculateDeltas1m and calculateMean1m.
 const (
 	window1mSnapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
 	window1mTarget           = 1 * time.Minute // desired look-back window; load-balance's capacity warm-up default (loadBalanceCapacityWarmupDefault) matches it
@@ -286,11 +350,17 @@ func appendSnapshot1m(history []MetricSnapshot, snapshot MetricSnapshot) []Metri
 // If we have less than 1 minute of history, this naturally falls back to the oldest
 // snapshot in the buffer. history must hold at least 2 snapshots.
 func baseSnapshot1m(history []MetricSnapshot, now time.Time) *MetricSnapshot {
+	return &history[baseSnapshotIndex1m(history, now)]
+}
+
+// baseSnapshotIndex1m is the index of the snapshot baseSnapshot1m returns. calculateDeltas1m uses
+// it to read the same position in several histories that hold snapshots of the same instants.
+func baseSnapshotIndex1m(history []MetricSnapshot, now time.Time) int {
 	target := now.Add(-window1mTarget)
-	base := &history[0]
+	base := 0
 	for i := 1; i < len(history)-1; i++ {
-		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(base.Timestamp.Sub(target)) {
-			base = &history[i]
+		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(history[base].Timestamp.Sub(target)) {
+			base = i
 		}
 	}
 	return base
