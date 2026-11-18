@@ -67,6 +67,17 @@ spec:
                     additionalProperties:
                       type: string
                     type: object
+                  env:
+                    additionalProperties:
+                      type: string
+                    maxProperties: 7
+                    type: object
+                    x-kubernetes-validations:
+                    - message: engineConfig.env contains an unsupported environment
+                        variable
+                      rule: self.all(k, k in ['OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+                        'TOKENIZERS_PARALLELISM', 'VLLM_LOGGING_LEVEL', 'VLLM_IMAGE_FETCH_TIMEOUT',
+                        'VLLM_VIDEO_FETCH_TIMEOUT', 'VLLM_AUDIO_FETCH_TIMEOUT'])
                 type: object
               modelName:
                 type: string

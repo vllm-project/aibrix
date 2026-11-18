@@ -312,6 +312,14 @@ The sample claims:
    * - ``engineConfig.args``
      - Engine flags and their values, as strings. An empty string adds a flag
        without a value.
+   * - ``engineConfig.env``
+     - Optional literal string overrides for this engine and its workers.
+       They override the runtime container's defaults for this engine only and
+       are reused after an engine restart or reschedule. Supported variables
+       are ``OMP_NUM_THREADS``, ``MKL_NUM_THREADS``,
+       ``TOKENIZERS_PARALLELISM``, ``VLLM_LOGGING_LEVEL``,
+       ``VLLM_IMAGE_FETCH_TIMEOUT``, ``VLLM_VIDEO_FETCH_TIMEOUT`` and
+       ``VLLM_AUDIO_FETCH_TIMEOUT``. Do not use this field for credentials.
    * - ``perGPU.maximumFootprint``
      - Needed for placement. The most GPU memory one instance holds on a GPU
        apart from its KV cache. That covers weights, CUDA graphs, activations

@@ -86,11 +86,15 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		ginkgo.Entry("parallel alias", func(c *modelapi.ModelClaim) {
 			c.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Args: map[string]string{"-tp": "0"}}
 		}, "spec.engineConfig.args"),
+		ginkgo.Entry("protected engine environment", func(c *modelapi.ModelClaim) {
+			c.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{"KVCACHED_IPC_NAME": "override"}}
+		}, "spec.engineConfig.env"),
 	)
 
 	ginkgo.It("preserves defaults, perGPU updates and CEL immutability", func() {
 		claim := newClaim("valid")
 		claim.Spec.ArtifactURL = "/models/weights"
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{"OMP_NUM_THREADS": "1"}}
 		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
 		gomega.Expect(claim.Spec.Engine).To(gomega.Equal("vllm"))
 		gomega.Expect(claim.Spec.ModelName).To(gomega.BeNil())
@@ -99,6 +103,9 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		gomega.Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(before))).To(gomega.Succeed())
 		changed := claim.DeepCopy()
 		changed.Spec.ArtifactURL = "another/model"
+		gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, changed, client.MergeFrom(claim)))).To(gomega.BeTrue())
+		changed = claim.DeepCopy()
+		changed.Spec.EngineConfig.Env["OMP_NUM_THREADS"] = "2"
 		gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, changed, client.MergeFrom(claim)))).To(gomega.BeTrue())
 		claim.Status.Phase = modelapi.ModelClaimPending
 		gomega.Expect(k8sClient.Status().Update(ctx, claim)).To(gomega.Succeed())

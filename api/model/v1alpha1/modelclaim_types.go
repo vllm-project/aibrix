@@ -173,6 +173,13 @@ type ModelClaimEngineConfig struct {
 	// an empty string value.
 	// +optional
 	Args map[string]string `json:"args,omitempty"`
+
+	// Env overrides supported environment variables for this engine process.
+	// Values are literal strings and must not contain credentials.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=7
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k in ['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'TOKENIZERS_PARALLELISM', 'VLLM_LOGGING_LEVEL', 'VLLM_IMAGE_FETCH_TIMEOUT', 'VLLM_VIDEO_FETCH_TIMEOUT', 'VLLM_AUDIO_FETCH_TIMEOUT'])",message="engineConfig.env contains an unsupported environment variable"
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ModelClaimPhase is a high-level summary of where a ModelClaim is in its

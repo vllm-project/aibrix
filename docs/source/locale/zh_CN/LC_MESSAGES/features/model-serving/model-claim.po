@@ -597,6 +597,22 @@ msgid ""
 msgstr ""
 "引擎参数及其取值，均为字符串。值为空字符串时，只添加参数本身，不带值。"
 
+#: ../../source/features/model-serving/model-claim.rst:315
+msgid "``engineConfig.env``"
+msgstr "``engineConfig.env``"
+
+#: ../../source/features/model-serving/model-claim.rst:316
+msgid ""
+"Optional literal string overrides for this engine and its workers. They "
+"override the runtime container's defaults for this engine only and are "
+"reused after an engine restart or reschedule. Supported variables are "
+"``OMP_NUM_THREADS``, ``MKL_NUM_THREADS``, ``TOKENIZERS_PARALLELISM``, "
+"``VLLM_LOGGING_LEVEL``, ``VLLM_IMAGE_FETCH_TIMEOUT``, "
+"``VLLM_VIDEO_FETCH_TIMEOUT`` and ``VLLM_AUDIO_FETCH_TIMEOUT``. Do not use "
+"this field for credentials."
+msgstr ""
+"可选。为该引擎及其工作进程设置字符串字面值，仅覆盖该引擎继承的 Runtime 容器默认值。引擎重启或重新调度后仍使用这些配置。支持的变量包括 ``OMP_NUM_THREADS``、``MKL_NUM_THREADS``、``TOKENIZERS_PARALLELISM``、``VLLM_LOGGING_LEVEL``、``VLLM_IMAGE_FETCH_TIMEOUT``、``VLLM_VIDEO_FETCH_TIMEOUT`` 和 ``VLLM_AUDIO_FETCH_TIMEOUT``。请勿在此字段中存放凭证。"
+
 #: ../../source/features/model-serving/model-claim.rst:307
 msgid "``perGPU.maximumFootprint``"
 msgstr "``perGPU.maximumFootprint``"
