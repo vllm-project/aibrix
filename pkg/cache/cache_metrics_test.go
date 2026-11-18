@@ -376,7 +376,9 @@ func TestSyncRunningRequestsGloballyExportsGauge(t *testing.T) {
 				var parser expfmt.TextParser
 				families, err := parser.TextToMetricFamilies(w.Body)
 				require.NoError(t, err)
-				for _, m := range families[metrics.RealtimeNumRequestsRunning].GetMetric() {
+				family := families[metrics.RealtimeNumRequestsRunning]
+				require.NotNil(t, family, "missing %s metric family in /metrics response", metrics.RealtimeNumRequestsRunning)
+				for _, m := range family.GetMetric() {
 					name, _ := metrics.GetLabelValueForKey(m, "pod")
 					namespace, _ := metrics.GetLabelValueForKey(m, "namespace")
 					if name == pod.Name && namespace == pod.Namespace {
