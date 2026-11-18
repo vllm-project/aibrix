@@ -40,6 +40,7 @@ from aibrix.openai_frontend.schemas.responses import (
     CreateResponseRequest,
     ResponseCompactParams,
 )
+from aibrix.openai_frontend.utils.utils import ClientError
 
 
 @pytest.mark.asyncio
@@ -163,6 +164,277 @@ async def test_responses_output_rejected_before_forwarding(tmp_path, invalid):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [200, 422])
+async def test_vllm_omni_video_sync_preserves_multipart_and_response(status_code):
+    engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
+    engine._set_state(EngineState.READY)
+    path = "/v1/videos/sync?response_format=json&flag=a%2Fb&flag=c"
+    fields = {
+        "model": "minimax-h3",
+        "prompt": "参考图1与参考图2，生成视频。",
+        "short_edge": "768",
+        "aspect_ratio": "auto",
+        "num_inference_steps": "1",
+        "flow_shift": "12.0",
+        "quality": "lossless",
+        "seed": "0",
+        "extra_params": '{"task":"ref2va","duration":5,"audio_flow_shift":3.0,'
+        '"modalities":["video"],"stream":false}',
+    }
+    upload = httpx.Request(
+        "POST",
+        f"http://frontend{path}",
+        files=[
+            *((name, (None, value)) for name, value in fields.items()),
+            ("input_references", ("first.png", b"\x89PNG\r\n\x1a\nfirst", "image/png")),
+            (
+                "input_references",
+                ("second.png", b"\x89PNG\r\n\x1a\nsecond", "image/png"),
+            ),
+        ],
+    )
+    body = upload.read()
+    content = (
+        b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom\x00\xffvideo"
+        if status_code == 200
+        else b'{"detail":[{"loc":["body","model"],"msg":"Unknown model"}]}'
+    )
+    content_type = "video/mp4" if status_code == 200 else "application/json"
+
+    class Body(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            for offset in range(0, len(content), 7):
+                yield content[offset : offset + 7]
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = Body()
+    forwarded = []
+
+    async def upstream(request):
+        if request.method == "POST":
+            forwarded.append(
+                (
+                    request.method,
+                    request.url.raw_path,
+                    request.headers["content-type"],
+                    request.headers["content-length"],
+                    await request.aread(),
+                )
+            )
+            if status_code == 200:
+                return httpx.Response(
+                    200, json={"id": "video_gen_test", "status": "queued"}
+                )
+        elif request.method == "DELETE":
+            return httpx.Response(200, json={"deleted": True})
+        elif request.url.path == "/v1/videos/video_gen_test":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "video_gen_test",
+                    "status": "completed",
+                    "model": "minimax-h3",
+                    "inference_time_s": 12.3456,
+                    "stage_durations": {"diffusion": 11.25},
+                    "peak_memory_mb": 1234.5678,
+                },
+            )
+        else:
+            assert request.url.path == "/v1/videos/video_gen_test/content"
+        return httpx.Response(
+            status_code,
+            stream=stream,
+            headers={
+                "content-type": content_type,
+                "content-disposition": 'attachment; filename="video.mp4"',
+            },
+        )
+
+    engine._subprocess._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://inner"
+    )
+    app = FastApiFrontend(
+        engine, restricted_apis=[["inference", "x-test-key", "expected"]]
+    ).app
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://frontend"
+        ) as client:
+            headers = {
+                "content-type": upload.headers["content-type"],
+                "content-length": upload.headers["content-length"],
+            }
+            denied = await client.post(path, content=body, headers=headers)
+            assert denied.status_code == 401 and not forwarded
+            headers["x-test-key"] = "expected"
+
+            async def chunks():
+                for offset in range(0, len(body), 64):
+                    yield body[offset : offset + 64]
+
+            response = await client.post(path, content=chunks(), headers=headers)
+            assert response.status_code == status_code, response.text
+            assert response.content == content
+            assert response.headers["content-type"] == content_type
+            if status_code == 200:
+                assert "content-disposition" not in response.headers
+                assert response.headers["x-request-id"].startswith("video_sync-")
+                assert response.headers["x-model"] == "minimax-h3"
+                assert response.headers["x-inference-time-s"] == "12.346"
+                assert response.headers["x-stage-durations"] == '{"diffusion":11.25}'
+                assert response.headers["x-peak-memory-mb"] == "1234.568"
+            assert forwarded == [
+                (
+                    "POST",
+                    path.replace("/sync", "").encode(),
+                    upload.headers["content-type"],
+                    upload.headers["content-length"],
+                    body,
+                )
+            ]
+            assert stream.closed and not engine._request_done
+            assert not engine._stream_closers
+    finally:
+        await engine.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["disconnect", "cancel", "shutdown"])
+async def test_multipart_abort_after_upload_closes_upstream(outcome):
+    uploaded, closed = asyncio.Event(), asyncio.Event()
+    body = b'--b\r\nContent-Disposition: form-data; name="model"\r\n\r\nm\r\n--b--\r\n'
+    received = []
+
+    async def upstream(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            received.append(await reader.readexactly(len(body)))
+            uploaded.set()
+            assert await reader.read() == b""
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            closed.set()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    engine = ProxyEngine(
+        ["unused"],
+        engine_port=server.sockets[0].getsockname()[1],
+        spec=VLLM_OMNI_SPEC,
+        fetch_media=False,
+    )
+    messages = asyncio.Queue()
+    for chunk, more_body in ((body[:20], True), (body[20:], False)):
+        messages.put_nowait(
+            {"type": "http.request", "body": chunk, "more_body": more_body}
+        )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/audio/transcriptions",
+            "query_string": b"",
+            "headers": [
+                (b"content-type", b"multipart/form-data; boundary=b"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        },
+        messages.get,
+    )
+    task = None
+    try:
+        await engine._subprocess.start_client()
+        engine._set_state(EngineState.READY)
+        task = asyncio.create_task(engine.forward_multipart(request.url.path, request))
+        await asyncio.wait_for(uploaded.wait(), 2)
+        assert received == [body] and len(engine._in_flight) == 1
+
+        if outcome == "disconnect":
+            messages.put_nowait({"type": "http.disconnect"})
+        elif outcome == "shutdown":
+            await asyncio.wait_for(engine.aclose(), 2)
+        else:
+            task.cancel()
+        error = asyncio.CancelledError if outcome == "cancel" else ClientError
+        with pytest.raises(error):
+            await asyncio.wait_for(asyncio.shield(task), 2)
+        await asyncio.wait_for(closed.wait(), 2)
+        assert not engine._in_flight and not engine._request_done
+        if outcome != "shutdown":
+            # Abort only this request, preserving the shared connection pool.
+            assert not engine._subprocess._client.is_closed
+    finally:
+        await engine.aclose()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        server.close()
+        await server.wait_closed()
+        if uploaded.is_set():
+            await asyncio.wait_for(closed.wait(), 2)
+
+
+@pytest.mark.asyncio
+async def test_multipart_disconnect_closes_response_returned_during_cancellation():
+    uploaded = asyncio.Event()
+    messages = asyncio.Queue()
+    messages.put_nowait(
+        {"type": "http.request", "body": b"--b--\r\n", "more_body": False}
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/audio/transcriptions",
+            "query_string": b"",
+            "headers": [(b"content-type", b"multipart/form-data; boundary=b")],
+        },
+        messages.get,
+    )
+
+    class Body(httpx.AsyncByteStream):
+        close_calls = 0
+
+        async def __aiter__(self):
+            yield b"video"
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    stream = Body()
+    raw = httpx.Response(200, stream=stream)
+
+    async def upstream(request):
+        await request.aread()
+        uploaded.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Model headers arriving as cancellation is delivered.
+            return raw
+
+    engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
+    engine._set_state(EngineState.READY)
+    engine._subprocess._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://inner"
+    )
+    task = asyncio.create_task(engine.forward_multipart(request.url.path, request))
+    try:
+        await asyncio.wait_for(uploaded.wait(), 2)
+        messages.put_nowait({"type": "http.disconnect"})
+        with pytest.raises(ClientError, match="Client disconnected"):
+            await asyncio.wait_for(asyncio.shield(task), 2)
+        assert raw.is_closed and stream.close_calls == 1
+        assert not engine._in_flight and not engine._request_done
+    finally:
+        await engine.aclose()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("buffered", [False, True])
 async def test_native_stream_preserves_encoding_query_and_shutdown(buffered):
     engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
@@ -277,13 +549,14 @@ async def test_stream_close_survives_shutdown_and_repeated_cancel(
         async def consume():
             nonlocal iterator
             if mode == "multipart":
-
-                async def receive():
-                    return {
+                messages = asyncio.Queue()
+                messages.put_nowait(
+                    {
                         "type": "http.request",
                         "body": b"--b--\r\n",
                         "more_body": False,
                     }
+                )
 
                 request = Request(
                     {
@@ -297,7 +570,7 @@ async def test_stream_close_survives_shutdown_and_repeated_cancel(
                             (b"content-type", b"multipart/form-data; boundary=b")
                         ],
                     },
-                    receive,
+                    messages.get,
                 )
                 response = await engine.forward_multipart(request.url.path, request)
                 iterator = response.body_iterator

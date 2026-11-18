@@ -44,8 +44,9 @@ import (
 // running-request snapshot, and the candidate stage is left with nothing to save.
 //
 // Measured numbers are logged rather than only asserted, so the table in #3463 can be
-// reproduced from the test output. The bounds below are the behavior this commit pins: the
-// without-cap decision is bounded by K, and with the cap it is bounded by the ready set.
+// reproduced from the test output. The bounds below are the behavior this commit pins: without
+// the cap the decision is bounded by K, with the cap and no candidate stage it is bounded by the
+// ready set, and with both it is bounded by K because the filter now runs on the candidate set.
 //
 // The ready set here is 1,000 pods, not the 5,000 used in #3463: a 5,000-pod read can overrun the
 // 100 ms bound on one running-request read (pkg/cache/cache_running_requests.go) under the race
@@ -123,10 +124,11 @@ func TestSelectTargetPod_RedisCommandsPerDecision(t *testing.T) {
 	// The upper bound is what catches a filter that reads Redis itself instead of through the
 	// per-decision snapshot: that doubles the read, so the count would land near 2n.
 	assert.Less(t, inflight, 2*n, "the filter shares the snapshot instead of reading twice")
-	// Pinned current behavior, and the reason #3463 exists: the cap's filter reads the full
-	// ready set first, which fills the snapshot the candidate stage would have read, so the
-	// two settings do not compose. The ordering change proposes 22 here instead of 1,006.
-	assert.GreaterOrEqual(t, both, n,
-		"with requestsInflight the filter reads the full ready set before candidate selection, "+
-			"so the candidate stage does not bound the read")
+	// The reason #3463 exists, now fixed: the cap's filter used to read the full ready set
+	// first, which filled the snapshot the candidate stage would have read, so the two
+	// settings did not compose. It runs on the candidate set now, so this is bounded by K
+	// (22 commands) instead of the ready set (5,006).
+	assert.LessOrEqual(t, both, 40,
+		"with requestsInflight the filter runs on the candidate set, so the candidate stage "+
+			"still bounds the read")
 }

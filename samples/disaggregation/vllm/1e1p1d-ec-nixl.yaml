@@ -1,0 +1,144 @@
+# Encode/Prefill/Decode (EPD) for a multimodal model where the prefill pod pulls
+# encoder outputs from the encode pod over NIXL (ECCPUConnector), so no shared
+# storage is needed. The gateway passes the encode pod's ec_transfer_params to
+# the prefill request. VLLM_EC_SIDE_CHANNEL_HOST must be the encode pod's IP:
+# that is the address it hands out. ECCPUConnector needs vLLM 0.32.0 or later
+# and VLLM_USE_V2_MODEL_RUNNER=1.
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: vllm-1e1p1d-ec-nixl
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: vllm-1e1p1d-ec-nixl
+  template:
+    metadata:
+      labels:
+        app: vllm-1e1p1d-ec-nixl
+    spec:
+      roles:
+        - name: encode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen2.5-vl-3b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: encode
+                  image: vllm/vllm-openai:v0.32.0
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --served-model-name qwen2.5-vl-3b \
+                      --enforce-eager \
+                      --no-enable-prefix-caching \
+                      --max-num-batched-tokens 65536 \
+                      --ec-transfer-config '{"ec_connector":"ECCPUConnector","ec_role":"ec_producer","ec_connector_extra_config":{"ec_enable_nixl":true,"ec_cpu_bytes":4294967296}}'
+                  env:
+                    - name: VLLM_USE_V2_MODEL_RUNNER
+                      value: "1"
+                    - name: VLLM_EC_SIDE_CHANNEL_HOST
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: VLLM_EC_SIDE_CHANNEL_PORT
+                      value: "5601"
+                  volumeMounts:
+                    - name: shared-mem
+                      mountPath: /dev/shm
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+              volumes:
+                - name: shared-mem
+                  emptyDir:
+                    medium: Memory
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen2.5-vl-3b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: prefill
+                  image: vllm/vllm-openai:v0.32.0
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --served-model-name qwen2.5-vl-3b \
+                      --enforce-eager \
+                      --ec-transfer-config '{"ec_connector":"ECCPUConnector","ec_role":"ec_consumer","ec_connector_extra_config":{"ec_enable_nixl":true,"ec_cpu_bytes":4294967296}}' \
+                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+                  env:
+                    - name: VLLM_USE_V2_MODEL_RUNNER
+                      value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                  volumeMounts:
+                    - name: shared-mem
+                      mountPath: /dev/shm
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+              volumes:
+                - name: shared-mem
+                  emptyDir:
+                    medium: Memory
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen2.5-vl-3b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: decode
+                  image: vllm/vllm-openai:v0.32.0
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --served-model-name qwen2.5-vl-3b \
+                      --enforce-eager \
+                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+                  env:
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                  volumeMounts:
+                    - name: shared-mem
+                      mountPath: /dev/shm
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+              volumes:
+                - name: shared-mem
+                  emptyDir:
+                    medium: Memory
