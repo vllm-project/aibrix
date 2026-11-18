@@ -13,6 +13,12 @@ Source: [load_balance.go](load_balance.go). Environment variables:
 `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` and [multi_router_readme.md](multi_router_readme.md)),
 so its `ScoreAll` runs on most requests, not only when it is selected explicitly.
 
+Related: periodic load-outlier **exclusion** (blacklist until the next sweep) lives in
+[`blacklist/pod_load_blacklist.go`](../blacklist/pod_load_blacklist.go) and is documented in
+[blacklist/README.md](../blacklist/README.md#4-load-outlier-flag-and-flaky-re-add). That path is not
+the imbalance gate described below, and the two are independent: the gate runs with the pod
+blacklist on or off, and when the blacklist has excluded pods it narrows the pods that are left.
+
 ## Score
 
 ```
