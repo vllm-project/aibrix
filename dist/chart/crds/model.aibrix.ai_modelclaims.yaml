@@ -70,14 +70,14 @@ spec:
                   env:
                     additionalProperties:
                       type: string
-                    maxProperties: 7
                     type: object
                     x-kubernetes-validations:
-                    - message: engineConfig.env contains an unsupported environment
-                        variable
-                      rule: self.all(k, k in ['OMP_NUM_THREADS', 'MKL_NUM_THREADS',
-                        'TOKENIZERS_PARALLELISM', 'VLLM_LOGGING_LEVEL', 'VLLM_IMAGE_FETCH_TIMEOUT',
-                        'VLLM_VIDEO_FETCH_TIMEOUT', 'VLLM_AUDIO_FETCH_TIMEOUT'])
+                    - message: engineConfig.env cannot override runtime-managed environment
+                        variables
+                      rule: '!(''ENABLE_KVCACHED'' in self || ''KVCACHED_AUTOPATCH''
+                        in self || ''KVCACHED_IPC_NAME'' in self || ''CUDA_VISIBLE_DEVICES''
+                        in self || ''NVIDIA_VISIBLE_DEVICES'' in self || ''VLLM_SERVER_DEV_MODE''
+                        in self)'
                 type: object
               modelName:
                 type: string

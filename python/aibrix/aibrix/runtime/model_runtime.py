@@ -229,25 +229,27 @@ class SharedMemoryKVController(KVController):
 # --------------------------------------------------------------------------- #
 # Real implementations (require a GPU + kvcached + engine at runtime)
 # --------------------------------------------------------------------------- #
-# Keep in sync with the ModelClaim CRD. Arbitrary process environment can
-# change Python imports, library loading, or the GPU/KV ownership of an engine.
-_ENGINE_ENV_KEYS = frozenset(
+# Keep in sync with the reserved keys in the ModelClaim CRD.
+_RESERVED_ENGINE_ENV_KEYS = frozenset(
     {
-        "OMP_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "TOKENIZERS_PARALLELISM",
-        "VLLM_LOGGING_LEVEL",
-        "VLLM_IMAGE_FETCH_TIMEOUT",
-        "VLLM_VIDEO_FETCH_TIMEOUT",
-        "VLLM_AUDIO_FETCH_TIMEOUT",
+        "ENABLE_KVCACHED",
+        "KVCACHED_AUTOPATCH",
+        "KVCACHED_IPC_NAME",
+        "CUDA_VISIBLE_DEVICES",
+        "NVIDIA_VISIBLE_DEVICES",
+        "VLLM_SERVER_DEV_MODE",
     }
 )
 
 
 def _validate_engine_env(engine_config: Optional[Dict]) -> None:
     for key, value in ((engine_config or {}).get("env") or {}).items():
-        if key not in _ENGINE_ENV_KEYS:
-            raise ValueError(f"unsupported engine environment variable {key!r}")
+        if key in _RESERVED_ENGINE_ENV_KEYS:
+            raise ValueError(
+                f"cannot override runtime-managed environment variable {key!r}"
+            )
+        if not key or "=" in key or "\0" in key:
+            raise ValueError(f"invalid engine environment variable name {key!r}")
         if not isinstance(value, str) or "\0" in value:
             raise ValueError(f"invalid value for engine environment variable {key!r}")
 
