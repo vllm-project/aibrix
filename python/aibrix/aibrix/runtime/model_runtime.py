@@ -231,9 +231,6 @@ class SharedMemoryKVController(KVController):
 # --------------------------------------------------------------------------- #
 _RESERVED_ENGINE_ENV_KEYS = frozenset(
     {
-        "ENABLE_KVCACHED",
-        "KVCACHED_AUTOPATCH",
-        "KVCACHED_IPC_NAME",
         "CUDA_VISIBLE_DEVICES",
         "NVIDIA_VISIBLE_DEVICES",
         "VLLM_SERVER_DEV_MODE",
@@ -265,6 +262,7 @@ def kvcached_env(
     env = dict(os.environ)
     if extra:
         env.update(extra)
+    # Runtime-managed kvcached settings take precedence over model overrides.
     env["ENABLE_KVCACHED"] = "true"
     env["KVCACHED_AUTOPATCH"] = "1"
     env["KVCACHED_IPC_NAME"] = ipc_name
