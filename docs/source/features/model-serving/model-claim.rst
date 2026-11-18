@@ -315,11 +315,11 @@ The sample claims:
    * - ``engineConfig.env``
      - Optional literal string overrides for this engine and its workers. They
        override the runtime container's defaults for this engine only and are
-       reused after an engine restart or reschedule. At engine startup, the
-       runtime rejects overrides for kvcached, GPU visibility and vLLM sleep
-       and wake variables. Grant ModelClaim write access only to trusted operators
-       because engine environment variables can affect code loading. Do not use
-       this field for credentials.
+       reused after an engine restart or reschedule. The runtime sets its
+       kvcached values after applying overrides and rejects overrides for GPU
+       visibility and vLLM sleep and wake variables. Grant ModelClaim write
+       access only to trusted operators because engine environment variables can
+       affect code loading. Do not use this field for credentials.
    * - ``perGPU.maximumFootprint``
      - Needed for placement. The most GPU memory one instance holds on a GPU
        apart from its KV cache. That covers weights, CUDA graphs, activations

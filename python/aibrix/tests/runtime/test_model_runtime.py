@@ -1118,7 +1118,15 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
     for name, config in (
         (
             "override",
-            {"env": {"OMP_NUM_THREADS": "1", "MODEL_SPECIFIC_SETTING": "literal"}},
+            {
+                "env": {
+                    "OMP_NUM_THREADS": "1",
+                    "MODEL_SPECIFIC_SETTING": "literal",
+                    "ENABLE_KVCACHED": "false",
+                    "KVCACHED_AUTOPATCH": "0",
+                    "KVCACHED_IPC_NAME": "other",
+                }
+            },
         ),
         ("default", {}),
     ):
@@ -1140,6 +1148,8 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
     recovered.supervise_once()
 
     assert [env["OMP_NUM_THREADS"] for env in launches] == ["1", "4", "1", "4"]
+    assert all(env["ENABLE_KVCACHED"] == "true" for env in launches)
+    assert all(env["KVCACHED_AUTOPATCH"] == "1" for env in launches)
     assert [env["KVCACHED_IPC_NAME"] for env in launches] == [
         "kvc_override",
         "kvc_default",
@@ -1159,7 +1169,6 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
 @pytest.mark.parametrize(
     "env",
     [
-        {"KVCACHED_IPC_NAME": "other"},
         {"CUDA_VISIBLE_DEVICES": "0"},
         {"VLLM_SERVER_DEV_MODE": "0"},
         {"INVALID=NAME": "value"},
