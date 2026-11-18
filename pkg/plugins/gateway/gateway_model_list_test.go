@@ -42,9 +42,12 @@ func (c *verifiedModelListTestCache) ListModelsVerified(_ context.Context, _ boo
 }
 
 func TestModelListHTTPRoutes(t *testing.T) {
-	server := &Server{cache: cache.NewForTest(), modelListMode: ModelListKnown}
-	require.NoError(t, server.StartHTTPServer("127.0.0.1:0"))
+	server := NewServerWithOptions(nil, nil, nil, ServerOptions{
+		Cache:         cache.NewForTest(),
+		ModelListMode: ModelListKnown,
+	})
 	t.Cleanup(server.Shutdown)
+	require.NoError(t, server.StartHTTPServer("127.0.0.1:0"))
 
 	for _, tc := range []struct {
 		method string

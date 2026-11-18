@@ -118,9 +118,9 @@ its HTTP port, including query strings, through the same handler without
 redirects. The standard Kubernetes Envoy route still sends model-list requests
 to the metadata service; route them to the plugin HTTP port if clients should
 receive the plugin's list. For the default Kustomize installation, this optional
-HTTPRoute sends the exact ``/v1/models`` path to the plugin Service on port 8080.
-The exact match takes precedence over
-the existing metadata route's prefix match, while ``/v1/files`` and
+HTTPRoute sends both ``/v1/models`` and ``/v1/models/`` to the plugin Service on
+port 8080. These exact matches take precedence over the existing metadata
+route's prefix match, while ``/v1/files`` and
 ``/v1/batches`` keep their existing destination:
 
 .. code-block:: yaml
@@ -138,6 +138,9 @@ the existing metadata route's prefix match, while ``/v1/files`` and
             - path:
                 type: Exact
                 value: /v1/models
+            - path:
+                type: Exact
+                value: /v1/models/
           backendRefs:
             - name: aibrix-gateway-plugins
               port: 8080
