@@ -254,10 +254,7 @@ with IP, non-terminating, non-draining) once per `AIBRIX_REMOTE_RUNNING_READER_I
 `ZRANGEBYSCORE` for the live gateways, then one `HGETALL` per pod not already refreshed within the
 last half interval in pipelines of 100), and every exact read on the request path refreshes the pods
 it read at no extra Redis command. A pod's count is used while it was read within 3 × the interval
-(3 s at the default) and falls back to this gateway's own count after that. Once a pod stops being
-ready (starts draining, terminating, or becomes unready), new sweeps skip it, so its cached remote
-entry ages out after 3 × the interval and `realtime_num_requests_running` falls back to this
-gateway's own count (observability-only, since routing selects from ready pods). A sweep that runs
+(3 s at the default) and falls back to this gateway's own count after that. Once a pod stops being ready (starts draining, terminating, or becomes unready), new sweeps skip it, so its cached remote count stops being refreshed and expires after 3 × the interval (any `GetPodsRunningRequestsApprox` lookup past 3 × the interval falls back to this gateway's own count, while `updatePodMetrics` already skips non-ready pods under `utils.FilterReadyPod`). A sweep that runs
 out of time (budgeted over the Redis phase) keeps what it read, and the next one starts with the
 pods it did not reach. Other gateways' fields are counted while their heartbeat is within the 3 s
 liveness window that the exact reads use, so when sweeps succeed a crashed gateway's counts stop
@@ -268,12 +265,14 @@ out after 3 × the interval from their `readAt` if not overwritten). While
 rollouts) while skipping its `SCAN` and cross-gateway `HGETALL` read phase. To opt out at gateway
 startup and fall back to reading the gateway snapshot, set `AIBRIX_REMOTE_RUNNING_READER_ENABLED`
 to one of the `strconv.ParseBool` false values (`false`, `False`, `FALSE`, `0`, `f`, or `F`); any
-other non-empty spelling (such as `off`, `no`, `disabled`, or values with leading/trailing
-whitespace like a YAML block-scalar newline) logs a warning and falls back to `true`, leaving the
-reader enabled (check the startup log line `Initializing remote running reader` to confirm it is
-running). Until PR (c) removes snapshot sync, note that at the G=8, N >= 2000 fleet scale targeted
-here, the `=false` snapshot fallback may time out before publishing any snapshot
-(`snap_ever_published=0/8` in single-node tests), yielding local-only counts at that scale.
+non-empty value rejected by `strconv.ParseBool` (such as `off`, `no`, `disabled`, or values with
+leading/trailing whitespace like a YAML block-scalar newline) logs a warning and falls back to
+`true`, leaving the reader enabled (check the startup log line `Initializing remote running reader`
+to confirm it is running). Until PR (c) removes snapshot sync, note that at the G=8, N >= 2000
+fleet scale targeted here, `initGatewaySnapshotSync` may time out before publishing its first
+snapshot (`snap_ever_published=0/8` in single-node tests); while no snapshot has been published,
+`GetPodsRunningRequestsApprox` falls back to local-only counts and `realtime_num_requests_running`
+skips emission until a snapshot is published.
 `aibrix_gateway_remote_running_reader_pods{state}` counts the pods selected as ready at sweep start
 that remain ready (`utils.FilterReadyPod`) at the end of the sweep by whether their count was read
 within the limit (`fresh`), longer ago (`stale`, not used) or never (`unread`), and
