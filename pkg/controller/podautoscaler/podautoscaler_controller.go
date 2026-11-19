@@ -1015,6 +1015,11 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
 		setCondition(pa, ConditionScalingActive, metav1.ConditionFalse, ReasonFailedComputeScale, "unable to compute the desired replicas: %v", err)
 		r.EventRecorder.Event(pa, corev1.EventTypeWarning, ReasonFailedComputeScale, err.Error())
+		if stderrors.Is(err, errScaleDownHeld) {
+			// The status and the warning above already say why; the resync
+			// ticker evaluates the hold again, so there is nothing to retry.
+			return resultWithNextScheduleRequeue(pa, r.nowTime()), nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)

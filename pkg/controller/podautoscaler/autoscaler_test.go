@@ -596,7 +596,7 @@ func TestComputeDesiredReplicasHoldsScaleDownWhileAMetricFails(t *testing.T) {
 				// 4 pods at 25 against a target of 50 ask for 2.
 				down, err := compute(25)
 				if hold {
-					require.Error(t, err)
+					require.ErrorIs(t, err, errScaleDownHeld)
 					assert.Contains(t, err.Error(), "queue_length")
 					assert.False(t, down.Valid)
 					assert.Equal(t, []string{"queue_length"}, down.FailedMetrics)
