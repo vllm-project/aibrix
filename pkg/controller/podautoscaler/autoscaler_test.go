@@ -553,69 +553,6 @@ func TestComputeDesiredReplicasNamesFailedMetrics(t *testing.T) {
 	}
 }
 
-// TestComputeDesiredReplicasHoldsScaleDownWhileAMetricFails keeps one metric
-// source unavailable throughout. With the hold annotation, the remaining source
-// cannot scale the target down, but it can still scale it up. Without the
-// annotation the default stays best-effort and the scale-down goes ahead.
-func TestComputeDesiredReplicasHoldsScaleDownWhileAMetricFails(t *testing.T) {
-	for _, strategy := range []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA} {
-		for _, hold := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s hold=%t", strategy, hold), func(t *testing.T) {
-				pa := testPodAutoscaler(strategy)
-				if hold {
-					pa.Annotations = map[string]string{types.HoldScaleDownOnMetricFailureLabel: "true"}
-				}
-				pa.Spec.MetricsSources = append(pa.Spec.MetricsSources, autoscalingv1alpha1.MetricSource{
-					MetricSourceType: autoscalingv1alpha1.EXTERNAL,
-					TargetMetric:     "queue_length",
-					TargetValue:      "50",
-				})
-				fetcher := &mockMetricFetcherFactory{
-					mockMetricFetcher: mockMetricFetcher{
-						metricsValues:  map[string]float64{},
-						failingMetrics: map[string]bool{"queue_length": true},
-					},
-				}
-				autoScaler := NewDefaultAutoScaler(fetcher, fake.NewClientBuilder().Build())
-				pods := make([]corev1.Pod, 4)
-				for i := range pods {
-					pods[i].Name = fmt.Sprintf("ready-%d", i)
-				}
-				compute := func(podValue float64) (*ReplicaComputeResult, error) {
-					fetcher.metricsValues["gpu_cache_usage_perc"] = podValue
-					return autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
-						PodAutoscaler:   pa,
-						ScalingContext:  testScalingContext(t, &pa),
-						CurrentReplicas: 4,
-						ReplicaState:    ReplicaState{ReadyReplicas: 4},
-						Pods:            pods,
-						Timestamp:       time.Now(),
-					})
-				}
-
-				// 4 pods at 25 against a target of 50 ask for 2.
-				down, err := compute(25)
-				if hold {
-					require.ErrorIs(t, err, errScaleDownHeld)
-					assert.Contains(t, err.Error(), "queue_length")
-					assert.False(t, down.Valid)
-					assert.Equal(t, []string{"queue_length"}, down.FailedMetrics)
-				} else {
-					require.NoError(t, err)
-					assert.Equal(t, int32(2), down.DesiredReplicas)
-					assert.Equal(t, []string{"queue_length"}, down.FailedMetrics)
-				}
-
-				// queue_length is still failing; 4 pods at 100 ask for 8.
-				up, err := compute(100)
-				require.NoError(t, err)
-				assert.Equal(t, int32(8), up.DesiredReplicas)
-				assert.Equal(t, []string{"queue_length"}, up.FailedMetrics)
-			})
-		}
-	}
-}
-
 func TestComputeDesiredReplicasDoesNotHoldWhenNoReplicasPending(t *testing.T) {
 	pa := testPodAutoscaler(autoscalingv1alpha1.APA)
 	autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
