@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: AIBrix \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-11 19:13-0700\n"
+"POT-Creation-Date: 2026-11-19 09:26-0500\n"
 "PO-Revision-Date: 2026-09-10 19:00+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -154,7 +154,7 @@ msgid "Field"
 msgstr "字段"
 
 #: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:70
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:239
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:258
 msgid "Default"
 msgstr "默认值"
 
@@ -163,7 +163,7 @@ msgid "Valid range"
 msgstr "有效范围"
 
 #: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:72
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:241
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:260
 msgid "Description"
 msgstr "说明"
 
@@ -377,23 +377,23 @@ msgid ""
 "``targetValue`` is the load one replica should handle. Expose the "
 "external metric as a total for the workload, such as a sum over its pods."
 msgstr ""
-"外部或 domain 指标源为整个工作负载报告一个值。KPA 和 APA 将其视为总量，在应用波动容差和扩缩速率限制之前，"
-"建议的副本数约为 ``ceil(value / targetValue)``，因此 ``targetValue`` 表示一个副本应处理的负载。"
-"请将外部指标暴露为整个工作负载的总量，例如对其所有 pod 的指标求和。"
+"外部或 domain 指标源为整个工作负载报告一个值。KPA 和 APA 将其视为总量，在应用波动容差和扩缩速率限制之前，建议的副本数约为 "
+"``ceil(value / targetValue)``，因此 ``targetValue`` "
+"表示一个副本应处理的负载。请将外部指标暴露为整个工作负载的总量，例如对其所有 pod 的指标求和。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:214
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:215
 msgid "Example external metrics KPA config"
 msgstr "外部指标 KPA 配置示例"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:215
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:221
 msgid "Example external metrics APA config"
 msgstr "外部指标 APA 配置示例"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:222
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:228
 msgid "Supported PodAutoscaler annotations"
 msgstr "支持的 PodAutoscaler 注解"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:224
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:230
 msgid ""
 "Metric-based autoscalers can be tuned with annotations on the "
 "``PodAutoscaler`` object. The controller currently recognizes the generic"
@@ -405,7 +405,7 @@ msgstr ""
 "``autoscaling.aibrix.ai/`` 注解键。注解值在 Kubernetes metadata 中为字符串，因此在 YAML "
 "中必要时请为数值和时长加引号。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:230
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:236
 msgid ""
 "Durations are parsed with Go duration syntax such as ``30s`` or ``5m``. "
 "Floating-point values are parsed as decimal numbers such as ``0.1`` or "
@@ -414,172 +414,249 @@ msgstr ""
 "时长按 Go duration 语法解析，例如 ``30s`` 或 ``5m`` 。浮点值按十进制数解析，例如 ``0.1`` 或 ``2.0``"
 " 。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:237
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:239
+msgid "Values must be usable by the autoscaler:"
+msgstr ""
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:241
+msgid ""
+"scale rates must be ``1`` or greater, where ``1`` allows no change in "
+"that direction;"
+msgstr ""
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:242
+msgid "tolerances and cooldown windows must not be negative;"
+msgstr ""
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:243
+msgid "the panic threshold must be greater than ``0``;"
+msgstr ""
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:244
+msgid "numbers must be finite, so ``NaN`` and ``Inf`` are not accepted."
+msgstr ""
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:246
+msgid ""
+"The admission webhook rejects a ``PodAutoscaler`` that adds or changes an"
+" annotation to an unusable value. If such a value still reaches the "
+"controller, for example on an object stored before this check existed, "
+"the controller ignores that one annotation, keeps the default for the "
+"setting, and logs the reason. The other annotations still apply."
+msgstr ""
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:256
 msgid "Annotation"
 msgstr "注解"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:238
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:257
 msgid "Value type"
 msgstr "值类型"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:240
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:259
 msgid "Strategy use"
 msgstr "适用策略"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:242
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:261
 msgid "``autoscaling.aibrix.ai/max-scale-up-rate``"
 msgstr "``autoscaling.aibrix.ai/max-scale-up-rate``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:243
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:248
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:253
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:258
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:263
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:262
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:267
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:272
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:277
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:282
 msgid "float"
 msgstr "float"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:244
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:249
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:263
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:268
 msgid "``2``"
 msgstr "``2``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:245
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:250
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:270
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:275
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:264
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:269
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:289
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:294
 msgid "HPA, KPA, APA"
 msgstr "HPA、KPA、APA"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:246
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:265
 msgid ""
 "Limits how quickly replicas can increase in one scaling decision. For "
 "example, ``2.0`` allows the recommendation to grow up to 2x the current "
 "replica count."
 msgstr "限制单次扩缩决策中副本可增加的速度。例如 ``2.0`` 允许建议值最多增长到当前副本数的 2 倍。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:247
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:266
 msgid "``autoscaling.aibrix.ai/max-scale-down-rate``"
 msgstr "``autoscaling.aibrix.ai/max-scale-down-rate``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:251
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:270
 msgid ""
 "Limits how quickly replicas can decrease in one scaling decision. For "
 "example, ``2.0`` prevents scaling below roughly half of the current "
 "replica count in one decision."
 msgstr "限制单次扩缩决策中副本可减少的速度。例如 ``2.0`` 可防止一次决策缩到大约当前副本数的一半以下。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:252
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:271
 msgid "``autoscaling.aibrix.ai/scale-up-tolerance``"
 msgstr "``autoscaling.aibrix.ai/scale-up-tolerance``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:254
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:259
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:273
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:278
 msgid "``0.1``"
 msgstr "``0.1``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:255
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:260
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:280
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:274
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:279
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:299
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:304
 msgid "KPA, APA"
 msgstr "KPA、APA"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:256
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:275
 msgid ""
 "Avoids scale-up for small metric fluctuations. A value of ``0.1`` means "
 "the metric must exceed the target by more than 10% before scaling up."
 msgstr "避免因指标小幅波动而扩容。值为 ``0.1`` 表示指标必须超过目标 10% 以上才会扩容。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:257
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:276
 msgid "``autoscaling.aibrix.ai/scale-down-tolerance``"
 msgstr "``autoscaling.aibrix.ai/scale-down-tolerance``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:261
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:280
 msgid ""
 "Avoids scale-down for small metric fluctuations. A value of ``0.1`` means"
 " the metric must fall below the target by more than 10% before scaling "
 "down."
 msgstr "避免因指标小幅波动而缩容。值为 ``0.1`` 表示指标必须低于目标 10% 以上才会缩容。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:262
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:281
 msgid "``autoscaling.aibrix.ai/panic-threshold``"
 msgstr "``autoscaling.aibrix.ai/panic-threshold``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:264
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:283
 msgid "``2.0``"
 msgstr "``2.0``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:265
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:284
 msgid "KPA"
 msgstr "KPA"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:266
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:285
 msgid ""
 "KPA enters panic mode when the panic window asks for at least this many "
-"times the current pods. While in panic mode it does not scale down, and it "
-"leaves panic mode once a whole stable window has passed below the "
+"times the current pods. While in panic mode it does not scale down, and "
+"it leaves panic mode once a whole stable window has passed below the "
 "threshold."
 msgstr ""
-"当 panic 窗口所需的 Pod 数至少达到当前 Pod 数的该倍数时，KPA 进入 panic 模式。"
-"处于 panic 模式期间不会缩容；当一个完整的稳定窗口都低于该阈值后，退出 panic 模式。"
+"当 panic 窗口所需的 Pod 数至少达到当前 Pod 数的该倍数时，KPA 进入 panic 模式。处于 panic "
+"模式期间不会缩容；当一个完整的稳定窗口都低于该阈值后，退出 panic 模式。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:267
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:286
 msgid "``autoscaling.aibrix.ai/scale-up-cooldown-window``"
 msgstr "``autoscaling.aibrix.ai/scale-up-cooldown-window``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:268
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:273
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:287
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:292
 msgid "duration"
 msgstr "duration"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:269
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:288
 msgid "``0s``"
 msgstr "``0s``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:271
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:290
 msgid "Stabilization window for scale-up recommendations."
 msgstr "扩容建议的稳定窗口。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:272
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:291
 msgid "``autoscaling.aibrix.ai/scale-down-cooldown-window``"
 msgstr "``autoscaling.aibrix.ai/scale-down-cooldown-window``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:274
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:293
 msgid "``300s``"
 msgstr "``300s``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:276
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:295
 msgid ""
 "Stabilization window for scale-down recommendations. The default is 5 "
 "minutes."
 msgstr "缩容建议的稳定窗口。默认为 5 分钟。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:277
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:296
 msgid "``autoscaling.aibrix.ai/scale-to-zero``"
 msgstr "``autoscaling.aibrix.ai/scale-to-zero``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:278
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:297
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:302
 msgid "bool"
 msgstr "bool"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:279
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:298
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:303
 msgid "``false``"
 msgstr "``false``"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:281
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:300
 msgid ""
 "Enables the scaling context's scale-to-zero flag. The final replica count"
 " is still bounded by ``spec.minReplicas``."
 msgstr "启用扩缩上下文的缩到零标志。最终副本数仍受 ``spec.minReplicas`` 约束。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:283
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:301
+msgid "``autoscaling.aibrix.ai/hold-scale-down-on-metric-failure``"
+msgstr "``autoscaling.aibrix.ai/hold-scale-down-on-metric-failure``"
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:305
+msgid ""
+"Holds a metric-driven scale-down while any metric source fails, instead "
+"of scaling down on the sources that remain. A scale-up from the healthy "
+"sources still goes ahead, and ``spec.minReplicas`` and "
+"``spec.maxReplicas`` still apply. See :ref:`metric-source-failures`."
+msgstr "在任一指标源失败期间暂停由指标触发的缩容，而不是基于其余指标源缩容。健康指标源触发的扩容仍会执行，``spec.minReplicas`` 和 ``spec.maxReplicas`` 仍然生效。参见 :ref:`metric-source-failures`。"
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:307
 msgid "Example:"
 msgstr "示例："
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:305
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:330
+msgid "When a metric source fails"
+msgstr "指标源失败时"
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:332
+msgid ""
+"When some metric sources of a KPA or APA PodAutoscaler fail and the "
+"others are read, the recommendation is made from the sources that remain."
+" The PodAutoscaler raises a ``FailedGetMetrics`` warning event naming the"
+" failed sources when the set of failed sources changes, and a "
+"``RecoveredMetrics`` event once they are read again. A scale-down made on"
+" the remaining sources is reported as ``Available metrics below target "
+"(<sources> could not be read)``. The "
+"``aibrix_autoscaler_failed_metric_sources`` gauge counts the failed "
+"sources of each PodAutoscaler."
+msgstr "当 KPA 或 APA PodAutoscaler 的部分指标源失败、其余指标源可以读取时，扩缩建议基于其余指标源计算。失败的指标源集合发生变化时，PodAutoscaler 会发出一个注明失败指标源的 ``FailedGetMetrics`` 警告事件；这些指标源恢复读取后，会发出一个 ``RecoveredMetrics`` 事件。基于其余指标源做出的缩容会记录为 ``Available metrics below target (<sources> could not be read)``。``aibrix_autoscaler_failed_metric_sources`` 指标统计每个 PodAutoscaler 失败的指标源数量。"
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:334
+msgid ""
+"With ``autoscaling.aibrix.ai/hold-scale-down-on-metric-failure: "
+"\"true\"``, a scale-down is held instead, as Kubernetes HPA does: the "
+"ScalingActive condition reports ``ScaleDownHeld``, a ``ScaleDownHeld`` "
+"warning event is raised when the hold starts, and the "
+"``aibrix_autoscaler_scale_down_held`` gauge is 1. Held recommendations "
+"are not recorded for the cooldown windows, so they cannot delay a later "
+"scale-up. The hold has no time limit: while a source keeps failing, "
+"including one whose endpoint never worked, the replicas stay at their "
+"current count, which can keep idle capacity running. Alert on the gauges "
+"to catch a long outage."
+msgstr "设置 ``autoscaling.aibrix.ai/hold-scale-down-on-metric-failure: \"true\"`` 后，缩容会被暂停，与 Kubernetes HPA 的行为一致：ScalingActive 条件显示 ``ScaleDownHeld``，暂停开始时会发出 ``ScaleDownHeld`` 警告事件，``aibrix_autoscaler_scale_down_held`` 指标为 1。被暂停的建议不会记入冷却窗口，因此不会延迟之后的扩容。暂停没有时间限制：只要某个指标源持续失败（包括端点从未正常工作的指标源），副本数就会保持不变，可能让空闲容量持续运行。请基于这些指标设置告警，以便发现长时间的故障。"
+
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:337
 msgid "StormService Role-Level Autoscaling"
 msgstr "StormService 角色级自动扩缩容"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:307
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:339
 msgid ""
 "For StormService in pooled mode (``spec.mode: Pooled``), different roles "
 "(e.g., prefill and decode) can be autoscaled independently. This enables "
@@ -589,7 +666,7 @@ msgstr ""
 "对 pooled 模式（``spec.mode: Pooled`` ）的 StormService，不同角色（例如 prefill 和 "
 "decode）可独立自动扩缩。这样可精细控制，使每个角色基于其特定指标扩缩。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:309
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:341
 msgid ""
 "Use the ``subTargetSelector`` field to target a specific role within a "
 "StormService, and declare ``spec.mode`` on the StormService (``Pooled`` "
@@ -606,7 +683,7 @@ msgstr ""
 "无法区分两种模式。PodAutoscaler 注解 ``autoscaling.aibrix.ai/storm-service-mode`` "
 "已弃用，仅在目标 StormService 未声明 ``spec.mode`` 时作为兼容回退生效。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:313
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:345
 msgid ""
 "Always declare ``spec.mode``. When neither ``spec.mode`` nor the "
 "deprecated annotation is set, the autoscaler falls back to the same "
@@ -616,7 +693,7 @@ msgid ""
 "best-effort rather than a stable scaling mode."
 msgstr ""
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:320
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:352
 msgid ""
 "The inference cannot tell a pooled StormService from a replica-mode one "
 "that has been scaled down to a single RoleSet. An inferred replica-mode "
@@ -627,61 +704,61 @@ msgid ""
 "across a scale-down to one RoleSet."
 msgstr ""
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:327
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:359
 msgid "**Key features:**"
 msgstr "**主要特性：**"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:329
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:361
 msgid ""
 "Each role has its own PodAutoscaler with independent metrics and scaling "
 "policies"
 msgstr "每个角色有独立的 PodAutoscaler，以及独立的指标和扩缩策略"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:330
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:362
 #, fuzzy
 msgid "Works with StormService in pooled mode (``spec.mode: Pooled``)"
 msgstr "适用于 pooled 模式（``replicas=1`` ）的 StormService"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:331
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:363
 msgid "Supports different scaling strategies (HPA, KPA, APA) per role"
 msgstr "每个角色可使用不同扩缩策略（HPA、KPA、APA）"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:332
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:364
 msgid "Allows different min/max replicas and scaling behaviors per role"
 msgstr "每个角色可使用不同的最小/最大副本数和扩缩行为"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:334
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:366
 msgid "**Complete example:**"
 msgstr "**完整示例：**"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:339
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:371
 msgid "**When to use:**"
 msgstr "**适用场景：**"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:341
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:373
 #, fuzzy
 msgid ""
 "**Pooled mode**: StormService declaring ``spec.mode: Pooled`` where roles"
 " need independent scaling"
 msgstr "**Pooled 模式** ：``replicas=1`` 的 StormService，各角色需要独立扩缩"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:342
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:374
 msgid ""
 "**Different workload patterns**: Prefill and decode have different "
 "resource needs and traffic patterns"
 msgstr "**不同工作负载模式** ：Prefill 和 decode 的资源需求和流量模式不同"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:343
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:375
 msgid ""
 "**Independent metrics**: Each role has its own metrics (e.g., queue "
 "length, batch utilization)"
 msgstr "**独立指标** ：每个角色有各自的指标（例如队列长度、batch 利用率）"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:346
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:378
 msgid "Multi-Metric Based Autoscaling"
 msgstr "基于多指标的自动扩缩容"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:348
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:380
 msgid ""
 "AIBrix supports multi-metric autoscaling, allowing users to define "
 "multiple scaling metrics within a single PodAutoscaler resource. This is "
@@ -694,41 +771,41 @@ msgstr ""
 "推理工作负载尤其有用：单一指标（例如 GPU cache "
 "使用率）可能无法充分反映系统压力——将其与基于队列的指标（例如等待请求数）结合，可做出更稳健、更灵敏的扩缩决策。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:352
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:384
 msgid "How It Works"
 msgstr "工作原理"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:354
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:386
 msgid ""
 "When multiple metrics are specified under ``spec.metricsSources``, the "
 "autoscaler evaluates all metrics independently."
 msgstr "当 ``spec.metricsSources`` 下指定多个指标时，自动扩缩容器会独立评估所有指标。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:355
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:387
 msgid ""
 "The final desired replica count is determined by the metric that demands "
 "the highest number of replicas (i.e., the \"max\" strategy)."
 msgstr "最终期望副本数由要求副本数最多的指标决定（即 \"max\" 策略）。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:358
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:390
 msgid "Configuration Example"
 msgstr "配置示例"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:360
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:392
 msgid ""
 "The following PodAutoscaler uses two metrics simultaneously with APA "
 "strategy:"
 msgstr "以下 PodAutoscaler 使用 APA 策略同时采用两个指标："
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:366
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:398
 msgid "Check autoscaling logs"
 msgstr "查看自动扩缩容日志"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:369
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:401
 msgid "Pod Autoscaler Logs"
 msgstr "Pod Autoscaler 日志"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:371
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:403
 msgid ""
 "Pod autoscaler is part of aibrix controller manager which plays the role "
 "of collecting the metrics from each pod. You can check its logs in this "
@@ -737,39 +814,39 @@ msgstr ""
 "Pod autoscaler 是 aibrix controller manager 的一部分，负责从每个 pod "
 "采集指标。可用如下方式查看其日志。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:378
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:410
 msgid ""
 "Expected log output. You can see the current metric is "
 "gpu_cache_usage_perc. You can check each pod's current metric value."
 msgstr "预期日志输出。可以看到当前指标为 gpu_cache_usage_perc。你可以查看每个 pod 的当前指标值。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:380
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:412
 msgid "AiBrix controller manager output"
 msgstr "AIBrix controller manager 输出"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:387
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:419
 msgid "Custom Resource Status"
 msgstr "自定义资源状态"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:389
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:421
 msgid "To describe the PodAutoscaler custom resource, you can run"
 msgstr "要查看 PodAutoscaler 自定义资源，可以运行"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:395
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:427
 msgid ""
 "Example output is here, you can explore the scaling conditions and events"
 " for more details."
 msgstr "示例如下，可查看扩缩条件和事件以获取更多细节。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:397
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:429
 msgid "PodAutoscaler describe"
 msgstr "PodAutoscaler describe"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:404
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:436
 msgid "Preliminary experiments with different autoscalers"
 msgstr "不同自动扩缩容器的初步实验"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:406
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:438
 msgid ""
 "Here we show the preliminary experiment results to show how different "
 "autoscaling mechanism and configuration for autoscaler affect the "
@@ -779,39 +856,39 @@ msgstr ""
 "以下初步实验结果展示不同自动扩缩机制及其配置如何影响性能（延迟）和成本（计算成本）。在 AIBrix 中，用户只需应用 K8s yaml "
 "即可部署不同的自动扩缩容器。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:409
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:441
 msgid "Set up"
 msgstr "实验设置"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:410
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:442
 msgid "Model: Deepseek 7B chatbot model"
 msgstr "模型：Deepseek 7B chatbot 模型"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:411
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:443
 msgid "GPU type: V100"
 msgstr "GPU 类型：V100"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:412
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:444
 msgid "Max number of GPU: 8"
 msgstr "最大 GPU 数：8"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:413
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:445
 msgid "Target metric and value"
 msgstr "目标指标与取值"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:414
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:446
 msgid "Target metric: gpu_kv_cache_utilization"
 msgstr "目标指标：gpu_kv_cache_utilization"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:415
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:447
 msgid "Target value: 50%"
 msgstr "目标值：50%"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:416
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:448
 msgid "Workload"
 msgstr "工作负载"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:417
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:449
 msgid ""
 "The overall RPS trend starts with low RPS and goes up relatively fast "
 "until T=500 to evaluate how different autoscaler and config reacts to the"
@@ -821,19 +898,19 @@ msgstr ""
 "整体 RPS 趋势从低 RPS 开始，到 T=500 较快上升，以评估不同自动扩缩容器及配置对负载快速增加的反应。之后迅速降到低 RPS "
 "以评估缩容行为，然后再缓慢上升。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:418
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:450
 msgid "Average RPS trend: 1 RPS -> 4 RPS -> 8 RPS -> 10 RPS -> 2 RPS -> 6 RPS"
 msgstr "平均 RPS 趋势：1 RPS -> 4 RPS -> 8 RPS -> 10 RPS -> 2 RPS -> 6 RPS"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:419
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:451
 msgid "RPS can be found in the second subfigure."
 msgstr "RPS 见第二张子图。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:420
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:452
 msgid "Performance"
 msgstr "性能"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:421
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:453
 msgid ""
 "HPA has the highest latency since its slow reaction. KPA is the most "
 "reactive with panic mode. APA was running with small delay window to save"
@@ -843,11 +920,11 @@ msgstr ""
 "HPA 延迟最高，因其反应较慢。KPA 因 panic 模式反应最快。APA 使用较小延迟窗口以节省成本。确实节省了成本，但在 T=700 到 "
 "T=1000 缩容过于激进，延迟高于 KPA。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:422
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:454
 msgid "Cost"
 msgstr "成本"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:423
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:455
 msgid ""
 "The fourth figure shows the relative accumulated compute cost over time. "
 "The accumulated cost is calculated by multiplying the time by unit cost "
@@ -855,28 +932,28 @@ msgid ""
 "multiplying the actual cost per unit time."
 msgstr "第四张图显示随时间累积的相对计算成本。累积成本由时间乘以单位成本（本例中为 1）得到。实际计算成本可将单位时间的实际成本相乘得到。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:424
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:456
 msgid "HPA is the most expensive due to the longer delay window for scaling down."
 msgstr "HPA 最贵，因其缩容延迟窗口更长。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:425
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:457
 msgid ""
 "APA is the most responsive and saves the cost most. You can see it "
 "fluctuating more than other two autoscalers."
 msgstr "APA 响应最快、节省成本最多。可以看到它比另外两种自动扩缩容器波动更大。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:426
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:458
 msgid ""
 "Note that scaling down window is not inherent feature of each autoscaling"
 " mechanism. It is configurable variable. We use the default value for HPA"
 " (300s)."
 msgstr "注意，缩容窗口并非各自动扩缩机制的固有特性，而是可配置变量。HPA 使用默认值（300s）。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:427
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:459
 msgid "Conclusion"
 msgstr "结论"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:428
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:460
 msgid ""
 "There is no one autoscaler that outperforms others for all metrics "
 "(latency, cost). In addition, the results might depend on the workloads. "
@@ -886,7 +963,7 @@ msgid ""
 "performance or vice versa."
 msgstr "没有一种自动扩缩容器在所有指标（延迟、成本）上都优于其他。此外，结果可能取决于工作负载。基础设施应便于配置用户想要的自动扩缩机制，因为不同用户偏好不同。例如，有人更看重成本而非性能，或相反。"
 
-#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:431
+#: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:463
 msgid "result"
 msgstr "结果"
 
