@@ -142,6 +142,7 @@ reviewed settings rather than retaining old chart defaults:
     helm upgrade eg oci://docker.io/envoyproxy/gateway-helm \
       --version v1.9.4 -n envoy-gateway-system \
       --reset-values -f eg-values-reviewed.yaml \
+      --set crds.enabled=false \
       --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true \
       --wait --timeout=5m
 
