@@ -19,6 +19,7 @@ package e2eframework
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -35,6 +37,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
@@ -276,14 +279,30 @@ func ValidateInference(t *testing.T, modelName string) {
 	ValidateInferenceWithClient(t, client, modelName)
 }
 
-// WaitForInference polls the public gateway until the model is actually
-// servable. Kubernetes objects may exist before HTTPRoute backend references
+// WaitForInference polls the public gateway until the model answers a single
+// request. Kubernetes objects may exist before HTTPRoute backend references
 // and gateway caches have converged, so object existence alone is not enough.
 func WaitForInference(t *testing.T, modelName string) {
 	t.Helper()
+	waitForInferenceStable(t, modelName, 1, 60*time.Second)
+}
+
+// WaitForStableInference polls the gateway until the model answers
+// consecutiveRequests requests in a row and reports how long convergence
+// took. Requiring a streak, rather than the first 200, keeps a lucky success
+// from passing a readiness gate while the serving path is still flapping.
+func WaitForStableInference(t *testing.T, modelName string, consecutiveRequests int, timeout time.Duration) {
+	t.Helper()
+	waitForInferenceStable(t, modelName, consecutiveRequests, timeout)
+}
+
+func waitForInferenceStable(t *testing.T, modelName string, consecutiveRequests int, timeout time.Duration) {
+	t.Helper()
 	config := LoadConfig()
 	client := NewOpenAIClient(config.GatewayURL, config.APIKey)
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 60*time.Second, true,
+	start := time.Now()
+	streak := 0
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 				Messages: []openai.ChatCompletionMessageParamUnion{
@@ -292,12 +311,17 @@ func WaitForInference(t *testing.T, modelName string) {
 				Model: modelName,
 			})
 			if err != nil {
-				t.Logf("waiting for inference route for %s: %v", modelName, err)
+				streak = 0
+				t.Logf("waiting for inference route for %s: %s", modelName, inferenceFailureDetail(err))
 				return false, nil
 			}
-			return true, nil
+			streak++
+			return streak >= consecutiveRequests, nil
 		})
-	require.NoError(t, err, "model %s did not become servable", modelName)
+	require.NoError(t, err, "model %s did not serve %d consecutive requests within %s",
+		modelName, consecutiveRequests, timeout)
+	t.Logf("%s served %d consecutive inference requests after %s of polling",
+		modelName, consecutiveRequests, time.Since(start).Round(time.Millisecond))
 }
 
 func ValidateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
@@ -308,7 +332,7 @@ func ValidateInferenceWithClient(t *testing.T, client openai.Client, modelName s
 		Model: modelName,
 	})
 	if err != nil {
-		t.Fatalf("chat completions failed : %v", err)
+		t.Fatalf("chat completions failed for %s: %s", modelName, inferenceFailureDetail(err))
 	}
 	assert.Equal(t, modelName, chatCompletion.Model)
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
@@ -341,6 +365,55 @@ func ValidateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 			return false, nil
 		})
 	require.NoError(t, err, "timeout waiting for all pods to be ready")
+}
+
+// inferenceFailureDetail renders a chat-completions error with the fields
+// needed to tell which side answered: the raw response body (the SDK only
+// decodes the OpenAI-style top-level "error" object, so its RawJSON is empty
+// for other JSON shapes and for zero-byte bodies) and both request-id
+// headers the gateway may set. A bare 5xx with an empty body points at a
+// locally generated response rather than an engine error (#3476).
+func inferenceFailureDetail(err error) string {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) || apiErr.Response == nil {
+		return fmt.Sprintf("%v", err)
+	}
+	body, _ := io.ReadAll(apiErr.Response.Body)
+	return fmt.Sprintf("%v (request-id: %q, x-request-id: %q, response body: %q)",
+		err,
+		apiErr.Response.Header.Get("request-id"),
+		apiErr.Response.Header.Get("x-request-id"),
+		body)
+}
+
+// DumpGatewayPluginLogs writes the recent gateway plugin logs to the test
+// output. The gateway turns some internal errors into Envoy-generated 5xx
+// without logging them (#3476), so on failure these logs are the first place
+// to look for what the plugin saw on the ext_proc stream.
+func DumpGatewayPluginLogs(t *testing.T, client *kubernetes.Clientset) {
+	t.Helper()
+	// The e2e runner uses -timeout 0, so bound the diagnostics: a stalled
+	// API call here must not hang the cleanup path.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	namespace := LoadConfig().GatewayNamespace
+	// Same selector the installation workflow's log-collection step uses.
+	pods, err := client.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{
+		LabelSelector: "app=gateway-plugins",
+	})
+	if err != nil {
+		t.Logf("failed to list gateway plugin pods in %s: %v", namespace, err)
+		return
+	}
+	for i := range pods.Items {
+		logs, logErr := client.CoreV1().Pods(namespace).GetLogs(pods.Items[i].Name,
+			&corev1.PodLogOptions{TailLines: ptr.To[int64](300)}).DoRaw(ctx)
+		if logErr != nil {
+			t.Logf("failed to get gateway plugin logs from %s: %v", pods.Items[i].Name, logErr)
+			continue
+		}
+		t.Logf("gateway plugin logs from %s:\n%s", pods.Items[i].Name, logs)
+	}
 }
 
 // PollPDChatCompletion retries a PD chat completion until it succeeds or timeout.

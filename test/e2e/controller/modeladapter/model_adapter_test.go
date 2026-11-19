@@ -654,6 +654,14 @@ func TestModelAdapterConcurrentAdaptersShareBaseModelPods(t *testing.T) {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
 			adapterBName, v1.DeleteOptions{})
 	})
+	// Leave a trace for the next failure: the gateway renders some internal
+	// errors as Envoy-generated 5xx without logging them (#3476), so dump the
+	// gateway plugin logs when this test fails.
+	t.Cleanup(func() {
+		if t.Failed() {
+			dumpGatewayPluginLogs(t, k8sClient)
+		}
+	})
 
 	t.Log("creating two model adapters that target the same base model pods")
 	_, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(),
@@ -668,6 +676,19 @@ func TestModelAdapterConcurrentAdaptersShareBaseModelPods(t *testing.T) {
 	assert.NotEmpty(t, gotA.Status.Instances)
 	assert.NotEmpty(t, gotB.Status.Instances)
 
+	// The one captured #3476 failure logged HTTP 500 five milliseconds
+	// after request_start, with no model-lookup or pod-selection errors
+	// logged and a successful request on the same pods 30 ms earlier (see
+	// the log analysis on that issue): route convergence is not the
+	// evidenced cause.
+	// Like the sibling tests, wait before the one-shot validation — as a
+	// flake mitigation, not a root-cause fix — but ask each adapter for
+	// consecutive successes within a tighter budget, so a still-flapping
+	// path fails fast instead of silently absorbing a regression. #3476
+	// stays open for the underlying silent 5xx.
+	t.Log("waiting for both adapters to serve consecutive requests through the gateway")
+	waitForStableInference(t, adapterAName, 3, 30*time.Second)
+	waitForStableInference(t, adapterBName, 3, 30*time.Second)
 	t.Log("running inference against both adapters on the shared pods")
 	validateInference(t, adapterAName)
 	validateInference(t, adapterBName)
