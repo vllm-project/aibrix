@@ -25,15 +25,18 @@ import (
 )
 
 // podOutputRateCollector exports, at scrape time, the per-request output-token rate this gateway
-// measured for each pod, how old that estimate is, and the share of the pod's requests that
-// finished without output tokens. It reads the pod records, so a deleted pod leaves no series,
-// and a pod without an estimate has none.
+// measured for each pod and the share of the pod's requests that finished without output tokens,
+// each with the time since it was last updated: both keep their last value while the pod is idle.
+// It reads the pod records, so a deleted pod leaves no series, and a pod without a value has
+// none. The model label is the pod's, as on gateway_pod_outstanding_requests; the values are per
+// pod, so on a pod that serves several models they cover all of them.
 type podOutputRateCollector struct {
-	store    *Store
-	now      func() time.Time
-	rate     *prometheus.Desc
-	rateAge  *prometheus.Desc
-	fraction *prometheus.Desc
+	store       *Store
+	now         func() time.Time
+	rate        *prometheus.Desc
+	rateAge     *prometheus.Desc
+	fraction    *prometheus.Desc
+	fractionAge *prometheus.Desc
 }
 
 func newPodOutputRateCollector(store *Store, gatewayName string) *podOutputRateCollector {
@@ -52,7 +55,11 @@ func newPodOutputRateCollector(store *Store, gatewayName string) *podOutputRateC
 			labels, constLabels),
 		fraction: prometheus.NewDesc(
 			"gateway_pod_requests_without_output_tokens_fraction",
-			"Share of the requests this gateway routed to the pod that finished without output tokens, in the last ~1-minute window in which any finished. They are not part of gateway_pod_output_tokens_per_request_second.",
+			"Share of the requests this gateway routed to the pod that finished without output tokens (aborted, failed, or streamed without stream_options.include_usage), in the last ~1-minute window in which any finished. Not a failure rate. They are not part of gateway_pod_output_tokens_per_request_second. Keeps its last value while the pod is idle; see gateway_pod_requests_without_output_tokens_fraction_age_seconds.",
+			labels, constLabels),
+		fractionAge: prometheus.NewDesc(
+			"gateway_pod_requests_without_output_tokens_fraction_age_seconds",
+			"Seconds since gateway_pod_requests_without_output_tokens_fraction was last updated for the pod.",
 			labels, constLabels),
 	}
 }
@@ -61,6 +68,7 @@ func (c *podOutputRateCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.rate
 	ch <- c.rateAge
 	ch <- c.fraction
+	ch <- c.fractionAge
 }
 
 func (c *podOutputRateCollector) Collect(ch chan<- prometheus.Metric) {
@@ -84,6 +92,7 @@ func (c *podOutputRateCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 		if record, ok := pod.Metrics.Load(metrics.RealtimeRequestsWithoutOutputTokensFraction1m); ok {
 			emit(c.fraction, record.Value.GetSimpleValue())
+			emit(c.fractionAge, now.Sub(record.Timestamp).Seconds())
 		}
 		return true
 	})

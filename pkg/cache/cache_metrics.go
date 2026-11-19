@@ -957,9 +957,14 @@ func ewmaWeight(elapsed time.Duration) float64 {
 // the estimate falls. No router reads it yet.
 //
 // What it does not see:
-//   - A request that finishes without output tokens (aborted, timed out, failed, or completed
-//     without usage) is in neither term. A pod whose slowest requests are abandoned therefore
-//     reads faster than it is. RealtimeRequestsWithoutOutputTokensFraction1m makes that visible.
+//   - A request that finishes without output tokens is in neither term: aborted, timed out,
+//     failed, or completed without usage. The last includes every streaming request sent
+//     without stream_options.include_usage, which the gateway only requires of TPM-limited
+//     users. So RealtimeRequestsWithoutOutputTokensFraction1m is not a failure rate: on a pod
+//     whose clients stream without usage it reads near 1 and the rate is never updated, and
+//     with mixed clients the rate describes only the requests that reported usage. A pod whose
+//     slowest requests are abandoned reads faster than it is; the fraction makes that visible.
+//   - It is one value per pod. A pod that serves several models (ModelClaim) mixes them.
 //   - Time on the pod is the whole request, from addPodStats to donePodStats, so it includes
 //     queueing and prompt processing. Pods that receive different request mixes read differently
 //     even on the same hardware.

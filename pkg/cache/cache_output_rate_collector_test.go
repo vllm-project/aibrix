@@ -60,10 +60,14 @@ gateway_pod_output_rate_age_seconds` + labels0 + ` 90
 # HELP gateway_pod_output_tokens_per_request_second Output tokens per second of one request's time on the pod, over requests this gateway routed (EWMA of ~1-minute windows). Not updated while the pod completes too few requests; see gateway_pod_output_rate_age_seconds.
 # TYPE gateway_pod_output_tokens_per_request_second gauge
 gateway_pod_output_tokens_per_request_second` + labels0 + ` 46.5
-# HELP gateway_pod_requests_without_output_tokens_fraction Share of the requests this gateway routed to the pod that finished without output tokens, in the last ~1-minute window in which any finished. They are not part of gateway_pod_output_tokens_per_request_second.
+# HELP gateway_pod_requests_without_output_tokens_fraction Share of the requests this gateway routed to the pod that finished without output tokens (aborted, failed, or streamed without stream_options.include_usage), in the last ~1-minute window in which any finished. Not a failure rate. They are not part of gateway_pod_output_tokens_per_request_second. Keeps its last value while the pod is idle; see gateway_pod_requests_without_output_tokens_fraction_age_seconds.
 # TYPE gateway_pod_requests_without_output_tokens_fraction gauge
 gateway_pod_requests_without_output_tokens_fraction` + labels0 + ` 0.25
 gateway_pod_requests_without_output_tokens_fraction` + labels2 + ` 1
+# HELP gateway_pod_requests_without_output_tokens_fraction_age_seconds Seconds since gateway_pod_requests_without_output_tokens_fraction was last updated for the pod.
+# TYPE gateway_pod_requests_without_output_tokens_fraction_age_seconds gauge
+gateway_pod_requests_without_output_tokens_fraction_age_seconds` + labels0 + ` 90
+gateway_pod_requests_without_output_tokens_fraction_age_seconds` + labels2 + ` 1
 `
 	require.NoError(t, testutil.GatherAndCompare(registry, strings.NewReader(expected)))
 
@@ -82,8 +86,10 @@ func TestInitPodOutputRateCollector(t *testing.T) {
 	require.NoError(t, initPodOutputRateCollector(NewForTest(), registry, stop))
 	require.Error(t, initPodOutputRateCollector(NewForTest(), registry, nil), "a second registration is refused")
 
+	// Only a collector with the same descriptors is refused while the first is registered, so
+	// this succeeds only once the first one is gone.
 	close(stop)
 	require.Eventually(t, func() bool {
-		return registry.Register(newPodOutputRateCollector(NewForTest(), "probe")) == nil
+		return registry.Register(newPodOutputRateCollector(NewForTest(), gatewayPodName)) == nil
 	}, time.Second, 10*time.Millisecond)
 }

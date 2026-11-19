@@ -280,11 +280,36 @@ type outputRateSnapshot struct {
 	at       time.Time
 }
 
-func (s outputRateSnapshot) snapshotTime() time.Time { return s.at }
-func (s MetricSnapshot) snapshotTime() time.Time     { return s.Timestamp }
+// pruneOutputRateHistory is cleanupOldSnapshots for a completion-counter history, in place:
+// snapshots older than window1mHistoryMaxAge go, then all but the newest window1mHistoryMaxCount.
+func pruneOutputRateHistory(history []outputRateSnapshot, now time.Time) []outputRateSnapshot {
+	cutoff := now.Add(-window1mHistoryMaxAge)
+	kept := history[:0]
+	for _, s := range history {
+		if s.at.After(cutoff) {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) > window1mHistoryMaxCount {
+		kept = append(kept[:0], kept[len(kept)-window1mHistoryMaxCount:]...)
+	}
+	return kept
+}
 
-// timestamped is a snapshot of either kind of rate history.
-type timestamped interface{ snapshotTime() time.Time }
+// outputRateBaseIndex1m is baseSnapshot1m for a completion-counter history: the index of the
+// snapshot closest to one minute ago, the newest one excluded. history must hold at least 2
+// snapshots. The two are kept apart because a shared generic helper slowed calculateRate1m;
+// TestOutputRateBaseMatchesBaseSnapshot1m holds them to the same choice.
+func outputRateBaseIndex1m(history []outputRateSnapshot, now time.Time) int {
+	target := now.Add(-window1mTarget)
+	base := 0
+	for i := 1; i < len(history)-1; i++ {
+		if absDuration(history[i].at.Sub(target)) < absDuration(history[base].at.Sub(target)) {
+			base = i
+		}
+	}
+	return base
+}
 
 // outputRateDeltas1m returns how much the pod's completion counters grew over the same
 // approximate 1-minute window as calculateRate1m. ok is false when there is not enough history
@@ -304,11 +329,9 @@ func (c *Store) outputRateDeltas1m(pod *Pod, cur outputRateCounters) (delta outp
 	history := rateCalculator.outputRate[key]
 	if len(history) == 0 || now.Sub(history[len(history)-1].at) >= window1mSnapshotInterval {
 		// The history only changes when a snapshot is admitted, so that is the only time it is
-		// pruned and stored: cleanupOldSnapshots copies it, and between two snapshots (at most
-		// window1mSnapshotInterval) nothing can age out of a 3-minute history that matters to a
-		// 1-minute baseline.
-		history = cleanupOldSnapshots(append(history, outputRateSnapshot{counters: cur, at: now}),
-			now, window1mHistoryMaxAge, window1mHistoryMaxCount)
+		// pruned and stored. Between two snapshots (at most window1mSnapshotInterval) nothing can
+		// age out of a 3-minute history that matters to a 1-minute baseline.
+		history = pruneOutputRateHistory(append(history, outputRateSnapshot{counters: cur, at: now}), now)
 		if rateCalculator.outputRate == nil {
 			rateCalculator.outputRate = make(map[string][]outputRateSnapshot)
 		}
@@ -318,7 +341,7 @@ func (c *Store) outputRateDeltas1m(pod *Pod, cur outputRateCounters) (delta outp
 	if len(history) < 2 {
 		return delta, false
 	}
-	base := history[baseSnapshotIndex1m(history, now)]
+	base := history[outputRateBaseIndex1m(history, now)]
 	if now.Sub(base.at).Seconds() < window1mMinElapsed {
 		return delta, false
 	}
@@ -357,17 +380,11 @@ func appendSnapshot1m(history []MetricSnapshot, snapshot MetricSnapshot) []Metri
 // If we have less than 1 minute of history, this naturally falls back to the oldest
 // snapshot in the buffer. history must hold at least 2 snapshots.
 func baseSnapshot1m(history []MetricSnapshot, now time.Time) *MetricSnapshot {
-	return &history[baseSnapshotIndex1m(history, now)]
-}
-
-// baseSnapshotIndex1m is the index of the snapshot baseSnapshot1m returns, for either kind of
-// rate history.
-func baseSnapshotIndex1m[T timestamped](history []T, now time.Time) int {
 	target := now.Add(-window1mTarget)
-	base := 0
+	base := &history[0]
 	for i := 1; i < len(history)-1; i++ {
-		if absDuration(history[i].snapshotTime().Sub(target)) < absDuration(history[base].snapshotTime().Sub(target)) {
-			base = i
+		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(base.Timestamp.Sub(target)) {
+			base = &history[i]
 		}
 	}
 	return base
@@ -381,13 +398,13 @@ func absDuration(d time.Duration) time.Duration {
 }
 
 // cleanupOldSnapshots removes snapshots that are too old or exceed the maximum count
-func cleanupOldSnapshots[T timestamped](history []T, now time.Time, maxAge time.Duration, maxCount int) []T {
+func cleanupOldSnapshots(history []MetricSnapshot, now time.Time, maxAge time.Duration, maxCount int) []MetricSnapshot {
 	cutoffTime := now.Add(-maxAge)
 
 	// Remove snapshots older than maxAge
-	var filtered []T
+	var filtered []MetricSnapshot
 	for _, snapshot := range history {
-		if snapshot.snapshotTime().After(cutoffTime) {
+		if snapshot.Timestamp.After(cutoffTime) {
 			filtered = append(filtered, snapshot)
 		}
 	}

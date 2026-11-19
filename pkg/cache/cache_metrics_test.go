@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -1179,6 +1180,36 @@ func TestOutputRateDeltas1m(t *testing.T) {
 	d, ok := c.outputRateDeltas1m(pod, reset)
 	require.True(t, ok)
 	require.Equal(t, reset, d)
+}
+
+// TestOutputRateBaseMatchesBaseSnapshot1m: the completion-counter history picks its baseline and
+// prunes with its own helpers; they must agree with the single-series ones on any history.
+func TestOutputRateBaseMatchesBaseSnapshot1m(t *testing.T) {
+	rng := rand.New(rand.NewSource(3450))
+	now := time.Now()
+	for trial := 0; trial < 500; trial++ {
+		n := 2 + rng.Intn(60)
+		single := make([]MetricSnapshot, n)
+		group := make([]outputRateSnapshot, n)
+		age := time.Duration(rng.Int63n(int64(400 * time.Second)))
+		for i := n - 1; i >= 0; i-- { // newest last
+			at := now.Add(-age)
+			single[i] = MetricSnapshot{Value: float64(i), Timestamp: at}
+			group[i] = outputRateSnapshot{counters: outputRateCounters{tokens: float64(i)}, at: at}
+			age += time.Duration(rng.Int63n(int64(9*time.Second))) + time.Millisecond
+		}
+
+		single = cleanupOldSnapshots(single, now, window1mHistoryMaxAge, window1mHistoryMaxCount)
+		group = pruneOutputRateHistory(group, now)
+		require.Len(t, group, len(single), "trial %d: pruned length", trial)
+		for i := range single {
+			require.Equal(t, single[i].Value, group[i].counters.tokens, "trial %d: kept snapshot %d", trial, i)
+		}
+		if len(single) < 2 {
+			continue
+		}
+		require.Equal(t, baseSnapshot1m(single, now).Value, group[outputRateBaseIndex1m(group, now)].counters.tokens, "trial %d: baseline", trial)
+	}
 }
 
 // No result before there are two snapshots, or while the baseline is younger than the minimum.
