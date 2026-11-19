@@ -37,7 +37,11 @@ type podRunningRequestsCollector struct {
 }
 
 func newPodRunningRequestsCollector(store *Store) *podRunningRequestsCollector {
-	labels := metrics.DefaultMetricLabels(&v1.Pod{}, &types.RoutingContext{})
+	labels := metrics.DefaultMetricLabels(&v1.Pod{
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{{}},
+		},
+	}, &types.RoutingContext{})
 	labelNames := make([]string, 0, len(labels))
 	for name := range labels {
 		labelNames = append(labelNames, name)
