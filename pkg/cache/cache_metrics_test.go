@@ -408,6 +408,78 @@ func TestSyncRunningRequestsGloballyExportsGauge(t *testing.T) {
 	}
 }
 
+func TestSyncRunningRequestsGloballyExportsGaugeRemoteReader(t *testing.T) {
+	tests := []struct {
+		name   string
+		seen   bool
+		remote int64
+		stale  bool
+		local  int32
+		want   []float64
+	}{
+		{name: "unread", local: 2},
+		{name: "empty-first-read", seen: true, local: 2, want: []float64{2}},
+		{name: "fresh", seen: true, remote: 4, local: 2, want: []float64{6}},
+		{name: "stale", seen: true, remote: 4, stale: true, local: 2, want: []float64{2}},
+		{name: "zero", seen: true, want: []float64{0}},
+	}
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	handler := promhttp.Handler()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{snapshotClock: func() time.Time { return now }}
+			pod := namespacedTestPod("inference", "running-reader-gauge-test-"+tt.name)
+			const modelName = "reader-model"
+			pod.Labels = map[string]string{constants.ModelLabelName: modelName}
+			pod.runningRequests = tt.local
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			t.Cleanup(func() {
+				metrics.DeleteGaugeMetricForPod(metrics.RealtimeNumRequestsRunning, &types.RoutingContext{Model: modelName}, pod.Pod, nil)
+			})
+
+			// The reader must take precedence over a conflicting snapshot, even
+			// while the pod is unread and the gauge must not be emitted.
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+				entries: map[string][]remoteRunningEntry{podKey: {{count: 99, readAt: now}}},
+			})
+			reader := newRemoteRunningReader(store, time.Second)
+			store.remoteRunningReader.Store(reader)
+			if tt.seen {
+				readAt := now
+				if tt.stale {
+					readAt = now.Add(-reader.maxAge - time.Nanosecond)
+				}
+				reader.publish(podKey, tt.remote, readAt)
+			}
+			store.syncRunningRequestsGlobally(pod)
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			require.Equal(t, http.StatusOK, w.Code)
+			var parser expfmt.TextParser
+			families, err := parser.TextToMetricFamilies(w.Body)
+			require.NoError(t, err)
+			var values []float64
+			if family := families[metrics.RealtimeNumRequestsRunning]; family != nil {
+				for _, m := range family.GetMetric() {
+					name, _ := metrics.GetLabelValueForKey(m, "pod")
+					namespace, _ := metrics.GetLabelValueForKey(m, "namespace")
+					if name != pod.Name || namespace != pod.Namespace {
+						continue
+					}
+					model, err := metrics.GetLabelValueForKey(m, "model")
+					require.NoError(t, err)
+					require.Equal(t, modelName, model)
+					require.NotNil(t, m.Gauge)
+					values = append(values, m.Gauge.GetValue())
+				}
+			}
+			require.Equal(t, tt.want, values, "unexpected %s samples for pod %s", metrics.RealtimeNumRequestsRunning, podKey)
+		})
+	}
+}
+
 func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	originalRegisterer := prometheus.DefaultRegisterer
