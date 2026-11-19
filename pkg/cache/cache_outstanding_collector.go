@@ -37,7 +37,7 @@ func newPodOutstandingCollector(store *Store, gatewayName string) *podOutstandin
 		desc: prometheus.NewDesc(
 			"gateway_pod_outstanding_requests",
 			"Requests routed by this gateway to a pod that have not completed.",
-			[]string{"namespace", "pod_name", "model"},
+			[]string{"namespace", "pod", "model"},
 			prometheus.Labels{"gateway_pod": gatewayName},
 		),
 	}

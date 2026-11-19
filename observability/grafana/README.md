@@ -52,20 +52,21 @@ target inference pod and have not been finalized. It excludes requests sent
 directly to the engine or still waiting for pod selection. It is not the engine's
 GPU-running request count or the estimate from `realtime_num_requests_running`.
 
-On `/metrics`, labels `namespace` and `pod_name` identify the target inference
+On `/metrics`, labels `namespace` and `pod` identify the target inference
 pod; `gateway_pod` identifies the reporting gateway. `model` comes from the pod's
 `model.aibrix.ai/name` label, falling back to the same annotation or an empty
 value. The count is a pod total across all models and adapters, not a per-model
-request count.
+request count. This uses the same inference pod identity labels as the shared
+gateway metric exporter.
 
 For prefill/decode (PD) disaggregated models, the ledger tracks the selected
 decode pod, not the prefill pod. Prefill-only pods therefore emit zero even
 while serving prefill requests; this metric cannot diagnose load imbalance
 between prefill pods. `gateway_prefill_outstanding_requests` tracks prefill
-requests separately per gateway, without a target pod label. The inference pod
-labels match `pd_token_load_decode_tokens`, allowing dashboards to compare
-outstanding request counts with estimated prompt-token load for the same decode
-pod.
+requests separately per gateway, without a target pod label.
+`pd_token_load_decode_tokens` provides estimated prompt-token load for decode
+pods, but uses `pod_name` for their names; joining it with this metric requires
+label normalization.
 
 Cardinality is one series per gateway per cached inference pod, including idle
 pods: G gateways caching the same N pods emit G × N series. Each scrape visits
@@ -78,26 +79,37 @@ drained; a disappearing series is not evidence of request completion.
 
 The shipped ServiceMonitor uses Prometheus' default `honor_labels: false`.
 The operator adds the gateway's `namespace` and `pod` target labels. At ingestion,
-the inference pod's `namespace` becomes `exported_namespace`, while `pod_name`
-does not collide and remains unchanged. The `model` label follows the existing
-gateway metric convention.
+the inference pod's labels become `exported_namespace` and `exported_pod`;
+`namespace` and `pod` identify the gateway scrape target. `gateway_pod` still
+identifies the reporting gateway. The existing
+[gateway plugin dashboard](AIBrix_Envoy_Gateway_Plugins_Dashboard.json) uses
+`exported_pod` for the same inference pod dimension. The `model` label follows
+the existing gateway metric convention.
 [Prometheus scrape configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config)
 
 ```promql
 # Total outstanding requests per inference pod across gateway replicas
-sum by (exported_namespace, pod_name) (gateway_pod_outstanding_requests)
+sum by (exported_namespace, exported_pod) (gateway_pod_outstanding_requests)
 
 # Identify which gateway retains a count after traffic has drained
-sum by (gateway_pod, exported_namespace, pod_name) (gateway_pod_outstanding_requests)
+sum by (gateway_pod, exported_namespace, exported_pod) (gateway_pod_outstanding_requests)
 
 # Aggregate by model only for single-model pods
 sum by (exported_namespace, model) (gateway_pod_outstanding_requests)
 ```
 
-With `honorLabels: true` on the `metrics` endpoint, replace
-`exported_namespace` with `namespace`. This setting affects all metrics on
-the endpoint. `spec.overrideHonorLabels: true` on the Prometheus resource
-forces the default behavior.
+These are gateway-local counts, so sum them across gateway replicas rather
+than using `max` to deduplicate repeated engine observations. Scrape each
+replica once to avoid double-counting.
+
+With effective `honorLabels: true` on the `metrics` endpoint, replace
+`exported_namespace` and `exported_pod` with `namespace` and `pod` in these
+queries. This setting affects all metrics on the endpoint.
+`spec.overrideHonorLabels: true` on the Prometheus resource forces the default
+behavior. Conflicts are resolved independently for each label: custom scrape
+configurations that do not supply a conflicting target label keep the original
+inference label name. Use the labels produced by your scrape configuration;
+this change does not modify the ServiceMonitor settings.
 [Prometheus Operator API reference](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.CommonPrometheusFields)
 
 For multiple clusters, also retain your cluster label.
@@ -115,8 +127,9 @@ registry or wait for the previous collector to unregister before registering
 another store in the same registry.
 
 The collector registers with `prometheus.DefaultRegisterer`. Wrapping the
-registerer with a `namespace` const label is unsupported: it duplicates the
-collector's variable label, so registration fails and the metric is not exposed.
+registerer with a `namespace` or `pod` const label is unsupported: it duplicates
+the collector's variable labels, so registration fails and the metric is not
+exposed.
 This registration-time conflict is separate from Prometheus' scrape-time label
 handling described above.
 
