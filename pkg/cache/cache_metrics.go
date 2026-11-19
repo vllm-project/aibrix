@@ -818,8 +818,9 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 // are left out, as GetPodsRunningRequestsApprox leaves them out (#3441): a sync that keeps
 // missing a pod's keys would otherwise report counts frozen when it first missed them.
 // With the remote running reader on, the other gateways' counts come from it instead: an unread
-// pod skips emission (matching the snapshot hold-back above), while a stale count falls back to
-// this gateway's own count.
+// pod skips updating the cached estimate (matching the snapshot hold-back above), while a
+// stale count falls back to this gateway's own count. The scrape-time collector exports fresh
+// estimates from current pods only.
 func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	var remoteRunning float64
@@ -842,7 +843,6 @@ func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 	klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
 
 	totalValue := &metrics.SimpleMetricValue{Value: total}
-	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeNumRequestsRunning, totalValue, nil)
 	if err := c.updatePodRecord(pod, "", metrics.RealtimeNumRequestsRunning,
 		metrics.PodMetricScope, totalValue); err != nil {
 		klog.V(4).ErrorS(err, "failed to update global running requests", "pod", pod.Name)

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -340,6 +341,138 @@ func TestEmitMetricToPrometheus_GaugeAndCounter(t *testing.T) {
 	require.Len(t, gaugeCalls, 1)
 	require.Equal(t, metrics.NumRequestsRunning, gaugeCalls[0].name)
 	require.Equal(t, 3.0, gaugeCalls[0].value)
+}
+
+func TestSyncRunningRequestsGloballyExportsGauge(t *testing.T) {
+	tests := []struct {
+		name       string
+		label      string
+		annotation string
+		wantModel  string
+	}{
+		{name: "label", label: "label-model", annotation: "org/annotation-model", wantModel: "label-model"},
+		{name: "annotation", annotation: "org/annotation-model", wantModel: "org/annotation-model"},
+		{name: "no-metadata"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := namespacedTestPod("inference", "running-gauge-test-"+tt.name)
+			pod.Labels = map[string]string{constants.ModelLabelName: tt.label}
+			pod.Annotations = map[string]string{constants.ModelLabelName: tt.annotation}
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			store.metaPods.Store(podKey, pod)
+			handler := runningRequestsMetricsHandler(t, store)
+
+			checkGauge := func(want float64) {
+				t.Helper()
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+				require.Equal(t, http.StatusOK, w.Code)
+				var parser expfmt.TextParser
+				families, err := parser.TextToMetricFamilies(w.Body)
+				require.NoError(t, err)
+				family := families[metrics.RealtimeNumRequestsRunning]
+				require.NotNil(t, family, "missing %s metric family in /metrics response", metrics.RealtimeNumRequestsRunning)
+				for _, m := range family.GetMetric() {
+					name, _ := metrics.GetLabelValueForKey(m, "pod")
+					namespace, _ := metrics.GetLabelValueForKey(m, "namespace")
+					if name == pod.Name && namespace == pod.Namespace {
+						model, err := metrics.GetLabelValueForKey(m, "model")
+						require.NoError(t, err)
+						require.Equal(t, tt.wantModel, model)
+						require.NotNil(t, m.Gauge)
+						require.Equal(t, want, m.Gauge.GetValue())
+						return
+					}
+				}
+				t.Fatalf("missing %s for pod %s", metrics.RealtimeNumRequestsRunning, podKey)
+			}
+
+			pod.runningRequests = 1
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+				entries: map[string][]remoteRunningEntry{podKey: {{count: 2, readAt: time.Now()}}},
+			})
+			store.syncRunningRequestsGlobally(pod)
+			checkGauge(3)
+
+			pod.runningRequests = 0
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
+			store.syncRunningRequestsGlobally(pod)
+			checkGauge(0)
+		})
+	}
+}
+
+func TestSyncRunningRequestsGloballyExportsGaugeRemoteReader(t *testing.T) {
+	tests := []struct {
+		name   string
+		seen   bool
+		remote int64
+		stale  bool
+		local  int32
+		want   []float64
+	}{
+		{name: "unread", local: 2},
+		{name: "empty-first-read", seen: true, local: 2, want: []float64{2}},
+		{name: "fresh", seen: true, remote: 4, local: 2, want: []float64{6}},
+		{name: "stale", seen: true, remote: 4, stale: true, local: 2, want: []float64{2}},
+		{name: "zero", seen: true, want: []float64{0}},
+	}
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{snapshotClock: func() time.Time { return now }}
+			pod := namespacedTestPod("inference", "running-reader-gauge-test-"+tt.name)
+			const modelName = "reader-model"
+			pod.Labels = map[string]string{constants.ModelLabelName: modelName}
+			pod.runningRequests = tt.local
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			store.metaPods.Store(podKey, pod)
+			handler := runningRequestsMetricsHandler(t, store)
+
+			// The reader must take precedence over a conflicting snapshot, even
+			// while the pod is unread and the gauge must not be emitted.
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+				entries: map[string][]remoteRunningEntry{podKey: {{count: 99, readAt: now}}},
+			})
+			reader := newRemoteRunningReader(store, time.Second)
+			store.remoteRunningReader.Store(reader)
+			if tt.seen {
+				readAt := now
+				if tt.stale {
+					readAt = now.Add(-reader.maxAge - time.Nanosecond)
+				}
+				reader.publish(podKey, tt.remote, readAt)
+			}
+			store.syncRunningRequestsGlobally(pod)
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			require.Equal(t, http.StatusOK, w.Code)
+			var parser expfmt.TextParser
+			families, err := parser.TextToMetricFamilies(w.Body)
+			require.NoError(t, err)
+			var values []float64
+			if family := families[metrics.RealtimeNumRequestsRunning]; family != nil {
+				for _, m := range family.GetMetric() {
+					name, _ := metrics.GetLabelValueForKey(m, "pod")
+					namespace, _ := metrics.GetLabelValueForKey(m, "namespace")
+					if name != pod.Name || namespace != pod.Namespace {
+						continue
+					}
+					model, err := metrics.GetLabelValueForKey(m, "model")
+					require.NoError(t, err)
+					require.Equal(t, modelName, model)
+					require.NotNil(t, m.Gauge)
+					values = append(values, m.Gauge.GetValue())
+				}
+			}
+			require.Equal(t, tt.want, values, "unexpected %s samples for pod %s", metrics.RealtimeNumRequestsRunning, podKey)
+		})
+	}
 }
 
 func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {

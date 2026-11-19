@@ -105,6 +105,59 @@ is unsupported; tests that initialize collectors directly must use an isolated
 registry or wait for the previous collector to unregister before registering
 another store in the same registry.
 
+## Query Cross-Gateway Running-Request Estimates
+
+`realtime_num_requests_running` estimates in-flight requests for an inference
+pod by adding the reporting gateway's local count to recent counts available
+from other gateways. The value is a pod total across all models and adapters.
+`model` comes from the pod's `model.aibrix.ai/name` label, falling back to the
+same annotation or an empty value.
+
+Unlike the local counts in `gateway_pod_outstanding_requests`, these estimates
+overlap across reporting gateways and can differ with snapshot freshness.
+Do not sum them across gateway replicas: doing so can double-count requests.
+Select a reporting gateway with `gateway_pod` when inspecting an estimate.
+
+This gauge follows the shared gateway metric label schema: on the raw plugin
+`/metrics` endpoint, `namespace` and `pod` identify the inference pod, and
+`gateway_pod` identifies the reporting gateway. It retains this schema rather
+than adopting the separate labels of `gateway_pod_outstanding_requests`;
+aligning those schemas requires a separate compatibility decision.
+
+With the shipped ServiceMonitor and effective `honor_labels: false`, the
+gateway's `namespace` and `pod` scrape target labels collide with the inference
+pod labels. Prometheus stores the inference pod identity as
+`exported_namespace` and `exported_pod`. Each collision is resolved independently.
+With effective `honor_labels: true`, the sample's `namespace` and `pod` labels
+remain the inference pod identity. For example, when both collisions occur
+under the default scrape policy:
+
+```promql
+realtime_num_requests_running{exported_namespace="inference", exported_pod="model-0", gateway_pod="gateway-0"}
+```
+
+The sync path waits until its active remote-count source is initialized:
+the snapshot must be published or, when the remote reader is enabled, the
+pod must have been read at least once. Once remote counts have been read,
+expired contributions are excluded; a subsequent sync can therefore report
+only the local count under the same metric name.
+
+The gateway exports this gauge through a scrape-time collector that reads
+timestamped estimates for pods currently in its cache. Removed pods and old
+model label combinations stop appearing on the next scrape after the cache
+processes their removal or update. A pod update replaces its cached metric
+records, so its estimate can be absent until the next successful sync. A
+removed pod stops contributing even if some of its requests remain unfinished;
+this drop does not mean those requests completed.
+
+Estimate updates still depend on successful engine metrics fetches. The
+collector omits records older than the maximum of 5 seconds, three pod-metric
+refresh intervals, and the fetch timeout plus one refresh interval (6 seconds
+with the defaults). A failed or skipped sync does not refresh that timestamp.
+Missing, untimestamped, or expired estimates are omitted, rather than reported
+as zero; a successfully computed zero is still exported. This freshness check
+affects metric exposition only and does not change routing cache behavior.
+
 ## ModelClaim Runtime Dashboard
 
 ### Required metrics

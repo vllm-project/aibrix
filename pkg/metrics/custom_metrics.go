@@ -466,7 +466,7 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 }
 
 func buildMetricLabels(pod *v1.Pod, routingCtx *types.RoutingContext, extras map[string]string) ([]string, []string) {
-	defaultLabelMap := generateDefaultMetricLabelsMap(pod, routingCtx)
+	defaultLabelMap := DefaultMetricLabels(pod, routingCtx)
 	labelNames := make([]string, 0, len(defaultLabelMap)+len(extras))
 	labelValues := make([]string, 0, len(defaultLabelMap)+len(extras))
 
@@ -500,7 +500,9 @@ func buildMetricLabels(pod *v1.Pod, routingCtx *types.RoutingContext, extras map
 	return labelNames, labelValues
 }
 
-func generateDefaultMetricLabelsMap(pod *v1.Pod, routingCtx *types.RoutingContext) map[string]string {
+// DefaultMetricLabels returns the shared gateway metric labels. A nil pod
+// omits pod-specific labels. The returned map belongs to the caller.
+func DefaultMetricLabels(pod *v1.Pod, routingCtx *types.RoutingContext) map[string]string {
 	model, loraAdapter := metricModelLabels(routingCtx)
 	if pod == nil {
 		return map[string]string{
