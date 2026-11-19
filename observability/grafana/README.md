@@ -136,27 +136,28 @@ under the default scrape policy:
 realtime_num_requests_running{exported_namespace="inference", exported_pod="model-0", gateway_pod="gateway-0"}
 ```
 
-The sync path waits until its active remote-count source is initialized:
+The collector waits until its active remote-count source is initialized:
 the snapshot must be published or, when the remote reader is enabled, the
 pod must have been read at least once. Once remote counts have been read,
-expired contributions are excluded; a subsequent sync can therefore report
-only the local count under the same metric name.
+expired contributions are excluded at scrape time; the gauge can therefore
+report only the local count under the same metric name. An initialized source
+with no remote requests still produces a sample, including a zero total.
 
-The gateway exports this gauge through a scrape-time collector that reads
-timestamped estimates for pods currently in its cache. Removed pods and old
+The gateway exports this gauge through a shared pod gauge collector. At scrape
+time, its running-request calculation adds the local atomic counter to fresh
+remote contributions for pods currently in the cache. Removed pods and old
 model label combinations stop appearing on the next scrape after the cache
-processes their removal or update. A pod update replaces its cached metric
-records, so its estimate can be absent until the next successful sync. A
-removed pod stops contributing even if some of its requests remain unfinished;
+processes their removal or update. A pod update does not need to wait for the
+next metric sync to expose an estimate once its remote source is initialized.
+A removed pod stops contributing even if some of its requests remain unfinished;
 this drop does not mean those requests completed.
 
-Estimate updates still depend on successful engine metrics fetches. The
-collector omits records older than the maximum of 5 seconds, three pod-metric
-refresh intervals, and the fetch timeout plus one refresh interval (6 seconds
-with the defaults). A failed or skipped sync does not refresh that timestamp.
-Missing, untimestamped, or expired estimates are omitted, rather than reported
-as zero; a successfully computed zero is still exported. This freshness check
-affects metric exposition only and does not change routing cache behavior.
+Collection performs only in-memory reads and does not depend on successful
+engine metrics fetches or metric-record timestamps. Remote freshness uses the
+active reader's age limit or the snapshot's per-contribution age limit; there
+is no additional age limit on the combined estimate. When remote data expires,
+the local count remains visible, including zero. Routing cache update and
+freshness policies are unchanged.
 
 ## ModelClaim Runtime Dashboard
 
