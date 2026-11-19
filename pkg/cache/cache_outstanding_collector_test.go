@@ -288,6 +288,43 @@ func TestPodOutstandingCollector_ConcurrentRequestsAndScrapes(t *testing.T) {
 		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",namespace=\"inference\",pod_name=\"model-0\"} 0\n")
 }
 
+func TestInitPodOutstandingCollector_WrappedRegisterer(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		labels  prometheus.Labels
+		wantErr bool
+	}{
+		{
+			name:   "gateway pod label",
+			labels: prometheus.Labels{"pod": "coord-a"},
+		},
+		{
+			name:    "gateway namespace and pod labels",
+			labels:  prometheus.Labels{"namespace": "aibrix-system", "pod": "coord-a"},
+			wantErr: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewForTest()
+			cache.addPod(requestTrackerTestPod("model-0", "inference", "model", "10.0.0.1"))
+			registry := prometheus.NewPedanticRegistry()
+			registerer := prometheus.WrapRegistererWith(tt.labels, registry)
+
+			err := initPodOutstandingCollector(cache, registerer, nil)
+			if tt.wantErr {
+				// Registerer const labels cannot duplicate the collector's inference
+				// namespace label; scrape-time honor_labels cannot resolve this.
+				require.ErrorContains(t, err, "duplicate label names in constant and variable labels")
+				assertOutstandingMetrics(t, registry, "")
+				return
+			}
+			require.NoError(t, err)
+			assertOutstandingMetrics(t, registry, fmt.Sprintf(
+				"gateway_pod_outstanding_requests{gateway_pod=%q,model=\"model\",namespace=\"inference\",pod=\"coord-a\",pod_name=\"model-0\"} 0\n", gatewayPodName))
+		})
+	}
+}
+
 func TestInitPodOutstandingCollector_RegistrationLifecycle(t *testing.T) {
 	cache := NewForTest()
 	cache.addPod(requestTrackerTestPod("model-0", "inference", "model", "10.0.0.1"))

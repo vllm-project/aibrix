@@ -35,27 +35,62 @@ Send-failure and shutdown accounting are unchanged.
 
 ## Query Gateway Pod Outstanding Requests
 
-`gateway_pod_outstanding_requests` reports each gateway's local count of
-unfinished requests routed to an inference pod. Scrape each gateway plugin
-replica's `/metrics` endpoint once. The shipped ServiceMonitor selects Services
-labeled `app: gateway-plugins` in `aibrix-system`. For Helm, add that label to the
-gateway plugin Service and set `spec.namespaceSelector.matchNames` to the release
-namespace. [Gateway plugin ServiceMonitor](../monitor/service_monitor_gateway_plugin.yaml)
+Scrape each gateway plugin replica's `/metrics` endpoint once to collect
+`gateway_pod_outstanding_requests`, using the shipped
+[`service_monitor_gateway_plugin.yaml`](../monitor/service_monitor_gateway_plugin.yaml).
+This recipe assumes the Kustomize installation in `aibrix-system`: the monitor
+selects Services labeled `app: gateway-plugins`. For a Helm installation, add
+`app: gateway-plugins` to the gateway plugin Service's `metadata.labels` to use
+this monitor, and set `spec.namespaceSelector.matchNames` to the release's
+namespace. The chart's default Service labels do not match this selector.
+The Envoy `/stats/prometheus` endpoint
+configured in [`service_monitor_gateway.yaml`](../monitor/service_monitor_gateway.yaml)
+does not expose this metric.
 
-### PromQL aggregation
+This Gauge counts requests tracked locally by a gateway that were routed to a
+target inference pod and have not been finalized. It excludes requests sent
+directly to the engine or still waiting for pod selection. It is not the engine's
+GPU-running request count or the estimate from `realtime_num_requests_running`.
 
-With the shipped ServiceMonitor, `namespace` and `pod` identify the gateway
-scrape target. Group inference pods by `exported_namespace` and `pod_name`.
+On `/metrics`, labels `namespace` and `pod_name` identify the target inference
+pod; `gateway_pod` identifies the reporting gateway. `model` comes from the pod's
+`model.aibrix.ai/name` label, falling back to the same annotation or an empty
+value. The count is a pod total across all models and adapters, not a per-model
+request count.
+
+For prefill/decode (PD) disaggregated models, the ledger tracks the selected
+decode pod, not the prefill pod. Prefill-only pods therefore emit zero even
+while serving prefill requests; this metric cannot diagnose load imbalance
+between prefill pods. `gateway_prefill_outstanding_requests` tracks prefill
+requests separately per gateway, without a target pod label. The inference pod
+labels match `pd_token_load_decode_tokens`, allowing dashboards to compare
+outstanding request counts with estimated prompt-token load for the same decode
+pod.
+
+Cardinality is one series per gateway per cached inference pod, including idle
+pods: G gateways caching the same N pods emit G × N series. Each scrape visits
+all cached pods, so collection work and response size grow with N.
+
+When a pod is removed from the cache, its series disappears even if unfinished
+requests remain in the recently deleted pod snapshot during the grace period.
+Pod deletion can therefore cause a dip in the aggregate without requests having
+drained; a disappearing series is not evidence of request completion.
+
+The shipped ServiceMonitor uses Prometheus' default `honor_labels: false`.
+The operator adds the gateway's `namespace` and `pod` target labels. At ingestion,
+the inference pod's `namespace` becomes `exported_namespace`, while `pod_name`
+does not collide and remains unchanged. The `model` label follows the existing
+gateway metric convention.
 [Prometheus scrape configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config)
 
 ```promql
 # Total outstanding requests per inference pod across gateway replicas
 sum by (exported_namespace, pod_name) (gateway_pod_outstanding_requests)
 
-# Outstanding requests per gateway and inference pod
+# Identify which gateway retains a count after traffic has drained
 sum by (gateway_pod, exported_namespace, pod_name) (gateway_pod_outstanding_requests)
 
-# Total by inference namespace and model, for single-model pods only
+# Aggregate by model only for single-model pods
 sum by (exported_namespace, model) (gateway_pod_outstanding_requests)
 ```
 
@@ -65,24 +100,25 @@ the endpoint. `spec.overrideHonorLabels: true` on the Prometheus resource
 forces the default behavior.
 [Prometheus Operator API reference](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.CommonPrometheusFields)
 
-Keep your cluster label when querying multiple clusters. During a rolling
-upgrade from `target_namespace` and `target_pod`, normalize both label sets
-before summing across gateway replicas.
+For multiple clusters, also retain your cluster label.
 
-### Metric semantics
+A persistent nonzero value reflects the gateway's local accounting state; it
+does not prove that the engine is still executing requests.
 
-- `gateway_pod` identifies the reporting gateway. On `/metrics`, `namespace`
-  and `pod_name` identify the inference pod.
-- `model` comes from the pod's `model.aibrix.ai/name` label, then its annotation,
-  and defaults to empty. The gauge counts requests across the pod's models and
-  adapters.
-- Each gateway emits one series per cached inference pod, with zero for idle
-  pods. Removing a pod drops its series even if requests are still pending.
-- In prefill/decode deployments, requests count toward the decode pod. This
-  gauge shares inference pod labels with `pd_token_load_decode_tokens`, so
-  dashboards can show request counts and estimated prompt-token load for the
-  same decode pod. Use `gateway_prefill_outstanding_requests` for prefill counts
-  per gateway.
+Gateway cache initialization through `InitWithOptions` is guarded by
+`sync.Once` and supports one store per process. The collector retains that
+store until it is unregistered after `stopCh` closes. Registration failures are
+logged and initialization continues; a duplicate registration leaves the
+existing collector attached to its original store. In-process store replacement
+is unsupported; tests that initialize collectors directly must use an isolated
+registry or wait for the previous collector to unregister before registering
+another store in the same registry.
+
+The collector registers with `prometheus.DefaultRegisterer`. Wrapping the
+registerer with a `namespace` const label is unsupported: it duplicates the
+collector's variable label, so registration fails and the metric is not exposed.
+This registration-time conflict is separate from Prometheus' scrape-time label
+handling described above.
 
 ## Query Cross-Gateway Running-Request Estimates
 
