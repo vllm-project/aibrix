@@ -169,6 +169,82 @@ than replacing them with an unreviewed copy of ``values.yaml``:
     helm upgrade aibrix dist/chart -n aibrix-system \
       --reset-values -f aibrix-values-reviewed.yaml --wait --timeout=10m
 
+Do not accept a successful rollout, traffic, or xDS counters until the target
+images have reconciled. Immediately after the chart upgrade, the previous
+Deployment revision can still satisfy those checks. Use the Gateway ownership
+labels to find its proxy Deployment, not a generated name or container position.
+The example below assumes one proxy Deployment; stop if the selection is empty
+or ambiguous. Keep the actual controller Deployment name and container name
+from your existing installation (inspect them first):
+
+.. code:: bash
+
+    kubectl -n envoy-gateway-system get deployments -o yaml
+    export EG_NAMESPACE=envoy-gateway-system
+    export EG_DEPLOYMENT=envoy-gateway
+    export EG_CONTAINER=envoy-gateway
+    export GATEWAY_NAMESPACE=aibrix-system
+    export GATEWAY_NAME=aibrix-eg
+    export ENVOY_IMAGE=envoyproxy/envoy:v1.39.6
+    export GATEWAY_IMAGE=envoyproxy/gateway:v1.9.4
+    export CONTROLLER_IMAGE=docker.io/envoyproxy/gateway:v1.9.4
+    export OWNER_LABEL=gateway.envoyproxy.io/owning-gateway
+    export PROXY_SELECTOR="$OWNER_LABEL-namespace=$GATEWAY_NAMESPACE"
+    export PROXY_SELECTOR="$PROXY_SELECTOR,$OWNER_LABEL-name=$GATEWAY_NAME"
+
+Use your verified registry/repository references instead when they differ from
+the defaults above. Independently verify that those artifacts are Envoy
+v1.39.6 and Gateway v1.9.4 for your platform, and record their expected digests.
+A version-looking tag alone is not proof. Do not substitute an unavailable
+mirror tag or bypass this gate. The proxy's named ``envoy`` container must use
+the Envoy artifact; its named ``shutdown-manager`` container and the actual
+Gateway controller container must use the Gateway artifact.
+
+Run the following in a shell with failure handling enabled. Each target-image
+wait must succeed before rollout acceptance; a timeout, missing named container,
+or failed selection must stop the procedure, not fall through to traffic tests:
+
+.. code:: bash
+
+    set -eu
+    set -- $(kubectl -n "$EG_NAMESPACE" get deployment -l "$PROXY_SELECTOR" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+    test "$#" -eq 1
+    export PROXY_DEPLOYMENT="$1"
+    export IMAGE_PATH='.spec.template.spec.containers'
+    kubectl -n "$EG_NAMESPACE" wait "deployment/$EG_DEPLOYMENT" \
+      --for="jsonpath={$IMAGE_PATH[?(@.name=='$EG_CONTAINER')].image}=$CONTROLLER_IMAGE" \
+      --timeout=5m
+    kubectl -n "$EG_NAMESPACE" wait "deployment/$PROXY_DEPLOYMENT" \
+      --for="jsonpath={$IMAGE_PATH[?(@.name=='envoy')].image}=$ENVOY_IMAGE" \
+      --timeout=5m
+    kubectl -n "$EG_NAMESPACE" wait "deployment/$PROXY_DEPLOYMENT" \
+      --for="jsonpath={$IMAGE_PATH[?(@.name=='shutdown-manager')].image}=$GATEWAY_IMAGE" \
+      --timeout=5m
+    kubectl -n "$EG_NAMESPACE" rollout status "deployment/$EG_DEPLOYMENT" --timeout=5m
+    kubectl -n "$EG_NAMESPACE" rollout status "deployment/$PROXY_DEPLOYMENT" --timeout=5m
+    kubectl -n "$EG_NAMESPACE" get deployment "$EG_DEPLOYMENT" "$PROXY_DEPLOYMENT" \
+      -o json > gateway-deployments.json
+    kubectl -n "$EG_NAMESPACE" get replicasets -o json > gateway-replicasets.json
+    kubectl -n "$EG_NAMESPACE" get pods -o json > gateway-pods.json
+
+Before accepting these snapshots, match Pods to the current Deployment and
+ReplicaSet owner UIDs, including the controller Pods. Require the current
+Deployment generation to be observed, all desired replicas updated and
+available, and each current Pod Ready with every required container ready.
+Check each named container's Pod-spec image and running ``imageID`` against the
+verified artifact and platform digest recorded above. Ignore terminating old
+Pods as proof of the new revision. Missing/mismatched image IDs, unready Pods,
+wrong owners, or incomplete reconciliation mean stop and investigate.
+
+Record the proxy Pod UIDs, then restart the selected proxy Deployment and repeat
+the selection, target-image waits, rollout checks, and ready-Pod image-ID checks.
+Re-select by the same Gateway ownership labels in case reconciliation replaced
+the Deployment. Require replacement proxy Pod UIDs and verify both named
+containers again; do not accept a surviving old Pod or reuse an old snapshot.
+Only after this gate succeeds should post-restart traffic and xDS checks count
+as migration evidence. These checks do not establish zero-downtime upgrades.
+
 Check that the Gateway and its policies are accepted for their current
 ``metadata.generation``. Check Envoy's xDS rejection counters and send traffic
 after restarting a proxy as well as before it: a proxy can keep serving its
