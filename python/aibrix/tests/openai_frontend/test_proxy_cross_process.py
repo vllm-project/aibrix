@@ -692,11 +692,12 @@ class TestStreamingMultipartCrossProcess:
 
 
 class TestVideoSyncMultipartCrossProcess:
-    @pytest.mark.parametrize("persist", [False, True])
+    @pytest.mark.parametrize("output", [None, '{"url":"/unused/videos"}', "{"])
     def test_large_ordered_inputs_and_output_form_field(
-        self, ready_proxy, tmp_path, persist
+        self, ready_proxy, tmp_path, output
     ):
-        destination = str(tmp_path / "videos") if persist else None
+        if output is not None and output != "{":
+            output = json.dumps({"url": str(tmp_path / "videos")})
 
         def body(payload_chunks, output):
             content_type, parts = _multipart(
@@ -714,23 +715,24 @@ class TestVideoSyncMultipartCrossProcess:
                     f"\r\n--{boundary}\r\nContent-Disposition: form-data; "
                     'name="output"\r\n\r\n'
                 ).encode()
-                + json.dumps({"url": output}).encode()
+                + output.encode()
                 if output is not None
                 else b""
             )
             return content_type, [*parts[:-1], second, output_part, parts[-1]]
 
-        # Warm the same parser and writer path, including lazy storage SDK imports.
-        content_type, parts = body([b"warmup"], destination)
-        httpx.post(
+        # Warm the same streaming upload path before measuring memory growth.
+        content_type, parts = body([b"warmup"], output)
+        warmup = httpx.post(
             f"{ready_proxy.url}/v1/videos/sync",
             content=b"".join(parts),
             headers={"content-type": content_type},
             timeout=30,
-        ).raise_for_status()
+        )
+        assert warmup.status_code == (400 if output == "{" else 200), warmup.text
         size = 32 * MiB
         chunks, sha = _audio_chunks(size)
-        content_type, parts = body(chunks, destination)
+        content_type, parts = body(chunks, output)
         with _PeakRSS(ready_proxy.proc.pid) as rss:
             response = httpx.post(
                 f"{ready_proxy.url}/v1/videos/sync?flag=a%2Fb&flag=c",
@@ -738,19 +740,23 @@ class TestVideoSyncMultipartCrossProcess:
                 headers={"content-type": content_type},
                 timeout=120,
             )
-        assert response.status_code == 200, response.text
-        if persist:
+        assert response.status_code == (400 if output == "{" else 200), response.text
+        assert rss.growth < 16 * MiB, (
+            f"frontend RSS grew {rss.growth / MiB:.1f} MiB for a 32 MiB upload"
+        )
+        if output == "{":
+            assert not list(tmp_path.glob("videos/*.mp4"))
+            assert ready_proxy.metric("proxy_in_flight_requests") == 0
+            return
+        if output is None:
+            media = response.content
+        else:
             metadata = response.json()
-            assert metadata["model"] == "minimax-h3"
-            assert "usage" not in metadata
-            assert isinstance(metadata["created"], int)
             receipt = metadata["output"]
-            assert receipt["url"] == destination
+            assert receipt["url"] == str(tmp_path / "videos")
             (artifact,) = receipt["artifacts"]
             assert artifact == f"{metadata['id']}-0.mp4"
-            media = (Path(destination) / artifact).read_bytes()
-        else:
-            media = response.content
+            media = (Path(receipt["url"]) / artifact).read_bytes()
         assert media.startswith(b"\x00\x00\x00\x18ftypmp42")
         assert json.loads(media[12:]) == {
             "model": "minimax-h3",
@@ -763,8 +769,6 @@ class TestVideoSyncMultipartCrossProcess:
                 },
             ],
             "query": "flag=a%2Fb&flag=c",
+            "output": output,
         }
-        assert rss.growth < 16 * MiB, (
-            f"frontend RSS grew {rss.growth / MiB:.1f} MiB for a 32 MiB upload"
-        )
         assert ready_proxy.metric("proxy_in_flight_requests") == 0

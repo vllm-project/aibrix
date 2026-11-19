@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Persistence boundaries for the native multipart synchronous video endpoint."""
+"""Persistence boundaries for streamed multipart synchronous video requests."""
 
 import asyncio
 import gzip
@@ -54,11 +54,12 @@ async def harness(monkeypatch, tmp_path):
         pause_upload=False,
         reject_upload=False,
         forwarded=[],
+        upload_chunks=[],
         deleted=[],
         streams=[],
         directories=[],
-        request_files=[],
         objects={},
+        forwarding=asyncio.Event(),
         receiving=asyncio.Event(),
         uploading=asyncio.Event(),
         release_receive=asyncio.Event(),
@@ -74,15 +75,11 @@ async def harness(monkeypatch, tmp_path):
             return result
         return directory_factory(*args, **kwargs)
 
+    def no_upload_spooling(*args, **kwargs):
+        pytest.fail("Input uploads must stream without temporary files")
+
     monkeypatch.setattr(tempfile, "TemporaryDirectory", directory)
-    file_factory = tempfile.TemporaryFile
-
-    def temporary_file(*args, **kwargs):
-        result = file_factory(*args, **kwargs)
-        h.request_files.append(result)
-        return result
-
-    monkeypatch.setattr(tempfile, "TemporaryFile", temporary_file)
+    monkeypatch.setattr(tempfile, "TemporaryFile", no_upload_spooling)
 
     async def put_object(key, data, **kwargs):
         h.uploading.set()
@@ -121,34 +118,41 @@ async def harness(monkeypatch, tmp_path):
         async def aclose(self):
             self.closed = True
 
-    async def upstream(request):
-        if request.method == "POST":
-            h.forwarded.append(
-                (request.url.raw_path, dict(request.headers), await request.aread())
-            )
-            if h.status == 200:
-                return httpx.Response(
-                    200,
-                    json={
-                        "id": f"video_gen_{len(h.forwarded)}",
-                        "status": "completed",
-                        "model": "engine-model",
-                        "inference_time_s": 1.25,
-                    },
+    class Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if request.method == "POST":
+                chunks = []
+                async for chunk in request.stream:
+                    chunks.append(chunk)
+                    h.upload_chunks.append(chunk)
+                    h.forwarding.set()
+                h.forwarded.append(
+                    (request.url.raw_path, dict(request.headers), b"".join(chunks))
                 )
-        elif request.method == "DELETE":
-            h.deleted.append(request.url.path)
-            return httpx.Response(200, json={"deleted": True})
-        else:
-            assert (
-                request.url.path == f"/v1/videos/video_gen_{len(h.forwarded)}/content"
-            )
-        stream = Body()
-        h.streams.append(stream)
-        return httpx.Response(h.status, headers=h.response_headers, stream=stream)
+                if h.status == 200:
+                    return httpx.Response(
+                        200,
+                        json={
+                            "id": f"video_gen_{len(h.forwarded)}",
+                            "status": "completed",
+                            "model": "engine-model",
+                            "inference_time_s": 1.25,
+                        },
+                    )
+            elif request.method == "DELETE":
+                h.deleted.append(request.url.path)
+                return httpx.Response(200, json={"deleted": True})
+            else:
+                assert (
+                    request.url.path
+                    == f"/v1/videos/video_gen_{len(h.forwarded)}/content"
+                )
+            stream = Body()
+            h.streams.append(stream)
+            return httpx.Response(h.status, headers=h.response_headers, stream=stream)
 
     h.engine._subprocess._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(upstream), base_url="http://inner"
+        transport=Transport(), base_url="http://inner"
     )
 
     def set_form(
@@ -164,35 +168,33 @@ async def harness(monkeypatch, tmp_path):
             ("prompt", (None, "图1、图2按顺序生成视频。")),
             ("seed", (None, "0")),
             ("input_references", ("first.png", b"first", "image/png")),
-            ("input_references", ("second.png", b"second", "image/png")),
+            (
+                "input_references",
+                ("second.png", b"binary\r\n--almost-a-boundary\x00\xff", "image/png"),
+            ),
             *extra,
         ]
         output_parts = [] if output is None else [("output", (None, output))]
-        parts = (
-            [*output_parts, *native_parts]
-            if output_first
-            else [*native_parts, *output_parts]
+        upload = httpx.Request(
+            "POST",
+            f"http://frontend{PATH}",
+            files=(
+                [*output_parts, *native_parts]
+                if output_first
+                else [*native_parts, *output_parts]
+            ),
         )
-        upload = httpx.Request("POST", f"http://frontend{PATH}", files=parts)
         h.body = upload.read()
         h.headers = {
             "content-type": upload.headers["content-type"],
             "content-length": upload.headers["content-length"],
         }
-        # Reuse the original boundary to compare every remaining part byte-for-byte.
-        expected = httpx.Request(
-            "POST",
-            "http://inner",
-            files=[part for part in native_parts if part[0] != "output"],
-            headers={"content-type": h.headers["content-type"]},
-        )
-        h.native_body = expected.read()
 
     h.set_form = set_form
     h.set_form()
-    app = FastApiFrontend(h.engine).app
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app), base_url="http://frontend"
+        transport=httpx.ASGITransport(FastApiFrontend(h.engine).app),
+        base_url="http://frontend",
     ) as h.client:
         try:
             yield h
@@ -205,7 +207,6 @@ async def harness(monkeypatch, tmp_path):
     assert not h.engine._stream_closers
     assert all(stream.closed for stream in h.streams)
     assert all(not path.exists() for path in h.directories)
-    assert all(file.closed for file in h.request_files)
     assert len(h.deleted) == (len(h.forwarded) if h.status == 200 else 0)
 
 
@@ -249,9 +250,9 @@ async def test_video_sync_persists_complete_mp4(
     else:
         assert h.objects == {f"run/{artifact}": (VIDEO, "video/mp4")}
     ((path, headers, body),) = h.forwarded
-    assert path == PATH.replace("/sync", "").encode() and body == h.native_body
+    assert path == PATH.replace("/sync", "").encode() and body == h.body
     assert headers["content-type"] == h.headers["content-type"]
-    assert headers["content-length"] == str(len(h.native_body))
+    assert headers["content-length"] == h.headers["content-length"]
     assert h.directories and not h.engine._in_flight
 
 
@@ -269,9 +270,6 @@ async def test_video_sync_waits_for_upload_and_uses_unique_names(harness):
         second = await h.client.post(PATH, content=h.body, headers=h.headers)
         assert first.status_code == second.status_code == 200
         assert first.json()["id"] != second.json()["id"]
-        assert (
-            first.json()["output"]["artifacts"] != second.json()["output"]["artifacts"]
-        )
         assert len(h.objects) == 2
     finally:
         h.release_upload.set()
@@ -279,88 +277,112 @@ async def test_video_sync_waits_for_upload_and_uses_unique_names(harness):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["模型/测试", "", None])
-async def test_video_sync_receipt_uses_submitted_model(harness, model):
-    h = harness
-    h.set_form(model=model)
-    response = await h.client.post(PATH, content=h.body, headers=h.headers)
-    assert response.status_code == 200, response.text
-    assert response.json()["model"] == model
-    assert "usage" not in response.json()
-    assert h.forwarded[0][2] == h.native_body
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("output", [None, "null", '{"url":"tos://bucket/run"}'])
 @pytest.mark.parametrize(
     "model_part, expected_model",
     [
-        ((None, "last-model"), "last-model"),
+        ((None, "模型/测试"), "模型/测试"),
+        ((None, ""), ""),
         (("model.txt", b"uploaded-model"), None),
         ((None, b"\xff"), None),
         ((None, "x" * (64 * 1024 + 1)), None),
     ],
-    ids=["duplicate", "file", "non_utf8", "oversized"],
+    ids=["duplicate", "empty", "file", "non-utf8", "oversized"],
 )
-async def test_video_sync_model_metadata_preserves_native_form(
-    harness, output, model_part, expected_model
+async def test_video_sync_receipt_preserves_native_model_fields(
+    harness, model_part, expected_model
 ):
     h = harness
-    h.set_form(output, extra=[("model", model_part)])
+    h.set_form(extra=[("model", model_part)])
     response = await h.client.post(PATH, content=h.body, headers=h.headers)
     assert response.status_code == 200, response.text
-    if output not in (None, "null"):
-        assert response.json()["model"] == expected_model
-        assert "usage" not in response.json()
-    else:
-        assert response.content == VIDEO
-    assert h.forwarded[0][2] == (h.body if output is None else h.native_body)
+    assert response.json()["model"] == expected_model
+    assert h.forwarded[0][2] == h.body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_first", [False, True])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_video_sync_output_streams_before_upload_finishes(
+    harness, output_first, cancel
+):
+    h = harness
+    h.set_form(output_first=output_first)
+    h.headers.pop("content-length")
+    release = asyncio.Event()
+
+    async def chunks():
+        yield h.body[:100]
+        await release.wait()
+        for offset in range(100, len(h.body), 13):
+            yield h.body[offset : offset + 13]
+
+    task = asyncio.create_task(h.client.post(PATH, content=chunks(), headers=h.headers))
+    try:
+        await asyncio.wait_for(h.forwarding.wait(), 2)
+        assert h.upload_chunks == [h.body[:100]]
+        assert not task.done() and not h.forwarded and not h.directories
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+            assert not h.objects and not h.deleted
+        else:
+            release.set()
+            response = await asyncio.wait_for(task, 2)
+            assert response.status_code == 200, response.text
+            (artifact,) = response.json()["output"]["artifacts"]
+            assert h.objects == {f"run/{artifact}": (VIDEO, "video/mp4")}
+            assert h.forwarded[0][2] == h.body
+            assert "content-length" not in h.forwarded[0][1]
+        assert not h.engine._in_flight
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "invalid",
-    [
-        "empty",
-        "scheme",
-        "duplicate",
-        "json",
-        "missing_url",
-        "extra",
-        "array",
-        "file",
-        "stream",
-    ],
+    "output",
+    ["", "{", "{}", "[]", '{"url":"ftp://host/out"}', "x" * (64 * 1024 + 1)],
+    ids=["empty", "json", "missing-url", "array", "scheme", "oversized"],
 )
-async def test_video_sync_rejects_invalid_output_before_upload(harness, invalid):
+async def test_video_sync_validates_output_after_forwarding(harness, output):
     h = harness
-    values = {
-        "empty": "",
-        "scheme": '{"url":"ftp://host/out"}',
-        "json": "{",
-        "missing_url": "{}",
-        "extra": '{"url":"tos://bucket/run","unknown":true}',
-        "array": "[]",
-    }
-    if invalid == "duplicate":
-        h.set_form(extra=[("output", (None, '{"url":"tos://bucket/other"}'))])
-    elif invalid == "file":
-        h.set_form(
-            None, extra=[("output", ("spec.json", b'{"url":"tos://bucket/run"}'))]
-        )
-    elif invalid == "stream":
-        h.set_form(extra=[("stream", (None, "true"))])
-    else:
-        h.set_form(values[invalid])
+    h.set_form(output)
     response = await h.client.post(PATH, content=h.body, headers=h.headers)
     assert response.status_code == 400, response.text
-    assert not h.forwarded and not h.objects and not h.directories
+    assert h.forwarded[0][2] == h.body
+    assert not h.objects and not h.directories
+
+
+@pytest.mark.asyncio
+async def test_video_sync_last_output_field_wins(harness):
+    h = harness
+    # A later text field follows native form lookup semantics.
+    upload = httpx.Request(
+        "POST",
+        f"http://frontend{PATH}",
+        files=[
+            ("output", ("bad.json", b"invalid")),
+            ("output", (None, '{"url":"tos://bucket/run"}')),
+        ],
+    )
+    response = await h.client.post(
+        PATH,
+        content=upload.read(),
+        headers={"content-type": upload.headers["content-type"]},
+    )
+    assert response.status_code == 200, response.text
+    assert h.forwarded[0][2] == upload.read()
+    assert response.json()["model"] is None
+    (artifact,) = response.json()["output"]["artifacts"]
+    assert h.objects == {f"run/{artifact}": (VIDEO, "video/mp4")}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure",
-    ["upstream", "type", "empty", "truncated", "read", "upload", "bucket"],
+    "failure", ["upstream", "type", "empty", "truncated", "read", "upload", "bucket"]
 )
 async def test_video_sync_failure_never_returns_a_receipt(harness, failure):
     h = harness
@@ -388,8 +410,6 @@ async def test_video_sync_failure_never_returns_a_receipt(harness, failure):
     assert "output" not in response.json() and not h.objects
     if failure == "upstream":
         assert response.content == h.content
-    if failure not in {"upload", "bucket"}:
-        assert not h.uploading.is_set()
     assert not h.engine._in_flight
 
 
@@ -451,85 +471,12 @@ async def test_video_sync_output_disconnect_cleans_internal_job(harness, phase):
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             assert not task.done() and h.engine._in_flight
-            assert list(h.directories[0].glob("*.mp4"))
             h.release_upload.set()
         with pytest.raises(ClientError, match="Client disconnected"):
             await asyncio.wait_for(task, 2)
         assert h.deleted == ["/v1/videos/video_gen_1"]
         assert not h.engine._in_flight
-        assert all(not path.exists() for path in h.directories)
     finally:
         h.release_receive.set()
         h.release_upload.set()
-        await asyncio.gather(task, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("output", [None, "null"])
-async def test_video_sync_without_output_keeps_native_response(harness, output):
-    h = harness
-    h.set_form(output)
-    response = await h.client.post(PATH, content=h.body, headers=h.headers)
-    assert response.status_code == 200 and response.content == VIDEO
-    assert not h.objects and not h.directories
-    assert h.forwarded[0][2] == (h.body if output is None else h.native_body)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("output_first", [False, True])
-async def test_video_sync_output_position_and_chunked_upload(harness, output_first):
-    h = harness
-    # Include bytes resembling a boundary inside a file; they are media, not framing.
-    h.set_form(
-        extra=[
-            (
-                "input_references",
-                ("third.png", b"binary\r\n--almost-a-boundary\x00\xff"),
-            )
-        ],
-        output_first=output_first,
-    )
-    h.headers.pop("content-length")
-
-    async def chunks():
-        for offset in range(0, len(h.body), 13):
-            yield h.body[offset : offset + 13]
-
-    response = await h.client.post(PATH, content=chunks(), headers=h.headers)
-    assert response.status_code == 200, response.text
-    assert h.forwarded[0][2] == h.native_body
-
-
-@pytest.mark.asyncio
-async def test_video_sync_incomplete_form_never_reaches_engine(harness):
-    h = harness
-    h.body = h.body[:-10]
-    h.headers["content-length"] = str(len(h.body))
-    response = await h.client.post(PATH, content=h.body, headers=h.headers)
-    assert response.status_code == 400, response.text
-    assert not h.forwarded and not h.objects
-
-
-@pytest.mark.asyncio
-async def test_video_sync_cancelled_form_upload_closes_spooled_files(harness):
-    h = harness
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def chunks():
-        yield h.body[:100]
-        entered.set()
-        await release.wait()
-        yield h.body[100:]
-
-    task = asyncio.create_task(h.client.post(PATH, content=chunks(), headers=h.headers))
-    try:
-        await asyncio.wait_for(entered.wait(), 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 2)
-        assert not h.forwarded and not h.engine._in_flight
-        assert h.request_files and all(file.closed for file in h.request_files)
-    finally:
-        release.set()
         await asyncio.gather(task, return_exceptions=True)

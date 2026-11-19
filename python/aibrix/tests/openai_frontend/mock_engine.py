@@ -193,10 +193,6 @@ async def video_sync(request: Request):
     import hashlib
 
     async with request.form() as form:
-        if "output" in form:
-            return JSONResponse(
-                {"detail": "frontend output field leaked"}, status_code=400
-            )
         references = []
         for upload in form.getlist("input_references"):
             if isinstance(upload, str):
@@ -217,6 +213,7 @@ async def video_sync(request: Request):
             "model": form.get("model"),
             "references": references,
             "query": request.url.query,
+            "output": form.get("output"),
         }
     job_id = f"video_gen_{uuid4().hex}"
     _video_jobs[job_id] = b"\x00\x00\x00\x18ftypmp42" + json.dumps(result).encode()

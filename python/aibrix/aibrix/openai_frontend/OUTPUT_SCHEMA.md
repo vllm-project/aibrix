@@ -141,8 +141,8 @@ curl http://localhost:8000/v1/videos/sync \
   -F 'output={"url":"tos://my-bucket/results"}'
 ```
 
-The MP4 is saved as `<id>-0.mp4`; HTTP returns the receipt. Omitting `output`
-or sending `output=null` keeps the native MP4 response.
+The MP4 is saved as `<id>-0.mp4`; HTTP returns the receipt after upload completes.
+Omitting `output` or sending `output=null` keeps the native MP4 response.
 
 ### Storage configuration
 
@@ -174,8 +174,9 @@ For S3, use `STORAGE_TYPE=s3`, `STORAGE_AWS_BUCKET`,
   WebSocket requests, or multipart endpoints other than `/v1/videos/sync`.
   Ordinary background Responses still forward; the proxy does not poll them
   for persistence.
-- Synchronous video persistence needs temporary disk space for uploads and the
-  MP4. Object-storage writes currently load the completed video into memory.
+- Synchronous video persistence needs temporary disk space for the generated
+  MP4, but not for input uploads. Object-storage writes currently load the
+  completed video into memory.
 - Responses persistence changes the HTTP `output` type from an array to a
   receipt object; it is an opt-in AIBrix extension, not the standard SDK shape.
 - Native results require declared schema fields. Empty results and zero values
