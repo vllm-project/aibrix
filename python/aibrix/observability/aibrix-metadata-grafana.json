@@ -468,13 +468,41 @@
         {
           "datasource": "${datasource}",
           "editorMode": "code",
-          "expr": "sum by (phase, phase_order) (clamp_min(last_over_time(metadata_batch_api_job_execution_phase_time_ms_sum{job_id=~\"$job_id\"}[$__range]), 0))",
+          "exemplar": true,
+          "expr": "sum by (phase) (clamp_min(last_over_time(metadata_batch_api_job_execution_phase_time_ms_sum{job_id=~\"$job_id\"}[$__range]), 0))",
+          "instant": false,
+          "interval": "",
+          "intervalFactor": 1,
           "legendFormat": "{{phase}}",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "Batch Execution Breakdown Share",
+      "transformations": [
+        {
+          "id": "prepareTimeSeries",
+          "options": {
+            "format": "wide"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "Time": 0,
+              "finalization": 6,
+              "runtime_provision": 3,
+              "runtime_ready": 4,
+              "scheduling": 1,
+              "task_execution": 5,
+              "validation": 2
+            },
+            "renameByName": {}
+          }
+        }
+      ],
       "type": "piechart"
     },
     {
