@@ -298,6 +298,11 @@ reason. The other annotations still apply.
      - ``false``
      - KPA, APA
      - Enables the scaling context's scale-to-zero flag. The final replica count is still bounded by ``spec.minReplicas``.
+   * - ``autoscaling.aibrix.ai/hold-scale-down-on-metric-failure``
+     - bool
+     - ``false``
+     - KPA, APA
+     - Holds a metric-driven scale-down while any metric source fails, instead of scaling down on the sources that remain. A scale-up from the healthy sources still goes ahead, and ``spec.minReplicas`` and ``spec.maxReplicas`` still apply.
 
 Example:
 

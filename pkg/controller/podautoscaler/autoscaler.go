@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -270,6 +271,17 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		if r.DesiredReplicas > bestResult.DesiredReplicas {
 			bestResult = r
 		}
+	}
+
+	// With the hold enabled, refuse a metric-driven scale-down while any source
+	// fails, as Kubernetes HPA does: the failed source may be the one keeping the
+	// replicas up. A scale-up from the sources that remain still goes ahead, and
+	// the controller still applies the replica bounds.
+	if len(failedMetrics) > 0 && bestResult.DesiredReplicas < request.CurrentReplicas &&
+		request.ScalingContext != nil && request.ScalingContext.GetHoldScaleDownOnMetricFailure() {
+		return &ReplicaComputeResult{Valid: false, FailedMetrics: failedMetrics}, fmt.Errorf(
+			"holding scale-down of PodAutoscaler %s/%s from %d to %d replicas: metric sources %s could not be read",
+			pa.Namespace, pa.Name, request.CurrentReplicas, bestResult.DesiredReplicas, strings.Join(failedMetrics, ", "))
 	}
 
 	allValidReplicas := make([]int32, len(validResults))

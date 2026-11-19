@@ -53,4 +53,9 @@ const (
 	// ScaleToZeroLabel enables/disables scaling to zero replicas
 	// Value: bool (e.g., "true", "false")
 	ScaleToZeroLabel = AutoscalingLabelPrefix + "scale-to-zero"
+
+	// HoldScaleDownOnMetricFailureLabel holds a metric-driven scale-down while any
+	// metric source fails, instead of scaling down on the sources that remain
+	// Value: bool (e.g., "true", "false")
+	HoldScaleDownOnMetricFailureLabel = AutoscalingLabelPrefix + "hold-scale-down-on-metric-failure"
 )
