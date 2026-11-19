@@ -29,6 +29,10 @@ Install AIBrix on Cloud Kubernetes Clusters
     AIBrix can run without KubeRay - use StormService for both single-node and multi-node inference workloads. The distributed inference controller will be automatically skipped if KubeRay CRDs are not detected.
 
 
+.. warning::
+
+    The new dependency bundle fails during CRD installation on Kubernetes v1.31, before AIBrix application tests run. Validation on Kubernetes v1.34 does not establish the minimum supported Kubernetes version.
+
 Stable Version
 ~~~~~~~~~~~~~~
 
@@ -104,6 +108,10 @@ Back up your resources and values first, and review the
 `upstream upgrade notes <https://gateway.envoyproxy.io/v1.9/install/install-helm/>`_.
 This migration does not validate every intermediate release or third-party
 controller that may share the Gateway API CRDs.
+
+.. warning::
+
+    This procedure validates a forward upgrade only. An in-place downgrade of the bundled Gateway API CRDs is not validated. The target bundle installs the ``safe-upgrades.gateway.networking.k8s.io`` admission policy, which rejects Gateway API CRDs older than v1.5. Reapplying the old dependency bundle or running Helm rollback is not a complete rollback procedure. Do not delete CRDs to roll back: their resources can be lost. Plan a cluster-admin-owned recovery procedure before upgrading. Rolling back only the controller while retaining the newer CRDs is also not validated here.
 
 First render the target CRDs separately and apply them with server-side apply.
 The example retains the experimental Gateway API channel bundled by Envoy

@@ -410,3 +410,10 @@ msgstr ""
 "检查。协调可能替换 Deployment，因此应按相同的 Gateway 归属标签重新选择。必须确认代理 Pod UID "
 "已替换，并再次验证两个指定容器；不能接受仍存活的旧 Pod 或复用旧快照。只有通过此检查后，重启后的流量及 xDS "
 "检查才能作为迁移证据。这些检查不能证明升级零停机。"
+
+
+msgid "The new dependency bundle fails during CRD installation on Kubernetes v1.31, before AIBrix application tests run. Validation on Kubernetes v1.34 does not establish the minimum supported Kubernetes version."
+msgstr "新的依赖包在 Kubernetes v1.31 上安装 CRD 时就会失败，尚未运行 AIBrix 应用测试。在 Kubernetes v1.34 上的验证不能证明最低受支持的 Kubernetes 版本。"
+
+msgid "This procedure validates a forward upgrade only. An in-place downgrade of the bundled Gateway API CRDs is not validated. The target bundle installs the ``safe-upgrades.gateway.networking.k8s.io`` admission policy, which rejects Gateway API CRDs older than v1.5. Reapplying the old dependency bundle or running Helm rollback is not a complete rollback procedure. Do not delete CRDs to roll back: their resources can be lost. Plan a cluster-admin-owned recovery procedure before upgrading. Rolling back only the controller while retaining the newer CRDs is also not validated here."
+msgstr "此流程只验证向前升级，未验证随包提供的 Gateway API CRD 的原地降级。目标依赖包会安装 ``safe-upgrades.gateway.networking.k8s.io`` 准入策略，拒绝低于 v1.5 的 Gateway API CRD。重新应用旧依赖包或运行 Helm 回滚并不构成完整的回滚流程。不要通过删除 CRD 来回滚，因为其中的资源可能丢失。升级前应制定由集群管理员负责的恢复流程。本文也未验证保留新版 CRD、仅回滚控制器的方案。"
