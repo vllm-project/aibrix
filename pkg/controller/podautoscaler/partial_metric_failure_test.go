@@ -18,9 +18,11 @@ package podautoscaler
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -113,5 +115,35 @@ func TestComputeScaleDecisionReasonNamesFailedMetricSources(t *testing.T) {
 				t.Fatalf("Reason = %q, want %q", decision.Reason, tt.wantReason)
 			}
 		})
+	}
+}
+
+// TestReconcileReportsHeldScaleDownWithoutError checks that a scale-down held by
+// hold-scale-down-on-metric-failure is reported in the status and a warning
+// naming the failed source, without failing the reconcile: the hold is an
+// expected state, and the resync evaluates it again.
+func TestReconcileReportsHeldScaleDownWithoutError(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	recorder := record.NewFakeRecorder(100)
+	h.reconciler.EventRecorder = recorder
+	h.reconciler.autoScaler = &fakeAutoScaler{
+		result: &ReplicaComputeResult{Valid: false, FailedMetrics: []string{"queue_length"}},
+		err:    fmt.Errorf("%w: metric sources queue_length could not be read", errScaleDownHeld),
+	}
+
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile returned error %v for a held scale-down", err)
+	}
+
+	requireCondition(t, h.latest(), ConditionScalingActive, metav1.ConditionFalse, ReasonFailedComputeScale)
+	var warned bool
+	for len(recorder.Events) > 0 {
+		event := <-recorder.Events
+		warned = warned || (strings.HasPrefix(event, "Warning "+ReasonFailedComputeScale) &&
+			strings.Contains(event, "queue_length"))
+	}
+	if !warned {
+		t.Fatalf("want a Warning %s event naming queue_length", ReasonFailedComputeScale)
 	}
 }
