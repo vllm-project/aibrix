@@ -18,7 +18,12 @@ package cache
 
 import (
 	"context"
+	"math"
+	"math/rand/v2"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,14 +35,14 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// The remote running reader (#3442) reads the other gateways' running counts from the
+// The remote running reader (#3442, PR (a)) reads the other gateways' running counts from the
 // aibrix:rrq:* hashes the request path already keeps live, instead of from the gateway snapshot.
-// It is on by default; set AIBRIX_REMOTE_RUNNING_READER_ENABLED=false to fall back to the
-// gateway snapshot for both GetPodsRunningRequestsApprox and the realtime_num_requests_running
-// gauge.
+// It is off by default. While it is off nothing here runs: the snapshot sync is the only source
+// of GetPodsRunningRequestsApprox's and the realtime_num_requests_running gauge's remote counts.
 const (
-	remoteRunningReaderEnabledEnv  = "AIBRIX_REMOTE_RUNNING_READER_ENABLED"
-	remoteRunningReaderIntervalEnv = "AIBRIX_REMOTE_RUNNING_READER_INTERVAL"
+	remoteRunningReaderEnabledEnv     = "AIBRIX_REMOTE_RUNNING_READER_ENABLED"
+	remoteRunningReaderIntervalEnv    = "AIBRIX_REMOTE_RUNNING_READER_INTERVAL"
+	defaultRemoteRunningReaderEnabled = false
 	// defaultRemoteRunningReaderInterval is the middle of the 500 ms-2 s range that cost the
 	// same in the candidate simulation of #3442.
 	defaultRemoteRunningReaderInterval = time.Second
@@ -60,10 +65,11 @@ const (
 //   - every successful exact read on the request path (readPodsSharedRoutingState), with the
 //     fields it already has, at no extra Redis command.
 type remoteRunningReader struct {
-	store    *Store
-	interval time.Duration
-	maxAge   time.Duration
-	entries  utils.SyncMap[string, *remoteRunningEntry]
+	store         *Store
+	interval      time.Duration
+	maxAge        time.Duration
+	startupJitter time.Duration
+	entries       utils.SyncMap[string, *remoteRunningEntry]
 
 	// resumeAt is the pod key the next sweep starts at, so a sweep that runs out of time is
 	// followed by one that starts with the pods it did not reach. Only the sweep goroutine
@@ -81,11 +87,45 @@ func newRemoteRunningReader(store *Store, interval time.Duration) *remoteRunning
 	}
 }
 
-// initRemoteRunningReader starts the reader unless AIBRIX_REMOTE_RUNNING_READER_ENABLED is false
-// and whenever Redis is configured. When disabled or without Redis, store.remoteRunningReader
-// stays nil and consumers stay on the gateway snapshot.
+// parseRemoteRunningReaderEnabled parses raw after trimming whitespace. In addition to
+// strconv.ParseBool spellings, it accepts on/yes/y/enabled/enable as true and
+// off/no/n/disabled/disable as false. Any other non-empty value returns (false, false) so an
+// operator typo during an incident fails closed rather than silently leaving the reader on.
+func parseRemoteRunningReaderEnabled(raw string, defaultValue bool) (enabled bool, valid bool) {
+	if raw == "" {
+		return defaultValue, true
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "y", "yes", "on", "enable", "enabled":
+		return true, true
+	case "0", "f", "false", "n", "no", "off", "disable", "disabled":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func loadRemoteRunningReaderEnabled(defaultValue bool) bool {
+	raw := os.Getenv(remoteRunningReaderEnabledEnv)
+	enabled, valid := parseRemoteRunningReaderEnabled(raw, defaultValue)
+	if !valid {
+		klog.ErrorS(nil, "invalid environment variable value; disabling remote running reader (fail-closed)",
+			"key", remoteRunningReaderEnabledEnv, "value", raw)
+		return false
+	}
+	if raw == "" {
+		klog.Infof("set %s: %v, using default value", remoteRunningReaderEnabledEnv, enabled)
+	} else {
+		klog.Infof("set %s: %v", remoteRunningReaderEnabledEnv, enabled)
+	}
+	return enabled
+}
+
+// initRemoteRunningReader starts the reader when AIBRIX_REMOTE_RUNNING_READER_ENABLED is true and
+// Redis is configured. Otherwise it does nothing, and store.remoteRunningReader stays nil, which
+// keeps every consumer on the gateway snapshot.
 func initRemoteRunningReader(store *Store, stopCh <-chan struct{}) {
-	if store.redisClient == nil || !utils.LoadEnvBool(remoteRunningReaderEnabledEnv, true) {
+	if store.redisClient == nil || !loadRemoteRunningReaderEnabled(defaultRemoteRunningReaderEnabled) {
 		return
 	}
 	interval := utils.LoadEnvDuration(remoteRunningReaderIntervalEnv, defaultRemoteRunningReaderInterval)
@@ -95,18 +135,40 @@ func initRemoteRunningReader(store *Store, stopCh <-chan struct{}) {
 		interval = minRemoteRunningReaderInterval
 	}
 	r := newRemoteRunningReader(store, interval)
+	r.startupJitter = time.Duration(rand.Int64N(int64(interval)))
 	store.remoteRunningReader.Store(r)
-	klog.InfoS("Initializing remote running reader", "interval", interval, "maxAge", r.maxAge)
+	klog.InfoS("Initializing remote running reader (experimental)", "interval", interval, "maxAge", r.maxAge)
 	go r.run(stopCh)
 }
 
 func (r *remoteRunningReader) run(stopCh <-chan struct{}) {
+	r.runWithStartupTimer(stopCh, func(delay time.Duration) (<-chan time.Time, func() bool) {
+		timer := time.NewTimer(delay)
+		return timer.C, timer.Stop
+	})
+}
+
+// The timer factory lets tests exercise both startup wakeups without depending on wall-clock timing.
+func (r *remoteRunningReader) runWithStartupTimer(stopCh <-chan struct{}, startTimer func(time.Duration) (<-chan time.Time, func() bool)) {
+	r.sweep()
+	if r.startupJitter > 0 {
+		// Keep the first sweep immediate, then stagger the next sweep. Waiting at least half
+		// an interval makes entries from the initial sweep eligible for refresh.
+		fired, stopTimer := startTimer(r.interval/2 + r.startupJitter)
+		select {
+		case <-fired:
+		case <-stopCh:
+			stopTimer()
+			return
+		}
+		r.sweep()
+	}
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
-		r.sweep()
 		select {
 		case <-ticker.C:
+			r.sweep()
 		case <-stopCh:
 			return
 		}
@@ -253,6 +315,31 @@ func (r *remoteRunningReader) pruneDeletedPods() {
 		}
 		return true
 	})
+}
+
+// sumOtherLiveRunning sums the running counts in a pod's aibrix:rrq hash of the live gateways
+// other than this one. This gateway's own field is left out: its local atomic is always fresher.
+// As in remoteRunningByPod, a value that is not a positive integer is skipped, and the sum
+// saturates instead of wrapping.
+func sumOtherLiveRunning(fields map[string]string, live map[string]struct{}) int64 {
+	var sum int64
+	for gw, v := range fields {
+		if gw == runningRequestsGatewayInstanceID {
+			continue
+		}
+		if _, ok := live[gw]; !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		if n > math.MaxInt64-sum {
+			return math.MaxInt64
+		}
+		sum += n
+	}
+	return sum
 }
 
 // States of a known pod's remote count at the end of a sweep, the state label of

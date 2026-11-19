@@ -777,7 +777,7 @@ func (c *Store) prunableGatewaysCutoffMillis() string {
 // here. Callers must re-check candidates against a much longer window before
 // deleting anything -- see flushPendingRunningRequestsPrunes.
 func sumLiveFields(fields map[string]string, live map[string]struct{}) (total int64, excluded []string) {
-	total, _, excluded = sumLiveRunningFields(fields, live, true)
+	total, _, excluded = sumLiveFieldsAndOther(fields, live)
 	return total, excluded
 }
 
@@ -785,22 +785,9 @@ func sumLiveFields(fields map[string]string, live map[string]struct{}) (total in
 // (matching sumLiveFields) and the saturated sum of positive live counts from gateways other than
 // runningRequestsGatewayInstanceID (matching sumOtherLiveRunning).
 func sumLiveFieldsAndOther(fields map[string]string, live map[string]struct{}) (total, otherPositive int64, excluded []string) {
-	return sumLiveRunningFields(fields, live, true)
-}
-
-// sumOtherLiveRunning sums the running counts in a pod's aibrix:rrq hash of the live gateways
-// other than this one without allocating an excluded-gateway slice.
-func sumOtherLiveRunning(fields map[string]string, live map[string]struct{}) int64 {
-	_, otherPositive, _ := sumLiveRunningFields(fields, live, false)
-	return otherPositive
-}
-
-func sumLiveRunningFields(fields map[string]string, live map[string]struct{}, collectExcluded bool) (total, otherPositive int64, excluded []string) {
 	for gatewayID, valStr := range fields {
 		if _, ok := live[gatewayID]; !ok {
-			if collectExcluded {
-				excluded = append(excluded, gatewayID)
-			}
+			excluded = append(excluded, gatewayID)
 			continue
 		}
 		n, err := strconv.ParseInt(valStr, 10, 64)
@@ -810,11 +797,7 @@ func sumLiveRunningFields(fields map[string]string, live map[string]struct{}, co
 		if n < 0 {
 			n = 0
 		}
-		if n > math.MaxInt64-total {
-			total = math.MaxInt64
-		} else {
-			total += n
-		}
+		total += n
 		if gatewayID != runningRequestsGatewayInstanceID && n > 0 {
 			if n > math.MaxInt64-otherPositive {
 				otherPositive = math.MaxInt64

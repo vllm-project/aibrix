@@ -315,9 +315,9 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 }
 
 // GetPodsRunningRequestsApprox implements ApproxRunningRequestsProvider: the local atomic plus
-// the other gateways' counts with no Redis call. With the remote running reader enabled (default),
-// counts come from the reader while their read is within maxAge; when disabled at startup
-// (AIBRIX_REMOTE_RUNNING_READER_ENABLED=false), counts fall back to the gateway snapshot.
+// the other gateways' counts from the latest snapshot, with no Redis call. Each other gateway's
+// count is added only while its snapshot was read within remoteRunningMaxAge (see freshCount).
+// With the remote running reader on, the other gateways' counts come from it instead.
 func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 	reader := c.remoteRunningReader.Load()
 	var snap *remoteRunningSnapshot
@@ -350,9 +350,6 @@ func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 func addSaturatedInt64(base, add int64) int64 {
 	if add > 0 && base > math.MaxInt64-add {
 		return math.MaxInt64
-	}
-	if add < 0 && base < math.MinInt64-add {
-		return math.MinInt64
 	}
 	return base + add
 }

@@ -811,13 +811,15 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 }
 
 // syncRunningRequestsGlobally computes the cross-gateway running request count for a pod and
-// stores it so GetMetricValueByPod returns the global total. With the remote running reader
-// enabled (default), the other gateways' counts come from it (no Redis call on the metric path):
-// an unread pod skips emission (matching the snapshot hold-back below), while a stale count falls
-// back to this gateway's own count. When disabled (AIBRIX_REMOTE_RUNNING_READER_ENABLED=false),
-// it falls back to gatewayRemoteRunning (published every 100ms by initGatewaySnapshotSync),
-// leaving out counts older than remoteRunningMaxAge (#3441) and holding back before the first
-// snapshot is published.
+// stores it so GetMetricValueByPod returns the global total. It takes the other gateways' counts
+// from gatewayRemoteRunning (published every 100ms by initGatewaySnapshotSync — no Redis call
+// here) and adds this gateway's own local atomic counter (always fresher than the Redis snapshot
+// for the local instance). Remote counts last actually read more than remoteRunningMaxAge ago
+// are left out, as GetPodsRunningRequestsApprox leaves them out (#3441): a sync that keeps
+// missing a pod's keys would otherwise report counts frozen when it first missed them.
+// With the remote running reader on, the other gateways' counts come from it instead: an unread
+// pod skips emission (matching the snapshot hold-back above), while a stale count falls back to
+// this gateway's own count.
 func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	var remoteRunning float64

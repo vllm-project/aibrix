@@ -196,8 +196,8 @@ type Store struct {
 	snapshotClock func() time.Time
 	// remoteRunningReader, when set, is where GetPodsRunningRequestsApprox and
 	// syncRunningRequestsGlobally take the other gateways' counts from instead of
-	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup
-	// unless AIBRIX_REMOTE_RUNNING_READER_ENABLED is false (#3442).
+	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup,
+	// and only when AIBRIX_REMOTE_RUNNING_READER_ENABLED is true (#3442).
 	remoteRunningReader atomic.Pointer[remoteRunningReader]
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.

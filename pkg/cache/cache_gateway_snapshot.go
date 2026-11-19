@@ -69,19 +69,10 @@ var gatewayPodName = func() string {
 //
 // Each published tick also stores gatewayRemoteRunning, the other gateways' counts per pod
 // with when they were read. GetPodsRunningRequestsApprox and syncRunningRequestsGlobally read
-// that when the remote running reader is disabled; with the reader enabled (the default), only
-// step 1 above runs so reader-off gateways keep seeing this gateway's snapshots during mixed rollouts.
+// that without touching Redis.
 func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
-	_ = startGatewaySnapshotSync(store, stopCh)
-}
-
-// startGatewaySnapshotSync starts the snapshot sync goroutine and returns a channel closed once
-// it exits; benchmarks/tests wait on this channel before tearing down shared Redis clients.
-func startGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) <-chan struct{} {
-	done := make(chan struct{})
 	if store.redisClient == nil {
-		close(done)
-		return done
+		return
 	}
 	ticker := time.NewTicker(gatewaySnapshotSyncInterval)
 	errLog := store.gatewaySnapshotErrorLog
@@ -91,7 +82,6 @@ func startGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) <-chan struc
 	// This gateway's identity does not change while it runs; read it once.
 	self := gatewayPodName
 	go func() {
-		defer close(done)
 		// prevRaw holds every gateway-instance key's last successfully-read fields,
 		// keyed by its raw Redis key rather than by pod, so a read failure for one
 		// key can fall back to exactly that key's last known value without
@@ -184,7 +174,6 @@ func startGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) <-chan struc
 			}
 		}
 	}()
-	return done
 }
 
 // snapshotNow is snapshotClock, or time.Now when it is unset.

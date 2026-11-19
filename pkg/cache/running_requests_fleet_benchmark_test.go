@@ -243,20 +243,24 @@ func TestRemoteRunningReader_RedisCommandStats(t *testing.T) {
 				stopCh := make(chan struct{})
 				var stopOnce sync.Once
 				var readerWG sync.WaitGroup
-				snapDones := make([]<-chan struct{}, 0, gCount)
+				hook := &stoppableRedisHook{}
 				clients := make([]*redis.Client, 0, gCount)
 
-				// Register global restore before worker cleanup so LIFO teardown stops and waits
-				// for all reader and snapshot workers before closing Redis clients and restoring
-				// gatewayPodName last.
+				// Restore the name after worker cleanup. Snapshot sync captures its name at startup.
 				origPodName := gatewayPodName
 				t.Cleanup(func() { gatewayPodName = origPodName })
+				stopAll := func() {
+					stopOnce.Do(func() {
+						// Snapshot sync has no completion channel. Close admission before signaling
+						// it to stop, then drain admitted Redis calls before closing the clients.
+						hook.stop()
+						close(stopCh)
+						readerWG.Wait()
+						hook.inflight.Wait()
+					})
+				}
 				t.Cleanup(func() {
-					stopOnce.Do(func() { close(stopCh) })
-					readerWG.Wait()
-					for _, d := range snapDones {
-						<-d
-					}
+					stopAll()
 					for _, c := range clients {
 						_ = c.Close()
 					}
@@ -266,6 +270,7 @@ func TestRemoteRunningReader_RedisCommandStats(t *testing.T) {
 				readers := make([]*remoteRunningReader, gCount)
 				for g := 0; g < gCount; g++ {
 					c := redis.NewClient(&redis.Options{Addr: addr})
+					c.AddHook(hook)
 					clients = append(clients, c)
 					s := &Store{redisClient: c}
 					for key, mp := range podMap {
@@ -283,7 +288,7 @@ func TestRemoteRunningReader_RedisCommandStats(t *testing.T) {
 						}(r)
 					}
 					gatewayPodName = fmt.Sprintf("gw-%d", g)
-					snapDones = append(snapDones, startGatewaySnapshotSync(s, stopCh))
+					initGatewaySnapshotSync(s, stopCh)
 				}
 
 				// Let initial bursts settle, then diff INFO cpu and INFO commandstats over the window.
@@ -325,17 +330,260 @@ func TestRemoteRunningReader_RedisCommandStats(t *testing.T) {
 					}
 				}
 
-				stopOnce.Do(func() { close(stopCh) })
-				readerWG.Wait()
-				for _, d := range snapDones {
-					<-d
-				}
+				stopAll()
 
 				t.Logf("window=%s cpu_cores=%.3f snap_ever_published=%d/%d stats=%s",
 					window, (cpuAfter-cpuBefore)/window.Seconds(), snapEverPublished, gCount, cmdStats)
 			})
 		}
 	}
+}
+
+// TestRemoteRunningReader_RequestPathLatencyAtScale uses one closed-loop foreground probe while
+// eight background workers operate on 5,000 seeded pods. It times a direct HINCRBY increment
+// and a K=32 readPodsRunningRequests call, and reports Redis-wide INFO commandstats deltas.
+// Requires both AIBRIX_BENCH_REDIS_ADDR and AIBRIX_BENCH_REDIS_FLUSH=1.
+func TestRemoteRunningReader_RequestPathLatencyAtScale(t *testing.T) {
+	ctx := context.Background()
+	admin := connectDisposableBenchRedis(t, ctx)
+
+	const (
+		gCount = 8
+		n      = 5000
+		k      = 32
+		window = 3 * time.Second
+	)
+	pods, podMap := seedRealRedisFleet(t, ctx, admin, gCount, n)
+	candidates := pods[:k]
+
+	for _, tc := range []struct {
+		name        string
+		readerOn    bool
+		phase1Write bool
+	}{
+		{name: "reader=off (100ms snapshot read+write)", readerOn: false, phase1Write: true},
+		{name: "reader=on (1s sweep + 100ms phase1 write)", readerOn: true, phase1Write: true},
+		{name: "reader=on (1s sweep only, no phase1 write)", readerOn: true, phase1Write: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, admin.FlushDB(ctx).Err())
+			seedRealRedisKeysOnly(t, ctx, admin, gCount, pods)
+
+			addr := admin.Options().Addr
+			stopCh := make(chan struct{})
+			var stopOnce sync.Once
+			var readerWG sync.WaitGroup
+			hook := &stoppableRedisHook{}
+			clients := make([]*redis.Client, 0, gCount)
+
+			origPodName := gatewayPodName
+			t.Cleanup(func() { gatewayPodName = origPodName })
+			stopAll := func() {
+				stopOnce.Do(func() {
+					hook.stop()
+					close(stopCh)
+					readerWG.Wait()
+					hook.inflight.Wait()
+				})
+			}
+			t.Cleanup(func() {
+				stopAll()
+				for _, c := range clients {
+					_ = c.Close()
+				}
+			})
+
+			stores := make([]*Store, gCount)
+			for g := 0; g < gCount; g++ {
+				c := redis.NewClient(&redis.Options{Addr: addr})
+				c.AddHook(hook)
+				clients = append(clients, c)
+				s := &Store{redisClient: c}
+				for key, mp := range podMap {
+					s.metaPods.Store(key, mp)
+				}
+				stores[g] = s
+				if tc.readerOn {
+					r := newRemoteRunningReader(s, time.Second)
+					s.remoteRunningReader.Store(r)
+					readerWG.Add(1)
+					go func(rd *remoteRunningReader) {
+						defer readerWG.Done()
+						rd.run(stopCh)
+					}(r)
+				}
+				gatewayPodName = fmt.Sprintf("gw-%d", g)
+				if tc.phase1Write {
+					initGatewaySnapshotSync(s, stopCh)
+				}
+			}
+
+			time.Sleep(1200 * time.Millisecond)
+			statsBefore := readRedisCommandStatMap(t, ctx, admin)
+
+			var hincrbyDurs, exactReadDurs []time.Duration
+			targetKey := runningRequestsKey(pods[0].Namespace, pods[0].Name)
+			reqClient := stores[0].redisClient
+			sampleStart := time.Now()
+			deadline := sampleStart.Add(window)
+			for time.Now().Before(deadline) {
+				writeStart := time.Now()
+				err := reqClient.HIncrBy(ctx, targetKey, "gw-0", 1).Err()
+				writeDuration := time.Since(writeStart)
+				require.NoError(t, err)
+
+				readStart := time.Now()
+				counts := stores[0].readPodsRunningRequests(candidates)
+				readDuration := time.Since(readStart)
+				require.Len(t, counts, k)
+
+				require.NoError(t, reqClient.HIncrBy(ctx, targetKey, "gw-0", -1).Err())
+				hincrbyDurs = append(hincrbyDurs, writeDuration)
+				exactReadDurs = append(exactReadDurs, readDuration)
+			}
+			sampleElapsed := time.Since(sampleStart)
+
+			statsAfter := readRedisCommandStatMap(t, ctx, admin)
+			cmdStats := formatRedisCommandStatDelta(statsBefore, statsAfter)
+			stopAll()
+
+			t.Logf("samples=%d elapsed=%s HINCRBY(p50=%s p95=%s p99=%s) exactRead_K32(p50=%s p95=%s p99=%s) stats=%s",
+				len(hincrbyDurs),
+				sampleElapsed,
+				durationPercentile(hincrbyDurs, 0.50),
+				durationPercentile(hincrbyDurs, 0.95),
+				durationPercentile(hincrbyDurs, 0.99),
+				durationPercentile(exactReadDurs, 0.50),
+				durationPercentile(exactReadDurs, 0.95),
+				durationPercentile(exactReadDurs, 0.99),
+				cmdStats)
+		})
+	}
+}
+
+type stoppableRedisHook struct {
+	mu       sync.Mutex
+	stopped  bool
+	inflight sync.WaitGroup
+}
+
+func (h *stoppableRedisHook) beginCall() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopped {
+		return false
+	}
+	h.inflight.Add(1)
+	return true
+}
+
+// After stop, no callback can add more calls to inflight.
+func (h *stoppableRedisHook) stop() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stopped = true
+}
+
+func (h *stoppableRedisHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *stoppableRedisHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if !h.beginCall() {
+			cmd.SetErr(context.Canceled)
+			return context.Canceled
+		}
+		defer h.inflight.Done()
+		return next(ctx, cmd)
+	}
+}
+
+func (h *stoppableRedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if !h.beginCall() {
+			for _, cmd := range cmds {
+				cmd.SetErr(context.Canceled)
+			}
+			return context.Canceled
+		}
+		defer h.inflight.Done()
+		return next(ctx, cmds)
+	}
+}
+
+func TestStoppableRedisHook_DrainsAdmittedCalls(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	hook := &stoppableRedisHook{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	callDone := make(chan error, 1)
+	process := hook.ProcessHook(func(ctx context.Context, _ redis.Cmder) error {
+		close(entered)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	go func() { callDone <- process(ctx, redis.NewCmd(ctx, "ping")) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("Redis call did not enter the hook")
+	}
+
+	stopped, drained := make(chan struct{}), make(chan struct{})
+	go func() {
+		hook.stop()
+		close(stopped)
+		hook.inflight.Wait()
+		close(drained)
+	}()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		t.Fatal("the hook could not stop admitting calls while a call was active")
+	}
+	select {
+	case <-drained:
+		t.Fatal("the hook drained before the admitted call finished")
+	default:
+	}
+
+	cmd := redis.NewCmd(ctx, "ping")
+	rejectedProcess := hook.ProcessHook(func(context.Context, redis.Cmder) error { return nil })
+	require.ErrorIs(t, rejectedProcess(ctx, cmd), context.Canceled)
+	require.ErrorIs(t, cmd.Err(), context.Canceled)
+	cmds := []redis.Cmder{redis.NewCmd(ctx, "hgetall", "a"), redis.NewCmd(ctx, "hgetall", "b")}
+	pipeline := hook.ProcessPipelineHook(func(context.Context, []redis.Cmder) error { return nil })
+	require.ErrorIs(t, pipeline(ctx, cmds), context.Canceled)
+	for _, cmd := range cmds {
+		require.ErrorIs(t, cmd.Err(), context.Canceled)
+	}
+
+	close(release)
+	select {
+	case err := <-callDone:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the admitted call did not finish")
+	}
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		t.Fatal("the hook did not drain")
+	}
+}
+
+func durationPercentile(durs []time.Duration, p float64) time.Duration {
+	if len(durs) == 0 {
+		return 0
+	}
+	cp := append([]time.Duration(nil), durs...)
+	sort.Slice(cp, func(i, j int) bool { return cp[i] < cp[j] })
+	idx := int(float64(len(cp)-1) * p)
+	return cp[idx]
 }
 
 func connectDisposableBenchRedis(tb testing.TB, ctx context.Context) *redis.Client {

@@ -108,6 +108,25 @@ func (h *pipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis
 	}
 }
 
+// cmdHook runs before for every non-pipelined command the client sends.
+type cmdHook struct {
+	before func(ctx context.Context, cmd redis.Cmder) error
+}
+
+func (h *cmdHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *cmdHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if err := h.before(ctx, cmd); err != nil {
+			cmd.SetErr(err)
+			return err
+		}
+		return next(ctx, cmd)
+	}
+}
+func (h *cmdHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
 // isSweepBatch tells a sweep batch (HGETALLs only) from a request-path read, which starts with
 // ZRANGEBYSCORE.
 func isSweepBatch(cmds []redis.Cmder) bool { return len(cmds) > 0 && cmds[0].Name() == "hgetall" }
@@ -172,11 +191,10 @@ func addTestReadyMetaPod(t *testing.T, store *Store, name string) *v1.Pod {
 	return pod
 }
 
-// Explicit switch off: no reader exists, so GetPodsRunningRequestsApprox and the gauge take the
-// other gateways' counts from the snapshot, the request path sends the same commands and
+// Switch off (the default): no reader exists, so GetPodsRunningRequestsApprox and the gauge take
+// the other gateways' counts from the snapshot, the request path sends the same commands and
 // publishes nothing, and nothing reads aibrix:rrq in the background.
 func TestRemoteRunningReader_OffKeepsSnapshotPath(t *testing.T) {
-	t.Setenv(remoteRunningReaderEnabledEnv, "false")
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
@@ -225,24 +243,22 @@ func TestRemoteRunningReader_OffKeepsSnapshotPath(t *testing.T) {
 	require.Equal(t, map[string]int{"zrangebyscore": 1, "hgetall": 1}, counter.since(before))
 }
 
-// The switch defaults to true when unset, and the interval is read from the environment at startup.
+// The interval is read from the environment at startup when the switch is enabled.
 func TestRemoteRunningReader_OnReadsInterval(t *testing.T) {
 	for _, tc := range []struct {
-		enabled  string
 		interval string
 		want     time.Duration
 	}{
-		{"", "", time.Second},
-		{"true", "", time.Second},
-		{"true", "250ms", 250 * time.Millisecond},
-		{"true", "100ms", 100 * time.Millisecond},
-		{"true", "99ms", minRemoteRunningReaderInterval},
-		{"true", "1ms", minRemoteRunningReaderInterval},
-		{"true", "0s", time.Second},
-		{"true", "250", time.Second},
+		{"", time.Second},
+		{"250ms", 250 * time.Millisecond},
+		{"100ms", 100 * time.Millisecond},
+		{"99ms", minRemoteRunningReaderInterval},
+		{"1ms", minRemoteRunningReaderInterval},
+		{"0s", time.Second},
+		{"250", time.Second},
 	} {
-		t.Run(tc.enabled+"/"+tc.interval, func(t *testing.T) {
-			t.Setenv(remoteRunningReaderEnabledEnv, tc.enabled)
+		t.Run(tc.interval, func(t *testing.T) {
+			t.Setenv(remoteRunningReaderEnabledEnv, "true")
 			t.Setenv(remoteRunningReaderIntervalEnv, tc.interval)
 			store := &Store{redisClient: newTestRunningRequestsClient(t)}
 			stopCh := make(chan struct{})
@@ -255,15 +271,58 @@ func TestRemoteRunningReader_OnReadsInterval(t *testing.T) {
 		})
 	}
 
-	t.Setenv(remoteRunningReaderEnabledEnv, "false")
-	storeOff := &Store{redisClient: newTestRunningRequestsClient(t)}
-	initRemoteRunningReader(storeOff, nil)
-	require.Nil(t, storeOff.remoteRunningReader.Load(), "reader stays off when explicitly disabled")
-
-	t.Setenv(remoteRunningReaderEnabledEnv, "true")
 	storeNoRedis := &Store{}
+	t.Setenv(remoteRunningReaderEnabledEnv, "true")
 	initRemoteRunningReader(storeNoRedis, nil)
 	require.Nil(t, storeNoRedis.remoteRunningReader.Load(), "no reader without Redis")
+}
+
+// parseRemoteRunningReaderEnabled trims whitespace, accepts common operator false spellings
+// (off, no, n, disabled, disable), and fails closed (false, valid=false) on unrecognized values
+// regardless of whether defaultValue is false or true.
+func TestParseRemoteRunningReaderEnabled(t *testing.T) {
+	for _, def := range []bool{false, true} {
+		enabled, valid := parseRemoteRunningReaderEnabled("", def)
+		require.True(t, valid)
+		require.Equal(t, def, enabled)
+	}
+
+	for _, raw := range []string{
+		"true", "True", "TRUE", "1", "t", "T", "yes", "YES", "y", "Y",
+		"on", "ON", "enable", "enabled", "ENABLED", " true\n", "\ton ",
+	} {
+		for _, def := range []bool{false, true} {
+			enabled, valid := parseRemoteRunningReaderEnabled(raw, def)
+			require.True(t, valid, "raw=%q def=%v", raw, def)
+			require.True(t, enabled, "raw=%q def=%v", raw, def)
+		}
+	}
+
+	for _, raw := range []string{
+		"false", "False", "FALSE", "0", "f", "F", "no", "NO", "n", "N",
+		"off", "OFF", "disable", "disabled", "DISABLED", " false ", "false\n", "\toff\n",
+	} {
+		for _, def := range []bool{false, true} {
+			enabled, valid := parseRemoteRunningReaderEnabled(raw, def)
+			require.True(t, valid, "raw=%q def=%v", raw, def)
+			require.False(t, enabled, "raw=%q def=%v", raw, def)
+		}
+	}
+
+	for _, raw := range []string{"off", "no", "false\n"} {
+		t.Setenv(remoteRunningReaderEnabledEnv, raw)
+		require.False(t, loadRemoteRunningReaderEnabled(true), "%q must disable the reader", raw)
+	}
+
+	for _, invalid := range []string{"  \t\n ", "maybe", "tru", "fals", "2", "-1"} {
+		for _, def := range []bool{false, true} {
+			enabled, valid := parseRemoteRunningReaderEnabled(invalid, def)
+			require.False(t, valid, "raw=%q def=%v must be rejected", invalid, def)
+			require.False(t, enabled, "raw=%q def=%v must fail closed", invalid, def)
+		}
+		t.Setenv(remoteRunningReaderEnabledEnv, invalid)
+		require.False(t, loadRemoteRunningReaderEnabled(true), "invalid %q must fail closed even when default is true", invalid)
+	}
 }
 
 // A sweep sums, per pod, the live gateways' positive integer counts other than this gateway's,
@@ -792,6 +851,93 @@ func TestRemoteRunningReader_StopsCleanlyOnStopCh(t *testing.T) {
 	}
 }
 
+// Both subtests hold the startup timer until the initial sweep has published.
+func TestRemoteRunningReader_RunWithStartupJitter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fire bool
+	}{
+		{name: "second sweep waits for the startup timer", fire: true},
+		{name: "stop cancels the pending startup timer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newReaderUnderTest(t)
+			addTestReadyMetaPod(t, u.store, testPodName)
+			u.setRRQ(t, testPodName, map[string]any{"gw-a": "3"})
+			// Keep the periodic ticker idle while the fake startup timer drives the second sweep.
+			u.reader = newRemoteRunningReader(u.store, time.Hour)
+			u.reader.startupJitter = 15 * time.Minute
+			u.store.remoteRunningReader.Store(u.reader)
+
+			fired := make(chan time.Time, 1)
+			timerStarted := make(chan time.Duration, 1)
+			timerStopped := make(chan struct{})
+			startTimer := func(delay time.Duration) (<-chan time.Time, func() bool) {
+				timerStarted <- delay
+				return fired, func() bool {
+					close(timerStopped)
+					return true
+				}
+			}
+
+			stopCh, done := make(chan struct{}), make(chan struct{})
+			stop := sync.OnceFunc(func() { close(stopCh) })
+			waitForExit := func() {
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("reader goroutine did not exit after stopCh closed")
+				}
+			}
+			t.Cleanup(func() {
+				stop()
+				waitForExit()
+			})
+			go func() {
+				defer close(done)
+				u.reader.runWithStartupTimer(stopCh, startTimer)
+			}()
+
+			const wantDelay = 45 * time.Minute
+			select {
+			case delay := <-timerStarted:
+				require.Equal(t, wantDelay, delay)
+			case <-time.After(5 * time.Second):
+				t.Fatal("reader did not start its jitter timer after the initial sweep")
+			}
+			initial, ok := u.entry(testPodName)
+			require.True(t, ok)
+			require.Equal(t, int64(3), initial.count)
+
+			u.setRRQ(t, testPodName, map[string]any{"gw-a": "9"})
+			u.clk.advance(wantDelay)
+			if tc.fire {
+				fired <- u.clk.now()
+				require.Eventually(t, func() bool {
+					e, ok := u.entry(testPodName)
+					return ok && e.count == 9 && e.readAt.Equal(u.clk.now())
+				}, 5*time.Second, 5*time.Millisecond)
+				return
+			}
+
+			stop()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("reader goroutine did not exit during startup jitter wait")
+			}
+			select {
+			case <-timerStopped:
+			default:
+				t.Fatal("reader exited with the startup timer still running")
+			}
+			got, ok := u.entry(testPodName)
+			require.True(t, ok)
+			require.Same(t, initial, got, "canceling the timer must leave the initial entry in place")
+		})
+	}
+}
+
 func BenchmarkReadPodsSharedRoutingState(b *testing.B) {
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -948,22 +1094,174 @@ func TestGetPodsRunningRequestsApprox_SaturatesOverflow(t *testing.T) {
 	}
 }
 
-// sumLiveFieldsAndOther keeps total and otherPositive independent: self=MaxInt64 must not cause
-// otherPositive to wrap or miscount another live gateway.
-func TestSumLiveFieldsAndOther_SelfMaxDoesNotAffectOther(t *testing.T) {
-	live := map[string]struct{}{
-		runningRequestsGatewayInstanceID: {},
-		"gw-other":                       {},
+// When a sweep skips recently refreshed pods and then times out after k batches, resumeAt must
+// index into toRead (starting the next sweep at the first unread pod) rather than keys, and no
+// ready pod may age past maxAge across two sweeps.
+func TestRemoteRunningReader_TimedOutSweepWithSkippedPodsResumesAtFirstUnread(t *testing.T) {
+	u := newReaderUnderTest(t)
+	const totalPods = 105
+	pods := make([]*v1.Pod, totalPods)
+	for i := 0; i < totalPods; i++ {
+		name := readerPodName(i)
+		pods[i] = addTestReadyMetaPod(t, u.store, name)
+		u.setRRQ(t, name, map[string]any{"gw-a": strconv.Itoa(i + 1)})
 	}
-	fields := map[string]string{
-		runningRequestsGatewayInstanceID: strconv.FormatInt(math.MaxInt64, 10),
-		"gw-other":                       "1",
+
+	// Seed every entry at t=0.
+	u.reader.sweep()
+
+	// At t=600ms (> interval/2 from t=0), refresh 3 pods in the first 100 (pod-000, pod-001, pod-002)
+	// via the request path so they are < interval/2 old when sweep 1 runs at t=1000ms.
+	u.clk.advance(600 * time.Millisecond)
+	_, _ = u.store.readPodsSharedRoutingState(pods[:3], false)
+
+	// At t=1000ms: pod-000..002 are 400ms old (< 500ms halfInterval) and skipped.
+	// toRead has 102 pods: batch 1 reads pod-003..pod-102 (100 pods), batch 2 has pod-103..pod-104.
+	// Fail batch 2 with DeadlineExceeded.
+	u.clk.advance(400 * time.Millisecond)
+	sweepBatches := 0
+	failSecondBatch := true
+	var firstResumedKey string
+	u.client.AddHook(&pipelineHook{before: func(_ context.Context, cmds []redis.Cmder) error {
+		if !isSweepBatch(cmds) {
+			return nil
+		}
+		if failSecondBatch {
+			sweepBatches++
+			if sweepBatches == 2 {
+				return context.DeadlineExceeded
+			}
+		} else if firstResumedKey == "" {
+			firstResumedKey = fmt.Sprint(cmds[0].Args()[1])
+		}
+		return nil
+	}})
+
+	u.reader.sweep()
+	// With toRead indexing, advance=100 points to toRead[100] = default/pod-103 (the first unread pod).
+	// Indexing keys[100] instead would point to default/pod-100 (which was already read in batch 1).
+	require.Equal(t, utils.GeneratePodKey(testNamespace, readerPodName(103)), u.reader.resumeAt,
+		"resumeAt must be the first unread pod in toRead, not keys[100]")
+
+	// Pod-103 and pod-104 were not reached in sweep 1 (still carry t=0 readAt, age=1s <= 3s maxAge).
+	e103, ok := u.entry(readerPodName(103))
+	require.True(t, ok)
+	require.Equal(t, time.Second, u.clk.now().Sub(e103.readAt))
+
+	// Observe the first Redis read on the succeeding sweep, then verify each entry was replaced.
+	failSecondBatch = false
+	u.clk.advance(time.Second)
+	u.reader.sweep()
+	require.Equal(t, runningRequestsKey(testNamespace, readerPodName(103)), firstResumedKey)
+	for i := 0; i < totalPods; i++ {
+		e, ok := u.entry(readerPodName(i))
+		require.True(t, ok, "pod %d missing", i)
+		require.Equal(t, u.clk.now(), e.readAt, "pod %d was not refreshed on the resumed sweep", i)
 	}
-	total, other, excluded := sumLiveFieldsAndOther(fields, live)
-	require.Empty(t, excluded)
-	require.Equal(t, int64(math.MaxInt64), total)
-	require.Equal(t, int64(1), other)
-	require.Equal(t, int64(1), sumOtherLiveRunning(fields, live))
+	require.Equal(t, float64(totalPods), testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodFresh)))
+	require.Equal(t, 0.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodStale)))
+}
+
+// Redis errors during ZRANGEBYSCORE or during a batch with skipped pods must preserve already
+// fresh skipped entries, leave unread pods untouched, and advance resumeAt so the sweep cannot stall.
+func TestRemoteRunningReader_ErrorDuringZRangeByScoreAndSkippedBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		failLiveLookup bool
+	}{
+		{name: "zrangebyscore error with skipped pods", failLiveLookup: true},
+		{name: "batch error with skipped pods"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newReaderUnderTest(t)
+			const totalPods = remoteRunningReaderBatchSize + 2
+			skipped := addTestReadyMetaPod(t, u.store, readerPodName(0))
+			for i := 1; i < totalPods; i++ {
+				addTestReadyMetaPod(t, u.store, readerPodName(i))
+			}
+			u.setRRQ(t, skipped.Name, map[string]any{"gw-a": "3"})
+			_, _ = u.store.readPodsSharedRoutingState([]*v1.Pod{skipped}, false)
+			original, ok := u.entry(skipped.Name)
+			require.True(t, ok)
+			u.clk.advance(100 * time.Millisecond)
+
+			injected := false
+			if tc.failLiveLookup {
+				u.client.AddHook(&cmdHook{before: func(_ context.Context, cmd redis.Cmder) error {
+					if cmd.Name() == "zrangebyscore" {
+						injected = true
+						return context.DeadlineExceeded
+					}
+					return nil
+				}})
+			} else {
+				u.client.AddHook(&pipelineHook{before: func(_ context.Context, cmds []redis.Cmder) error {
+					if isSweepBatch(cmds) {
+						injected = true
+						return context.DeadlineExceeded
+					}
+					return nil
+				}})
+			}
+			u.reader.sweep()
+
+			require.True(t, injected)
+			got, ok := u.entry(skipped.Name)
+			require.True(t, ok)
+			require.Same(t, original, got)
+			for i := 1; i < totalPods; i++ {
+				_, ok = u.entry(readerPodName(i))
+				require.False(t, ok, "unreached pod %d must remain unread", i)
+			}
+			wantResume := utils.GeneratePodKey(testNamespace, readerPodName(remoteRunningReaderBatchSize+1))
+			require.Equal(t, wantResume, u.reader.resumeAt, "zero progress must advance past the first eligible batch")
+			require.Equal(t, 1.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodFresh)))
+			require.Equal(t, float64(totalPods-1), testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodUnread)))
+		})
+	}
+}
+
+// A pod that goes unready for longer than maxAge (3 × interval) is not swept while unready, so its
+// cached remote entry expires; when it becomes ready again, GetPodsRunningRequestsApprox and
+// syncRunningRequestsGlobally report only the local share until the next sweep refreshes it.
+func TestRemoteRunningReader_UnreadyPastMaxAgeExpiresThenRefreshesOnRecovery(t *testing.T) {
+	u := newReaderUnderTest(t)
+	pod := addTestReadyMetaPod(t, u.store, testPodName)
+	podKey := utils.GeneratePodKey(testNamespace, testPodName)
+	metaPod, _ := u.store.metaPods.Load(podKey)
+	atomic.StoreInt32(&metaPod.runningRequests, 1)
+	u.setRRQ(t, testPodName, map[string]any{"gw-a": "5"})
+
+	// Sweep while ready: local(1) + remote(5) = 6.
+	u.reader.sweep()
+	require.Equal(t, int64(6), approxRunning(u.store, pod))
+	u.store.syncRunningRequestsGlobally(metaPod)
+	got, ok := metaPod.Metrics.Load(metrics.RealtimeNumRequestsRunning)
+	require.True(t, ok)
+	require.Equal(t, 6.0, got.Value.GetSimpleValue())
+
+	// Pod becomes unready and stays unready past maxAge (4s > 3s); sweeps skip it.
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}}
+	for range 4 {
+		u.clk.advance(time.Second)
+		u.reader.sweep()
+	}
+
+	// Pod flips back to ready: before the next sweep runs, its old entry is > maxAge, so
+	// approx and gauge both fall back to the local count (1).
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	require.Equal(t, int64(1), approxRunning(u.store, pod))
+	u.store.syncRunningRequestsGlobally(metaPod)
+	got, _ = metaPod.Metrics.Load(metrics.RealtimeNumRequestsRunning)
+	require.Equal(t, 1.0, got.Value.GetSimpleValue())
+
+	// The next sweep refreshes the recovered pod back to 6 (fresh=1).
+	u.reader.sweep()
+	require.Equal(t, int64(6), approxRunning(u.store, pod))
+	u.store.syncRunningRequestsGlobally(metaPod)
+	got, _ = metaPod.Metrics.Load(metrics.RealtimeNumRequestsRunning)
+	require.Equal(t, 6.0, got.Value.GetSimpleValue())
+	require.Equal(t, 1.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodFresh)))
 }
 
 // Pods refreshed by the request path (or an earlier sweep) within the last half interval are skipped
