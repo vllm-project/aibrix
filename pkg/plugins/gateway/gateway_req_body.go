@@ -258,9 +258,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	// No ModeOverride is sent: the response body mode this create needs (Buffered,
 	// so the backend job id can be replaced before anything reaches the client)
-	// comes from the Videos route's EnvoyExtensionPolicy. Envoy Gateway v1.2.8
-	// never sets ext_proc's allow_mode_override, so a per-request override here
-	// would be silently ignored and would only read as if it did something.
+	// comes from the Videos route's EnvoyExtensionPolicy. AIBrix intentionally
+	// leaves ext_proc's allow_mode_override disabled, so a per-request override
+	// here would be ignored rather than enable buffering.
 	return resp, model, stream, term
 }
 

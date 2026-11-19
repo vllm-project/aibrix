@@ -239,3 +239,49 @@ msgstr ":doc:`../../production/gateway` ：生产环境网关配置"
 #: ../../source/getting_started/installation/installation.rst:204
 msgid ":doc:`../../production/observability`: metrics, dashboards, and telemetry"
 msgstr ":doc:`../../production/observability` ：指标、仪表盘和遥测"
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:17
+msgid ""
+"The current checkout pins Envoy Gateway v1.9.4 with Envoy v1.39.6. The "
+"`upstream compatibility matrix "
+"<https://gateway.envoyproxy.io/news/releases/matrix/>`_ lists Kubernetes "
+"v1.33 through v1.36 and Gateway API v1.6.1 for this release line. This is "
+"the upstream-tested range, not a claim that every AIBrix workload has been "
+"tested on every Kubernetes version. Older externally installed Envoy Gateway"
+" releases are not validated by this migration."
+msgstr ""
+"当前检出的代码将 Envoy Gateway 固定为 v1.9.4，将 Envoy 固定为 v1.39.6。`上游兼容性矩阵 "
+"<https://gateway.envoyproxy.io/news/releases/matrix/>`_ 列出了该版本系列对应的 "
+"Kubernetes v1.33 至 v1.36 和 Gateway API v1.6.1。这是上游测试覆盖的范围，并不表示每个 AIBrix "
+"工作负载都已在每个 Kubernetes 版本上测试过。本次迁移不验证外部安装的较旧 Envoy Gateway 版本。"
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:24
+msgid ""
+"Release bundles install their own pinned dependencies; these checkout "
+"versions do not change an already published release bundle."
+msgstr "发布包会安装各自固定版本的依赖；当前检出代码中的版本不会改变已经发布的版本包。"
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:99
+msgid ""
+"When upgrading the gateway from v1.2.8, install the new Gateway API and "
+"Envoy Gateway CRDs before replacing the controller or applying policies that"
+" use ``targetRefs``. Use server-side apply because the bundled CRDs can "
+"exceed client-side apply's annotation size limit. From this checkout:"
+msgstr ""
+"从 v1.2.8 升级网关时，应先安装新的 Gateway API 和 Envoy Gateway CRD，再替换控制器或应用使用 "
+"``targetRefs`` 的策略。请使用服务端应用，因为捆绑的 CRD 可能超出客户端应用的注解大小限制。从当前检出的代码执行："
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:109
+msgid "Then upgrade the AIBrix chart:"
+msgstr "然后升级 AIBrix chart："
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:115
+msgid ""
+"Check that the Gateway and its policies are accepted for their current "
+"``metadata.generation``. Check Envoy's xDS rejection counters and send "
+"traffic after restarting a proxy as well as before it: a proxy can keep "
+"serving its previous configuration when a newer configuration is rejected. A"
+" ready Pod alone does not prove that the new routing configuration works."
+msgstr ""
+"检查 Gateway 及其策略是否已针对当前的 ``metadata.generation`` 被接受。检查 Envoy 的 xDS "
+"拒绝计数器，并在重启代理前后都发送流量：当新配置被拒绝时，代理可能仍在使用旧配置提供服务。仅有就绪的 Pod 并不能证明新的路由配置正常工作。"

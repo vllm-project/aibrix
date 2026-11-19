@@ -8,10 +8,10 @@ metadata:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: {{ include "aibrix.fullname" . }}-reserved-router
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "aibrix.fullname" . }}-reserved-router
   extProc:
     - backendRefs:
         - group: ''
@@ -41,8 +41,8 @@ metadata:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: {{ include "aibrix.fullname" . }}-reserved-router-metadata-endpoint
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "aibrix.fullname" . }}-reserved-router-metadata-endpoint
 {{- end }}

@@ -9,6 +9,79 @@
               "activeState": {
                 "listener": {
                   "@type": "type.googleapis.com/envoy.config.listener.v3.Listener",
+                  "address": {
+                    "socketAddress": {
+                      "address": "0.0.0.0",
+                      "portValue": 19003
+                    }
+                  },
+                  "bypassOverloadManager": true,
+                  "filterChains": [
+                    {
+                      "filters": [
+                        {
+                          "name": "envoy.filters.network.http_connection_manager",
+                          "typedConfig": {
+                            "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+                            "httpFilters": [
+                              {
+                                "name": "envoy.filters.http.health_check",
+                                "typedConfig": {
+                                  "@type": "type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck",
+                                  "headers": [
+                                    {
+                                      "name": ":path",
+                                      "stringMatch": {
+                                        "exact": "/ready"
+                                      }
+                                    }
+                                  ],
+                                  "passThroughMode": false
+                                }
+                              },
+                              {
+                                "name": "envoy.filters.http.router",
+                                "typedConfig": {
+                                  "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
+                                  "suppressEnvoyHeaders": true
+                                }
+                              }
+                            ],
+                            "routeConfig": {
+                              "name": "ready_route",
+                              "virtualHosts": [
+                                {
+                                  "domains": [
+                                    "*"
+                                  ],
+                                  "name": "ready_route",
+                                  "routes": [
+                                    {
+                                      "directResponse": {
+                                        "status": 500
+                                      },
+                                      "match": {
+                                        "prefix": "/"
+                                      }
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            "statPrefix": "eg-ready-http"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "name": "envoy-gateway-proxy-ready-0.0.0.0-19003"
+                }
+              }
+            },
+            {
+              "activeState": {
+                "listener": {
+                  "@type": "type.googleapis.com/envoy.config.listener.v3.Listener",
                   "accessLog": [
                     {
                       "filter": {
@@ -113,29 +186,6 @@
                           "httpFilters": [
                             {
                               "disabled": true,
-                              "name": "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-streaming-extension-policy/extproc/0",
-                              "typedConfig": {
-                                "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
-                                "grpcService": {
-                                  "envoyGrpc": {
-                                    "authority": "aibrix-gateway-plugins.aibrix-system:50052",
-                                    "clusterName": "envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-streaming-extension-policy/extproc/0"
-                                  },
-                                  "timeout": "10s"
-                                },
-                                "messageTimeout": "600s",
-                                "processingMode": {
-                                  "requestBodyMode": "BUFFERED",
-                                  "requestHeaderMode": "SEND",
-                                  "requestTrailerMode": "SKIP",
-                                  "responseBodyMode": "STREAMED",
-                                  "responseHeaderMode": "SEND",
-                                  "responseTrailerMode": "SKIP"
-                                }
-                              }
-                            },
-                            {
-                              "disabled": true,
                               "name": "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0",
                               "typedConfig": {
                                 "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
@@ -181,6 +231,29 @@
                               }
                             },
                             {
+                              "disabled": true,
+                              "name": "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-streaming-extension-policy/extproc/0",
+                              "typedConfig": {
+                                "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+                                "grpcService": {
+                                  "envoyGrpc": {
+                                    "authority": "aibrix-gateway-plugins.aibrix-system:50052",
+                                    "clusterName": "envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-streaming-extension-policy/extproc/0"
+                                  },
+                                  "timeout": "10s"
+                                },
+                                "messageTimeout": "600s",
+                                "processingMode": {
+                                  "requestBodyMode": "BUFFERED",
+                                  "requestHeaderMode": "SEND",
+                                  "requestTrailerMode": "SKIP",
+                                  "responseBodyMode": "STREAMED",
+                                  "responseHeaderMode": "SEND",
+                                  "responseTrailerMode": "SKIP"
+                                }
+                              }
+                            },
+                            {
                               "name": "envoy.filters.http.router",
                               "typedConfig": {
                                 "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
@@ -206,6 +279,7 @@
                     ],
                     "name": "aibrix-system/aibrix-eg/http"
                   },
+                  "maxConnectionsToAcceptPerSocketEvent": 1,
                   "name": "aibrix-system/aibrix-eg/http",
                   "perConnectionBufferLimitBytes": 4194304
                 }
@@ -559,39 +633,6 @@
                       },
                       {
                         "match": {
-                          "pathSeparatedPrefix": "/v1/audio/voices"
-                        },
-                        "metadata": {
-                          "filterMetadata": {
-                            "envoy-gateway": {
-                              "resources": [
-                                {
-                                  "kind": "HTTPRoute",
-                                  "name": "aibrix-reserved-router",
-                                  "namespace": "aibrix-system"
-                                }
-                              ]
-                            }
-                          }
-                        },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/18/*",
-                        "route": {
-                          "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
-                          "upgradeConfigs": [
-                            {
-                              "upgradeType": "websocket"
-                            }
-                          ]
-                        },
-                        "typedPerFilterConfig": {
-                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0": {
-                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
-                            "config": {}
-                          }
-                        }
-                      },
-                      {
-                        "match": {
                           "pathSeparatedPrefix": "/v1/audio/generate"
                         },
                         "metadata": {
@@ -691,6 +732,39 @@
                       },
                       {
                         "match": {
+                          "pathSeparatedPrefix": "/v1/audio/voices"
+                        },
+                        "metadata": {
+                          "filterMetadata": {
+                            "envoy-gateway": {
+                              "resources": [
+                                {
+                                  "kind": "HTTPRoute",
+                                  "name": "aibrix-reserved-router",
+                                  "namespace": "aibrix-system"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/18/*",
+                        "route": {
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
+                          "upgradeConfigs": [
+                            {
+                              "upgradeType": "websocket"
+                            }
+                          ]
+                        },
+                        "typedPerFilterConfig": {
+                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0": {
+                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
+                            "config": {}
+                          }
+                        }
+                      },
+                      {
+                        "match": {
                           "pathSeparatedPrefix": "/v1/completions"
                         },
                         "metadata": {
@@ -757,7 +831,7 @@
                       },
                       {
                         "match": {
-                          "pathSeparatedPrefix": "/v1/systemone"
+                          "pathSeparatedPrefix": "/v1/responses"
                         },
                         "metadata": {
                           "filterMetadata": {
@@ -772,7 +846,7 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/9/*",
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/1/*",
                         "route": {
                           "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
                           "upgradeConfigs": [
@@ -823,7 +897,7 @@
                       },
                       {
                         "match": {
-                          "pathSeparatedPrefix": "/v1/responses"
+                          "pathSeparatedPrefix": "/v1/systemone"
                         },
                         "metadata": {
                           "filterMetadata": {
@@ -838,7 +912,40 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/1/*",
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/9/*",
+                        "route": {
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
+                          "upgradeConfigs": [
+                            {
+                              "upgradeType": "websocket"
+                            }
+                          ]
+                        },
+                        "typedPerFilterConfig": {
+                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0": {
+                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
+                            "config": {}
+                          }
+                        }
+                      },
+                      {
+                        "match": {
+                          "pathSeparatedPrefix": "/v1/messages"
+                        },
+                        "metadata": {
+                          "filterMetadata": {
+                            "envoy-gateway": {
+                              "resources": [
+                                {
+                                  "kind": "HTTPRoute",
+                                  "name": "aibrix-reserved-router",
+                                  "namespace": "aibrix-system"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/2/*",
                         "route": {
                           "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
                           "upgradeConfigs": [
@@ -889,42 +996,6 @@
                       },
                       {
                         "match": {
-                          "pathSeparatedPrefix": "/v1/messages"
-                        },
-                        "metadata": {
-                          "filterMetadata": {
-                            "envoy-gateway": {
-                              "resources": [
-                                {
-                                  "kind": "HTTPRoute",
-                                  "name": "aibrix-reserved-router",
-                                  "namespace": "aibrix-system"
-                                }
-                              ]
-                            }
-                          }
-                        },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/2/*",
-                        "route": {
-                          "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
-                          "upgradeConfigs": [
-                            {
-                              "upgradeType": "websocket"
-                            }
-                          ]
-                        },
-                        "typedPerFilterConfig": {
-                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0": {
-                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
-                            "config": {}
-                          }
-                        }
-                      },
-                      {
-                        "directResponse": {
-                          "status": 500
-                        },
-                        "match": {
                           "pathSeparatedPrefix": "/v1/batches"
                         },
                         "metadata": {
@@ -940,61 +1011,14 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0/match/2/*"
-                      },
-                      {
-                        "directResponse": {
-                          "status": 500
-                        },
-                        "match": {
-                          "pathSeparatedPrefix": "/v1/models"
-                        },
-                        "metadata": {
-                          "filterMetadata": {
-                            "envoy-gateway": {
-                              "resources": [
-                                {
-                                  "kind": "HTTPRoute",
-                                  "name": "aibrix-reserved-router-metadata-endpoint",
-                                  "namespace": "aibrix-system"
-                                }
-                              ]
-                            }
-                          }
-                        },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0/match/0/*"
-                      },
-                      {
-                        "match": {
-                          "pathSeparatedPrefix": "/v1/videos"
-                        },
-                        "metadata": {
-                          "filterMetadata": {
-                            "envoy-gateway": {
-                              "resources": [
-                                {
-                                  "kind": "HTTPRoute",
-                                  "name": "aibrix-reserved-router-videos",
-                                  "namespace": "aibrix-system"
-                                }
-                              ]
-                            }
-                          }
-                        },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router-videos/rule/0/match/0/*",
+                        "name": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0/match/2/*",
                         "route": {
-                          "cluster": "httproute/aibrix-system/aibrix-reserved-router-videos/rule/0",
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0",
                           "upgradeConfigs": [
                             {
                               "upgradeType": "websocket"
                             }
                           ]
-                        },
-                        "typedPerFilterConfig": {
-                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-extension-policy/extproc/0": {
-                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
-                            "config": {}
-                          }
                         }
                       },
                       {
@@ -1032,7 +1056,67 @@
                       },
                       {
                         "match": {
-                          "pathSeparatedPrefix": "/tokenize"
+                          "pathSeparatedPrefix": "/v1/models"
+                        },
+                        "metadata": {
+                          "filterMetadata": {
+                            "envoy-gateway": {
+                              "resources": [
+                                {
+                                  "kind": "HTTPRoute",
+                                  "name": "aibrix-reserved-router-metadata-endpoint",
+                                  "namespace": "aibrix-system"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "name": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0/match/0/*",
+                        "route": {
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0",
+                          "upgradeConfigs": [
+                            {
+                              "upgradeType": "websocket"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "match": {
+                          "pathSeparatedPrefix": "/v1/videos"
+                        },
+                        "metadata": {
+                          "filterMetadata": {
+                            "envoy-gateway": {
+                              "resources": [
+                                {
+                                  "kind": "HTTPRoute",
+                                  "name": "aibrix-reserved-router-videos",
+                                  "namespace": "aibrix-system"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "name": "httproute/aibrix-system/aibrix-reserved-router-videos/rule/0/match/0/*",
+                        "route": {
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router-videos/rule/0",
+                          "upgradeConfigs": [
+                            {
+                              "upgradeType": "websocket"
+                            }
+                          ]
+                        },
+                        "typedPerFilterConfig": {
+                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-extension-policy/extproc/0": {
+                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
+                            "config": {}
+                          }
+                        }
+                      },
+                      {
+                        "match": {
+                          "pathSeparatedPrefix": "/classify"
                         },
                         "metadata": {
                           "filterMetadata": {
@@ -1047,7 +1131,7 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/11/*",
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/7/*",
                         "route": {
                           "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
                           "upgradeConfigs": [
@@ -1098,7 +1182,7 @@
                       },
                       {
                         "match": {
-                          "pathSeparatedPrefix": "/classify"
+                          "pathSeparatedPrefix": "/tokenize"
                         },
                         "metadata": {
                           "filterMetadata": {
@@ -1113,7 +1197,7 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/7/*",
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/11/*",
                         "route": {
                           "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
                           "upgradeConfigs": [
@@ -1130,9 +1214,6 @@
                         }
                       },
                       {
-                        "directResponse": {
-                          "status": 500
-                        },
                         "match": {
                           "pathSeparatedPrefix": "/v1/files"
                         },
@@ -1149,7 +1230,15 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0/match/1/*"
+                        "name": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0/match/1/*",
+                        "route": {
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router-metadata-endpoint/rule/0",
+                          "upgradeConfigs": [
+                            {
+                              "upgradeType": "websocket"
+                            }
+                          ]
+                        }
                       },
                       {
                         "match": {

@@ -14,6 +14,16 @@ Install AIBrix on Cloud Kubernetes Clusters
 .. attention::
     AIBrix requires `Envoy Gateway <https://gateway.envoyproxy.io/>`_ for request routing.
 
+    The current checkout pins Envoy Gateway v1.9.4 with Envoy v1.39.6. The
+    `upstream compatibility matrix <https://gateway.envoyproxy.io/news/releases/matrix/>`_
+    lists Kubernetes v1.33 through v1.36 and Gateway API v1.6.1 for this release
+    line. This is the upstream-tested range, not a claim that every AIBrix
+    workload has been tested on every Kubernetes version. Older externally
+    installed Envoy Gateway releases are not validated by this migration.
+
+    Release bundles install their own pinned dependencies; these checkout
+    versions do not change an already published release bundle.
+
     `KubeRay <https://github.com/ray-project/kuberay>`_ is **optional** and only required if you plan to use Ray as your distributed inference runtime (RayClusterFleet, RayClusterReplicaSet).
 
     AIBrix can run without KubeRay - use StormService for both single-node and multi-node inference workloads. The distributed inference controller will be automatically skipped if KubeRay CRDs are not detected.
@@ -43,7 +53,7 @@ Prerequisites
 .. code:: bash
 
     # Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
-    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system \
+    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.9.4 -n envoy-gateway-system \
     --create-namespace \
     --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true
 
@@ -86,9 +96,27 @@ Install AIBrix with Helm
 Upgrade AIBrix with Helm
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
+When upgrading the gateway from v1.2.8, install the new Gateway API and Envoy
+Gateway CRDs before replacing the controller or applying policies that use
+``targetRefs``. Use server-side apply because the bundled CRDs can exceed
+client-side apply's annotation size limit. From this checkout:
+
+.. code:: bash
+
+    kubectl apply -k config/dependency/envoy-gateway --server-side
+    kubectl -n envoy-gateway-system rollout status deployment/envoy-gateway --timeout=5m
+
+Then upgrade the AIBrix chart:
+
 .. code:: bash
 
     helm upgrade aibrix dist/chart -f dist/chart/values.yaml -n aibrix-system
+
+Check that the Gateway and its policies are accepted for their current
+``metadata.generation``. Check Envoy's xDS rejection counters and send traffic
+after restarting a proxy as well as before it: a proxy can keep serving its
+previous configuration when a newer configuration is rejected. A ready Pod
+alone does not prove that the new routing configuration works.
 
 
 Uninstall AIBrix with Helm

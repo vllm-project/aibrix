@@ -43,7 +43,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Opt in with AIBRIX_ENVOY_TEST_IMAGE=envoyproxy/envoy:v1.33.2. Only the Envoy
+// Opt in with AIBRIX_ENVOY_TEST_IMAGE=envoyproxy/envoy:v1.39.6. Only the Envoy
 // process runs in Docker; upstream HTTP and the real Gateway Process run here.
 // Host networking connects the three loopback listeners; no Kubernetes is used.
 func TestEnvoyStreamedUpstreamErrors(t *testing.T) {
