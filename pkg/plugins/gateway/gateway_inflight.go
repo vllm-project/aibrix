@@ -75,7 +75,7 @@ func (s *Server) enforceReplicaInflight(ctx context.Context, model string, routi
 	if !s.admitReplicaInflight(routingCtx, pod, limit) {
 		klog.InfoS("replica_inflight_exceeded", "requestID", routingCtx.RequestID, "model", model,
 			"targetPod", pod.Name, "limit", limit, "reason", "replica_at_capacity")
-		return replicaInflightExceededResponse(model, limit)
+		return withRoutingResponseHeaders(replicaInflightExceededResponse(model, limit), routingCtx, routingCtx.RequestID)
 	}
 	return nil
 }
