@@ -254,17 +254,26 @@ with IP, non-terminating, non-draining) once per `AIBRIX_REMOTE_RUNNING_READER_I
 `ZRANGEBYSCORE` for the live gateways, then one `HGETALL` per pod not already refreshed within the
 last half interval in pipelines of 100), and every exact read on the request path refreshes the pods
 it read at no extra Redis command. A pod's count is used while it was read within 3 × the interval
-(3 s at the default) and falls back to this gateway's own count after that. A sweep that runs out
-of time (budgeted over the Redis phase) keeps what it read, and the next one starts with the pods
-it did not reach. Other gateways' fields are counted while their heartbeat is within the 3 s
+(3 s at the default) and falls back to this gateway's own count after that. Once a pod stops being
+ready (starts draining, terminating, or becomes unready), new sweeps skip it, so its cached remote
+entry ages out after 3 × the interval and `realtime_num_requests_running` falls back to this
+gateway's own count (observability-only, since routing selects from ready pods). A sweep that runs
+out of time (budgeted over the Redis phase) keeps what it read, and the next one starts with the
+pods it did not reach. Other gateways' fields are counted while their heartbeat is within the 3 s
 liveness window that the exact reads use, so when sweeps succeed a crashed gateway's counts stop
 being picked up by new sweeps within about 3 s plus one sweep interval (existing cached entries age
 out after 3 × the interval from their `readAt` if not overwritten). While
 `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`, the gateway snapshot sync still writes this gateway's
 `aibrix:pod:*` hashes (so gateways running with the flag off still read them during mixed-config
-rollouts) while skipping its `SCAN` and cross-gateway `HGETALL` read phase. Set
-`AIBRIX_REMOTE_RUNNING_READER_ENABLED=false` at gateway startup to fall back to reading the gateway
-snapshot.
+rollouts) while skipping its `SCAN` and cross-gateway `HGETALL` read phase. To opt out at gateway
+startup and fall back to reading the gateway snapshot, set `AIBRIX_REMOTE_RUNNING_READER_ENABLED`
+to one of the `strconv.ParseBool` false values (`false`, `False`, `FALSE`, `0`, `f`, or `F`); any
+other non-empty spelling (such as `off`, `no`, `disabled`, or values with leading/trailing
+whitespace like a YAML block-scalar newline) logs a warning and falls back to `true`, leaving the
+reader enabled (check the startup log line `Initializing remote running reader` to confirm it is
+running). Until PR (c) removes snapshot sync, note that at the G=8, N >= 2000 fleet scale targeted
+here, the `=false` snapshot fallback may time out before publishing any snapshot
+(`snap_ever_published=0/8` in single-node tests), yielding local-only counts at that scale.
 `aibrix_gateway_remote_running_reader_pods{state}` counts the pods selected as ready at sweep start
 that remain ready (`utils.FilterReadyPod`) at the end of the sweep by whether their count was read
 within the limit (`fresh`), longer ago (`stale`, not used) or never (`unread`), and
@@ -275,14 +284,14 @@ count in the estimates and skips emission for `realtime_num_requests_running`, w
 still include remote counts (making it appear lighter by the missing remote share). A sustained
 non-zero `stale` gauge means sweeps or exact reads are not reaching every pod within 3 × the
 interval (for example, an interval shorter than one fleet sweep or Redis instability).
-When `AIBRIX_REMOTE_RUNNING_READER_ENABLED=false` at gateway startup, each published snapshot tick
-instead updates `aibrix_gateway_snapshot_remote_keys{state}` (`fresh`, `carried`, `stale` past the
-1 s age limit) and `aibrix_gateway_snapshot_oldest_read_age_seconds`.
+When `AIBRIX_REMOTE_RUNNING_READER_ENABLED` is disabled (`false`/`0`/`f`) at gateway startup, each
+published snapshot tick instead updates `aibrix_gateway_snapshot_remote_keys{state}` (`fresh`,
+`carried`, `stale` past the 1 s age limit) and `aibrix_gateway_snapshot_oldest_read_age_seconds`.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
-| `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `true` | Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot (skipping snapshot `SCAN`/reads while keeping writes for mixed rollouts). Set to `false` to fall back to the gateway snapshot. Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
+| `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `true` | Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot (skipping snapshot `SCAN`/reads while keeping writes for mixed rollouts). Set to `false` (`false`/`False`/`FALSE`/`0`/`f`/`F`) to fall back to the gateway snapshot (`aibrix_gateway_snapshot_*` gauges remain unset while enabled). Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 | `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` | duration | `1s` | How often the reader sweeps known ready pods (`utils.FilterReadyPod`) when `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`; also each sweep's Redis-phase time budget. Clamped to a minimum of `100ms` (with a warning). Pods refreshed within the last half interval are skipped, and a pod's count is used for 3 × this interval after it was read. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 
 It can also be set per request by the model config profile (`routingConfig.candidate.k`); see [Model Config Profile Overrides](#model-config-profile-overrides).

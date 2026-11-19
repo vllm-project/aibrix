@@ -33,6 +33,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -881,12 +882,15 @@ func TestRemoteRunningReader_SweepSkipsUnreadyPods(t *testing.T) {
 	terminating := addTestReadyMetaPod(t, u.store, "terminating")
 	now := metav1.Now()
 	terminating.DeletionTimestamp = &now
+	draining := addTestReadyMetaPod(t, u.store, "draining")
+	draining.Annotations = map[string]string{constants.PodDrainingAnnotationKey: "true"}
 
 	u.setRRQ(t, "ready", map[string]any{"gw-a": "4"})
 	u.setRRQ(t, "pending", map[string]any{"gw-a": "9"})
 	u.setRRQ(t, "unready-ip", map[string]any{"gw-a": "9"})
 	u.setRRQ(t, "ready-no-ip", map[string]any{"gw-a": "9"})
 	u.setRRQ(t, "terminating", map[string]any{"gw-a": "9"})
+	u.setRRQ(t, "draining", map[string]any{"gw-a": "9"})
 	u.setRRQ(t, "flips-unready", map[string]any{"gw-a": "6"})
 
 	u.client.AddHook(&pipelineHook{before: func(_ context.Context, cmds []redis.Cmder) error {
@@ -903,7 +907,7 @@ func TestRemoteRunningReader_SweepSkipsUnreadyPods(t *testing.T) {
 	e, ok := u.entry("ready")
 	require.True(t, ok)
 	require.Equal(t, int64(4), e.count)
-	for _, skipped := range []string{"pending", "unready-ip", "ready-no-ip", "terminating"} {
+	for _, skipped := range []string{"pending", "unready-ip", "ready-no-ip", "terminating", "draining"} {
 		_, ok = u.entry(skipped)
 		require.False(t, ok, "pod %s must not be swept", skipped)
 	}

@@ -97,8 +97,8 @@ func BenchmarkGetPodsRunningRequests_Redis(b *testing.B) {
 // BenchmarkRemoteRunningReader_Redis measures one gateway's background tick cost against a real
 // Redis at G=8, N=2000 and N=5000: legacy snapshot sync (Phase-1 write + SCAN + G*N HGETALL) vs
 // the remote running reader sweep (ZRANGEBYSCORE + non-fresh N HGETALL) with 0% or 50% request-path
-// half-interval overlap. Requires AIBRIX_BENCH_REDIS_ADDR pointing at a dedicated empty Redis
-// (or AIBRIX_BENCH_REDIS_FLUSH=1).
+// half-interval overlap. Requires both AIBRIX_BENCH_REDIS_ADDR pointing at a dedicated disposable
+// Redis and AIBRIX_BENCH_REDIS_FLUSH=1.
 func BenchmarkRemoteRunningReader_Redis(b *testing.B) {
 	ctx := context.Background()
 	client := connectDisposableBenchRedis(b, ctx)
@@ -213,7 +213,8 @@ func assertSweepRefreshedPods(tb testing.TB, r *remoteRunningReader, pods []*v1.
 // TestRemoteRunningReader_RedisCommandStats runs G=8 concurrent gateways against a single-node
 // Redis at N=2000 and N=5000 for 3s each and logs real Redis INFO commandstats & CPU usage diffs
 // for reader=off (snapshot sync) vs reader=on (0% and 50% request-path half-interval overlap).
-// Requires AIBRIX_BENCH_REDIS_ADDR pointing at a dedicated empty Redis (or AIBRIX_BENCH_REDIS_FLUSH=1).
+// Requires both AIBRIX_BENCH_REDIS_ADDR pointing at a dedicated disposable Redis and
+// AIBRIX_BENCH_REDIS_FLUSH=1.
 func TestRemoteRunningReader_RedisCommandStats(t *testing.T) {
 	ctx := context.Background()
 	admin := connectDisposableBenchRedis(t, ctx)

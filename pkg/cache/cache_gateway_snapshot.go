@@ -75,6 +75,8 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 	_ = startGatewaySnapshotSync(store, stopCh)
 }
 
+// startGatewaySnapshotSync starts the snapshot sync goroutine and returns a channel closed once
+// it exits; benchmarks/tests wait on this channel before tearing down shared Redis clients.
 func startGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) <-chan struct{} {
 	done := make(chan struct{})
 	if store.redisClient == nil {
