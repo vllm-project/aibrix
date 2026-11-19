@@ -19,10 +19,8 @@ package podautoscaler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"sync"
 	"time"
 
@@ -84,11 +82,6 @@ type ReplicaComputeResult struct {
 	// produced this recommendation, so callers can say it rests on partial data.
 	FailedMetrics []string
 }
-
-// errScaleDownHeld marks a scale-down refused by hold-scale-down-on-metric-failure.
-// It is an expected state rather than a failure, so the reconciler reports it
-// without returning an error and being retried with backoff.
-var errScaleDownHeld = errors.New("scale-down held while a metric source fails")
 
 // DefaultAutoScaler implements the complete scaling pipeline
 // All components are stateless or thread-safe, allowing concurrent reconciliation
@@ -277,18 +270,6 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		if r.DesiredReplicas > bestResult.DesiredReplicas {
 			bestResult = r
 		}
-	}
-
-	// With the hold enabled, refuse a metric-driven scale-down while any source
-	// fails, as Kubernetes HPA does: the failed source may be the one keeping the
-	// replicas up. A scale-up from the sources that remain still goes ahead, and
-	// the controller still applies the replica bounds.
-	if len(failedMetrics) > 0 && bestResult.DesiredReplicas < request.CurrentReplicas &&
-		request.ScalingContext != nil && request.ScalingContext.GetHoldScaleDownOnMetricFailure() {
-		return &ReplicaComputeResult{Valid: false, FailedMetrics: failedMetrics}, fmt.Errorf(
-			"%w: PodAutoscaler %s/%s stays at %d replicas instead of %d, because metric sources %s could not be read",
-			errScaleDownHeld, pa.Namespace, pa.Name, request.CurrentReplicas, bestResult.DesiredReplicas,
-			strings.Join(failedMetrics, ", "))
 	}
 
 	allValidReplicas := make([]int32, len(validResults))
