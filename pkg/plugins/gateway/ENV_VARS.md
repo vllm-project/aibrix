@@ -46,6 +46,18 @@ between callers in this mode.
 
 ---
 
+## Pod Blacklist (`blacklist/`)
+
+How the gateway stops routing to a broken or overloaded pod is described in [blacklist/README.md](blacklist/README.md).
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_POD_BLACKLIST_ENABLED` | bool | `false` | Master switch for the whole pod blacklist (background probe sweep, load-outlier sweep, flaky re-add and quarantine). Unset, empty, `false` or `0` leaves every path a no-op and starts no background work, so healthy-fleet routing matches the pre-blacklist behaviour. Set to `true` (or `1`) to enable. The per-request load-imbalance gate is unaffected and runs with the blacklist on or off (see [Load Balance Router](#load-balance-router-algorithmsload_balancego)). | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go), [gateway_blacklist.go](gateway_blacklist.go) |
+| `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` | int | `50` | Most of the pods a request considers that the blacklist may exclude, as a percentage (0-100). When more than this share of them is excluded, the request is routed across all of them as if none were: excluding most of a model's pods leaves the few that remain to carry its traffic, and a verdict wrong for many pods at once (a network fault on the gateway's side, say) is more likely than most of a fleet failing together. At the default one pod of two, two of four and three of eight may be excluded, two of three may not, and a model with one pod never excludes it. `100` turns the cap off, so only a model with every pod excluded is routed across. Counted by `gateway_pod_blacklist_fallback_total{reason="over_cap"}`. Only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go) |
+| `AIBRIX_LOAD_OUTLIER_MIN_GAP` | int | `16` | Minimum absolute gap in engine-reported running+waiting requests that a pod must have over the mean of its peers before the load-outlier sweep excludes it. Without it a pod a few standard deviations above identical, near-idle peers (for example loads `[0, 0, 1]`) would qualify. Only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. | [blacklist/pod_load_blacklist.go](blacklist/pod_load_blacklist.go) |
+
+---
+
 ## Redis Sync (`statesync/`)
 
 | Variable | Type | Default | Description | Source |
@@ -95,7 +107,9 @@ Preble routers (this replaces the prefix-cache-specific gate that used to live i
 `prefixcache/router.go`; see the deprecation note under [Variable Dependency
 Notes](#variable-dependency-notes)). It is exempted only for exclusive strategies (`pd`,
 `slo*`), which manage their own pod subsets and would have that management disrupted by a
-blanket running-request-count filter applied ahead of time. It does not participate in
+blanket running-request-count filter applied ahead of time. It is applied whether or not the
+pod blacklist is on (`AIBRIX_POD_BLACKLIST_ENABLED`); with the blacklist on, pods it has
+excluded are removed first and the gate narrows the rest. It does not participate in
 multi-strategy soft-scoring (`ScoreAll`) for strategies blended alongside `load-balance` — see
 `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` below for how `load-balance` itself gets
 silently blended into other strategies to compensate.
@@ -191,7 +205,9 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 Off by default. When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` narrows the ready
 pods to K pods before the load-imbalance gate and the router run. The gate and every strategy then
 read running counts, from Redis when it is configured, for those K pods only, which bounds the
-per-request routing work by K instead of the number of ready pods (RFC #3188).
+per-request routing work by K instead of the number of ready pods (RFC #3188). When the
+[pod blacklist](blacklist/README.md) is on, it filters those K pods after they are picked, not the
+ready pods before, so it adds K lookups per request however many pods are tracked.
 
 The K pods are chosen by the strategies themselves, from a scout: 4K ready pods drawn at random
 (the whole fleet when that would cover half of it or more), plus up to K pods a strategy finds

@@ -26,6 +26,7 @@ Versions the catalog was compiled against:
 The ``*-omni`` specs add the audio/speech surface (multipart
 ``/v1/audio/transcriptions``, ``/v1/audio/translations`` and the
 ``/v1/realtime`` WebSocket) on top of the text/pooling surface.
+The vLLM-omni spec also adds multipart ``/v1/videos/sync``.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ class ForwardKind(str, Enum):
     """How the frontend should treat a forwarded path."""
 
     JSON = "json"  # application/json request/response
-    MULTIPART = "multipart"  # file-upload form (audio transcription)
+    MULTIPART = "multipart"  # file-upload form (audio/video)
     SSE = "sse"  # JSON request, server-sent-event (or JSON) response
     WEBSOCKET = "websocket"  # bidirectional upgrade (realtime)
 
@@ -117,6 +118,10 @@ VLLM_SPEECH: Tuple[Tuple[str, ForwardKind], ...] = (
     ("/v1/audio/translations", ForwardKind.MULTIPART),
     ("/v1/realtime", ForwardKind.WEBSOCKET),
 )
+# Synchronous video generation (omni only).
+VLLM_VIDEO: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/v1/videos/sync", ForwardKind.MULTIPART),
+)
 
 VLLM_ROUTES = EndpointSet(
     MODELS
@@ -128,7 +133,7 @@ VLLM_ROUTES = EndpointSet(
     + VLLM_TEXT_EXTRA,
     method_overrides=(("/tokenizer_info", ("GET",)),),
 )
-VLLM_OMNI_ROUTES = VLLM_ROUTES.with_(*VLLM_SPEECH)
+VLLM_OMNI_ROUTES = VLLM_ROUTES.with_(*VLLM_SPEECH, *VLLM_VIDEO)
 
 # ---------------------------------------------------------------------------
 # SGLang surface (v0.5.22)

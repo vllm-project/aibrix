@@ -101,6 +101,24 @@ const (
 	GatewayQueuePendingRequests     = "gateway_queue_pending_requests"
 	GatewayQueueOutcomeTotal        = "gateway_queue_outcome_total"
 	GatewayQueueFIFOFallbackTotal   = "gateway_queue_fifo_fallback_total"
+
+	// Pod blacklist (see pkg/plugins/gateway/blacklist). Low-cardinality on purpose: model,
+	// adapter and the gateway pod, plus the reason or verdict, never the pod.
+	//
+	// Exclusions counts each time a pod becomes excluded, by reason: probe_dead,
+	// probe_degraded, load_outlier or flaky_readd. Recoveries counts a pod leaving
+	// exclusion early, by reason: probe_healthy or load_recovered. ProbeTotal counts every
+	// probe the sweep sends, by verdict (healthy, degraded, dead). A burst of dead verdicts
+	// across a whole model is a gateway-side fault, not a fleet of dead pods. ExcludedPods is
+	// how many pods the blacklist currently excludes on this gateway, as of the end of the
+	// last sweep. FallbackTotal counts requests routed with the blacklist ignored, by
+	// reason: all_excluded (every pod was excluded) or over_cap (more than
+	// AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT of them were).
+	GatewayPodBlacklistExclusionsTotal = "gateway_pod_blacklist_exclusions_total"
+	GatewayPodBlacklistRecoveriesTotal = "gateway_pod_blacklist_recoveries_total"
+	GatewayPodBlacklistProbeTotal      = "gateway_pod_blacklist_probe_total"
+	GatewayPodBlacklistExcludedPods    = "gateway_pod_blacklist_excluded_pods"
+	GatewayPodBlacklistFallbackTotal   = "gateway_pod_blacklist_fallback_total"
 )
 
 var (
@@ -401,6 +419,37 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType:   MetricType{Raw: Counter},
 			Description:  "Requests the gateway SLO queue dispatched FIFO because no profile or SLO information was available",
+		},
+
+		GatewayPodBlacklistExclusionsTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Times the pod blacklist excluded a pod from routing, by reason",
+		},
+		GatewayPodBlacklistRecoveriesTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Times the pod blacklist lifted a pod's exclusion before its deadline, by reason",
+		},
+		GatewayPodBlacklistProbeTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Background health probes the pod blacklist sent, by verdict",
+		},
+		GatewayPodBlacklistExcludedPods: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Gauge},
+			Description:  "Pods the pod blacklist currently excludes from routing on this gateway",
+		},
+		GatewayPodBlacklistFallbackTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests routed with the pod blacklist ignored, because every pod or too many of them were excluded",
 		},
 	}
 )

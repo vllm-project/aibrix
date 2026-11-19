@@ -592,3 +592,27 @@ func TestSelectCandidates_CountsPaths(t *testing.T) {
 	}
 	assert.Equal(t, before, after, "decisions the stage leaves alone are not counted")
 }
+
+// The gateway runs the stage a second time when the blacklist leaves a request's candidates
+// mostly excluded. The pass narrows as SelectCandidates does but is not a second decision: the
+// counter says how many requests the stage narrowed.
+func TestReselectCandidates_NarrowsWithoutCountingAgain(t *testing.T) {
+	pods := candidatePods(40)
+	ctx := routingOverridesContext(t, `{"candidate":{"k":8}}`)
+	ctx.Model = "reselect-model"
+	ctx.Algorithm = RouterRandom
+	ctx.ResolvedStrategy = string(RouterRandom)
+	ResolveRoutingOverrides(ctx)
+
+	before := selectionCount(t, "reselect-model", candidatePathNoEstimate)
+	first := SelectCandidates(ctx, nil, plainRouter{}, pods)
+	require.Len(t, first, 8)
+	require.Equal(t, before+1, selectionCount(t, "reselect-model", candidatePathNoEstimate))
+
+	second := ReselectCandidates(ctx, nil, plainRouter{}, pods)
+
+	require.Len(t, second, 8, "the second pass narrows to K as the first does")
+	requireDistinctSubset(t, second, pods)
+	assert.Equal(t, before+1, selectionCount(t, "reselect-model", candidatePathNoEstimate),
+		"one request is one narrowing, however many passes it takes")
+}
