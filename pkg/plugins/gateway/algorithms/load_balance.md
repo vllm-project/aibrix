@@ -13,6 +13,12 @@ Source: [load_balance.go](load_balance.go). Environment variables:
 `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` and [multi_router_readme.md](multi_router_readme.md)),
 so its `ScoreAll` runs on most requests, not only when it is selected explicitly.
 
+Related: periodic load-outlier **exclusion** (blacklist until the next sweep) lives in
+[`blacklist/pod_load_blacklist.go`](../blacklist/pod_load_blacklist.go) and is documented in
+[blacklist/README.md](../blacklist/README.md#4-load-outlier-flag-and-flaky-re-add). That path is not
+the imbalance gate described below, and the two are independent: the gate runs with the pod
+blacklist on or off, and when the blacklist has excluded pods it narrows the pods that are left.
+
 ## Score
 
 ```
@@ -89,6 +95,7 @@ gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens   (m
 |---|---|
 | Pod has no token-rate estimate yet (new pod, or no usage reported) | Scored at the **mean** estimate of the pods that have one, so it competes as an average replica. A fixed fallback such as `1.0` would be off by the tokens/sec scale (thousands) and lock the pod out of the traffic it needs to be measured. |
 | No pod has an estimate | Every pod gets capacity `1.0`; the score reduces to `running × KV penalty`. |
+| Any candidate became routable less than `AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP` (default `60s`) ago | Every candidate gets capacity `1.0`, as when no pod has an estimate. Until a pod has one full rate window of history its rate is divided by the time since its first snapshot, so pods that became routable at different times are not comparable, and the younger one looks faster (#3450). This lasts for a whole rolling update or scale-up plus the window; a mixed-hardware pool routes without the capacity term for that long. `0` disables it. |
 | Engine reports no fresh KV usage, or `NaN` | Treated as fully free: no penalty and no guardrail. |
 | `kvFree < kvCritical` | Score `+Inf` from `load-balance`. When `load-balance` routes alone this skips the pod entirely until it recovers. When `load-balance` is blended with other strategies (the default — see below), it is only a strong penalty, not a guaranteed exclusion. |
 | **Every** pod is below `kvCritical` | The request is **not** failed. Routing falls back to the tie-break over all pods, which picks the one with the least KV usage. This fallback is specific to `load-balance` routing alone; see below for the blended case. |

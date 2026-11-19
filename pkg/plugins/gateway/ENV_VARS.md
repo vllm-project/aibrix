@@ -46,6 +46,18 @@ between callers in this mode.
 
 ---
 
+## Pod Blacklist (`blacklist/`)
+
+How the gateway stops routing to a broken or overloaded pod is described in [blacklist/README.md](blacklist/README.md).
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_POD_BLACKLIST_ENABLED` | bool | `false` | Master switch for the whole pod blacklist (background probe sweep, load-outlier sweep, flaky re-add and quarantine). Unset, empty, `false` or `0` leaves every path a no-op and starts no background work, so healthy-fleet routing matches the pre-blacklist behaviour. Set to `true` (or `1`) to enable. The per-request load-imbalance gate is unaffected and runs with the blacklist on or off (see [Load Balance Router](#load-balance-router-algorithmsload_balancego)). | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go), [gateway_blacklist.go](gateway_blacklist.go) |
+| `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` | int | `50` | Most of the pods a request considers that the blacklist may exclude, as a percentage (0-100). When more than this share of them is excluded, the request is routed across all of them as if none were: excluding most of a model's pods leaves the few that remain to carry its traffic, and a verdict wrong for many pods at once (a network fault on the gateway's side, say) is more likely than most of a fleet failing together. At the default one pod of two, two of four and three of eight may be excluded, two of three may not, and a model with one pod never excludes it. `100` turns the cap off, so only a model with every pod excluded is routed across. Counted by `gateway_pod_blacklist_fallback_total{reason="over_cap"}`. Only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go) |
+| `AIBRIX_LOAD_OUTLIER_MIN_GAP` | int | `16` | Minimum absolute gap in engine-reported running+waiting requests that a pod must have over the mean of its peers before the load-outlier sweep excludes it. Without it a pod a few standard deviations above identical, near-idle peers (for example loads `[0, 0, 1]`) would qualify. Only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. | [blacklist/pod_load_blacklist.go](blacklist/pod_load_blacklist.go) |
+
+---
+
 ## Redis Sync (`statesync/`)
 
 | Variable | Type | Default | Description | Source |
@@ -95,7 +107,9 @@ Preble routers (this replaces the prefix-cache-specific gate that used to live i
 `prefixcache/router.go`; see the deprecation note under [Variable Dependency
 Notes](#variable-dependency-notes)). It is exempted only for exclusive strategies (`pd`,
 `slo*`), which manage their own pod subsets and would have that management disrupted by a
-blanket running-request-count filter applied ahead of time. It does not participate in
+blanket running-request-count filter applied ahead of time. It is applied whether or not the
+pod blacklist is on (`AIBRIX_POD_BLACKLIST_ENABLED`); with the blacklist on, pods it has
+excluded are removed first and the gate narrows the rest. It does not participate in
 multi-strategy soft-scoring (`ScoreAll`) for strategies blended alongside `load-balance` — see
 `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` below for how `load-balance` itself gets
 silently blended into other strategies to compensate.
@@ -121,6 +135,7 @@ prefix-match percentage via request count.
 | `AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT` | float64 | `0` | Weight λ of engine-queued requests (`num_requests_waiting`) added to the running count in the score: `(running + λ·queued) / capacity × …`. The default `0` scores on running requests only, since the gateway's running count already includes requests queued inside the engine; raise it only if you want queued work to count extra. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 | `AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA` | float64 | `2.0` | Strength α of the KV-pressure penalty: the score is multiplied by `1 + α·(1 − kv_free)²`. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 | `AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE` | float64 | `0.10` | Free-KV-cache fraction below which a pod scores `+Inf` from `load-balance`. When `load-balance` is the sole routing strategy this excludes the pod outright (falling back to the pod with the most KV headroom if every pod is below the threshold, instead of failing the request). When `load-balance` is blended with other strategies (the default for most requests — see "Router Selection / Auto-Blend" below), a `+Inf` score is only a strong penalty, not an exclusion: another strategy can still select the pod. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
+| `AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP` | duration | `60s` | While any candidate pod became routable less than this long ago, `load-balance` gives every candidate the same capacity (`1.0`), so the score is load × KV penalty. A pod's capacity estimate is not comparable with the others' until it covers one full rate window (see [load_balance.md](algorithms/load_balance.md)). The window stays on for a whole rolling update or scale-up plus this duration. `0` disables it. Any other non-positive or unparseable value falls back to the default. Environment-only. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 
 The five `AIBRIX_LOAD_BALANCE_*` gate and score variables can also be set per request by the model config profile (`routingConfig.loadBalance.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 
@@ -190,7 +205,9 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 Off by default. When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` narrows the ready
 pods to K pods before the load-imbalance gate and the router run. The gate and every strategy then
 read running counts, from Redis when it is configured, for those K pods only, which bounds the
-per-request routing work by K instead of the number of ready pods (RFC #3188).
+per-request routing work by K instead of the number of ready pods (RFC #3188). When the
+[pod blacklist](blacklist/README.md) is on, it filters those K pods after they are picked, not the
+ready pods before, so it adds K lookups per request however many pods are tracked.
 
 The K pods are chosen by the strategies themselves, from a scout: 4K ready pods drawn at random
 (the whole fleet when that would cover half of it or more), plus up to K pods a strategy finds
@@ -215,7 +232,9 @@ own. These are `least-request`, `least-request-top-k`, `load-balance`, `prefix-c
 `power-of-two` and the other `least-*` strategies. Any other strategy, such as `vtc-basic`,
 `session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`, keeps every ready
 pod. It also does nothing when there are K ready pods or fewer. When a per-replica inflight cap is
-set, its saturation filter still runs over every ready pod first.
+set, its saturation filter runs on the candidate set, not on every ready pod, so the capped
+deployment keeps the bounded read; if every candidate is at the cap, the request returns the usual
+429 instead of falling back to the full ready set.
 
 The scoring formulas are unchanged, but checks that compare a pod with the rest of its pool now
 compare it with the candidates: the load-imbalance gate's spread, `prefix-cache`'s

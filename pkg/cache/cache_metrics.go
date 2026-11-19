@@ -335,6 +335,11 @@ func (c *Store) updatePodMetrics() {
 			// Skip unready pod
 			return true
 		}
+		if c.isPodQuarantined(metaPod.Pod) {
+			klog.V(4).InfoS("Pod is quarantined, skipping pod metrics update",
+				"pod", metaPod.Name, "namespace", metaPod.Namespace)
+			return true
+		}
 		if c.shouldSkipPodMetricsFetch(metaPod, now) {
 			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonBackoff)
 			klog.V(4).InfoS("Pod metrics fetch is in backoff, skipping pod metrics update",
@@ -711,13 +716,14 @@ func (c *Store) updateModelMetrics() {
 }
 
 // updateModelReplicaMetrics emits model_replicas=1 for each ready, routable engine pod and
-// removes stale series when pods leave the cache.
+// removes stale series when pods leave the cache. A quarantined pod (PodQuarantineChecker)
+// is treated as gone: it is left out of the active set, so its series is removed below.
 func (c *Store) updateModelReplicaMetrics() {
 	active := make(map[string]struct{})
 
 	c.metaPods.Range(func(key string, metaPod *Pod) bool {
 		pod := metaPod.Pod
-		if pod == nil || !utils.FilterReadyPod(pod) || !isPodWithHTTPServer(pod) {
+		if pod == nil || !utils.FilterReadyPod(pod) || !isPodWithHTTPServer(pod) || c.isPodQuarantined(pod) {
 			return true
 		}
 

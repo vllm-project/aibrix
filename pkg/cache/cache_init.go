@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/client_golang/prometheus"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -169,6 +170,13 @@ type Store struct {
 
 	// List of registered request trackers
 	requestTrackers []RequestTracker
+
+	// List of registered pod lifecycle listeners (see PodLifecycleListener).
+	podLifecycleListeners []PodLifecycleListener
+
+	// podQuarantine, when set, names pods whose scrape and series are paused
+	// (see PodQuarantineChecker). Read by the metrics loops, set at startup.
+	podQuarantine atomic.Pointer[PodQuarantineChecker]
 
 	// gatewaySnapshotCache holds the last published snapshot of all gateway pod entries from
 	// Redis, keyed by Redis key → fields. Swapped atomically by initGatewaySnapshotSync; Load()
@@ -490,6 +498,11 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			klog.Fatalf("Failed to initialize discovery provider: %v", err)
 		}
 		klog.InfoS("Using discovery provider", "type", provider.Type())
+		if opts.IsGateway {
+			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
+			}
+		}
 		initMetricsCache(store, stopCh)
 
 		// Initialize profile cache if enabled
