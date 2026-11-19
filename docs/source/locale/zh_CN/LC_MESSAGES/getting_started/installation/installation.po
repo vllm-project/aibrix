@@ -261,20 +261,6 @@ msgid ""
 "versions do not change an already published release bundle."
 msgstr "发布包会安装各自固定版本的依赖；当前检出代码中的版本不会改变已经发布的版本包。"
 
-#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:99
-msgid ""
-"When upgrading the gateway from v1.2.8, install the new Gateway API and "
-"Envoy Gateway CRDs before replacing the controller or applying policies that"
-" use ``targetRefs``. Use server-side apply because the bundled CRDs can "
-"exceed client-side apply's annotation size limit. From this checkout:"
-msgstr ""
-"从 v1.2.8 升级网关时，应先安装新的 Gateway API 和 Envoy Gateway CRD，再替换控制器或应用使用 "
-"``targetRefs`` 的策略。请使用服务端应用，因为捆绑的 CRD 可能超出客户端应用的注解大小限制。从当前检出的代码执行："
-
-#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:109
-msgid "Then upgrade the AIBrix chart:"
-msgstr "然后升级 AIBrix chart："
-
 #: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:115
 msgid ""
 "Check that the Gateway and its policies are accepted for their current "
@@ -285,3 +271,69 @@ msgid ""
 msgstr ""
 "检查 Gateway 及其策略是否已针对当前的 ``metadata.generation`` 被接受。检查 Envoy 的 xDS "
 "拒绝计数器，并在重启代理前后都发送流量：当新配置被拒绝时，代理可能仍在使用旧配置提供服务。仅有就绪的 Pod 并不能证明新的路由配置正常工作。"
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:99
+msgid ""
+"When upgrading the gateway from v1.2.8, update the CRDs before the "
+"controller, and update the controller before applying policies that use "
+"``targetRefs``. Do not apply the full Kustomize dependency onto a Helm-"
+"owned Envoy Gateway installation. Keep each controller's existing "
+"installation owner. Back up your resources and values first, and review the"
+" `upstream upgrade notes <https://gateway.envoyproxy.io/v1.9/install"
+"/install-helm/>`_. This migration does not validate every intermediate "
+"release or third-party controller that may share the Gateway API CRDs."
+msgstr ""
+"从 v1.2.8 升级网关时，应先更新 CRD，再更新控制器，最后应用使用 ``targetRefs`` 的策略。不要将完整的 Kustomize "
+"依赖应用到由 Helm 管理的 Envoy Gateway 安装上。各控制器应保留原有的安装管理方式。先备份资源和值，并阅读 `上游升级说明 "
+"<https://gateway.envoyproxy.io/v1.9/install/install-"
+"helm/>`_。本次迁移并未验证每个中间版本，也未验证可能共享 Gateway API CRD 的第三方控制器。"
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:108
+msgid ""
+"First render the target CRDs separately and apply them with server-side "
+"apply. The example retains the experimental Gateway API channel bundled by "
+"Envoy Gateway. If your provider manages these CRDs, coordinate a compatible"
+" upgrade with that provider instead of overwriting its resources. If you "
+"use the standard channel, review the upstream TCPRoute/UDPRoute API and "
+"storage-version migration requirements before upgrading."
+msgstr ""
+"首先单独渲染目标 CRD，并使用服务端应用。示例保留 Envoy Gateway 捆绑的 Gateway API 实验通道。如果云服务商管理这些 "
+"CRD，应与服务商协调兼容升级，而不是覆盖其资源。如果使用标准通道，升级前请阅读上游 TCPRoute/UDPRoute API 和存储版本迁移要求。"
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:127
+msgid ""
+"Resolve any field-ownership conflict before continuing; do not blindly "
+"force ownership away from another controller. Then choose the matching "
+"controller path."
+msgstr "继续前请解决所有字段所有权冲突，不要盲目强制夺取其他控制器的所有权。然后选择对应的控制器升级路径。"
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:130
+msgid ""
+"For a **Helm-owned Envoy Gateway**, keep its actual release name and "
+"namespace (the example uses ``eg`` in ``envoy-gateway-system``). Save "
+"explicit user values, review them against the new chart, remove stale "
+"image-version overrides and retain deployment-specific settings such as "
+"scheduling, resource limits and logging. ``--reset-values`` starts from "
+"target defaults, then reapplies those reviewed settings rather than "
+"retaining old chart defaults:"
+msgstr ""
+"对于 **由 Helm 管理的 Envoy Gateway**，保留实际的发布名称和命名空间（示例为 ``envoy-gateway-system``"
+" 中的 ``eg``）。保存用户显式设置的值，对照新 chart 检查它们，移除过期的镜像版本覆盖，并保留调度、资源限制和日志等部署特定设置"
+"。``--reset-values`` 从目标默认值开始，再应用检查后的设置，而不是保留旧 chart 的默认值："
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:148
+msgid ""
+"For a **Kustomize-owned Envoy Gateway**, after the same CRD-first gate, "
+"apply the checkout's dependency and wait for its controller:"
+msgstr "对于 **由 Kustomize 管理的 Envoy Gateway**，完成相同的 CRD 优先检查后，应用当前检出代码中的依赖，并等待控制器就绪："
+
+#: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:156
+msgid ""
+"Only after the target controller is available, update AIBrix CRDs and "
+"upgrade the AIBrix chart. Preserve your own reviewed AIBrix values, "
+"including image repositories, authentication, resource limits and routing "
+"customizations, rather than replacing them with an unreviewed copy of "
+"``values.yaml``:"
+msgstr ""
+"只有目标控制器可用后，才能更新 AIBrix CRD 并升级 AIBrix chart。保留经过检查的 AIBrix "
+"自定义值，包括镜像仓库、身份验证、资源限制和路由设置，不要用未经检查的 ``values.yaml`` 副本替换它们："

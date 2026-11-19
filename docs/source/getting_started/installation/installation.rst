@@ -96,21 +96,77 @@ Install AIBrix with Helm
 Upgrade AIBrix with Helm
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-When upgrading the gateway from v1.2.8, install the new Gateway API and Envoy
-Gateway CRDs before replacing the controller or applying policies that use
-``targetRefs``. Use server-side apply because the bundled CRDs can exceed
-client-side apply's annotation size limit. From this checkout:
+When upgrading the gateway from v1.2.8, update the CRDs before the
+controller, and update the controller before applying policies that use
+``targetRefs``. Do not apply the full Kustomize dependency onto a Helm-owned
+Envoy Gateway installation. Keep each controller's existing installation owner.
+Back up your resources and values first, and review the
+`upstream upgrade notes <https://gateway.envoyproxy.io/v1.9/install/install-helm/>`_.
+This migration does not validate every intermediate release or third-party
+controller that may share the Gateway API CRDs.
+
+First render the target CRDs separately and apply them with server-side apply.
+The example retains the experimental Gateway API channel bundled by Envoy
+Gateway. If your provider manages these CRDs, coordinate a compatible upgrade
+with that provider instead of overwriting its resources. If you use the standard
+channel, review the upstream TCPRoute/UDPRoute API and storage-version migration
+requirements before upgrading.
+
+.. code:: bash
+
+    helm template eg-crds oci://docker.io/envoyproxy/gateway-crds-helm \
+      --version v1.9.4 \
+      --set crds.gatewayAPI.enabled=true \
+      --set crds.gatewayAPI.channel=experimental \
+      --set crds.envoyGateway.enabled=true > gateway-crds-v1.9.4.yaml
+    kubectl apply --server-side -f gateway-crds-v1.9.4.yaml
+    kubectl get -f gateway-crds-v1.9.4.yaml -o name \
+      | grep '^customresourcedefinition' \
+      | xargs kubectl wait --for=condition=Established --timeout=5m
+
+Resolve any field-ownership conflict before continuing; do not blindly force
+ownership away from another controller. Then choose the matching controller path.
+
+For a **Helm-owned Envoy Gateway**, keep its actual release name and namespace
+(the example uses ``eg`` in ``envoy-gateway-system``). Save explicit user values,
+review them against the new chart, remove stale image-version overrides and
+retain deployment-specific settings such as scheduling, resource limits and
+logging. ``--reset-values`` starts from target defaults, then reapplies those
+reviewed settings rather than retaining old chart defaults:
+
+.. code:: bash
+
+    helm get values eg -n envoy-gateway-system -o yaml > eg-values-before.yaml
+    cp eg-values-before.yaml eg-values-reviewed.yaml
+    # Review eg-values-reviewed.yaml before running the upgrade.
+    helm upgrade eg oci://docker.io/envoyproxy/gateway-helm \
+      --version v1.9.4 -n envoy-gateway-system \
+      --reset-values -f eg-values-reviewed.yaml \
+      --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true \
+      --wait --timeout=5m
+
+For a **Kustomize-owned Envoy Gateway**, after the same CRD-first gate, apply
+the checkout's dependency and wait for its controller:
 
 .. code:: bash
 
     kubectl apply -k config/dependency/envoy-gateway --server-side
     kubectl -n envoy-gateway-system rollout status deployment/envoy-gateway --timeout=5m
 
-Then upgrade the AIBrix chart:
+Only after the target controller is available, update AIBrix CRDs and upgrade
+the AIBrix chart. Preserve your own reviewed AIBrix values, including image
+repositories, authentication, resource limits and routing customizations, rather
+than replacing them with an unreviewed copy of ``values.yaml``:
 
 .. code:: bash
 
-    helm upgrade aibrix dist/chart -f dist/chart/values.yaml -n aibrix-system
+    kubectl apply -f dist/chart/crds --server-side
+    kubectl wait --for=condition=Established --timeout=5m -f dist/chart/crds
+    helm get values aibrix -n aibrix-system -o yaml > aibrix-values-before.yaml
+    cp aibrix-values-before.yaml aibrix-values-reviewed.yaml
+    # Review aibrix-values-reviewed.yaml and remove stale gateway image pins.
+    helm upgrade aibrix dist/chart -n aibrix-system \
+      --reset-values -f aibrix-values-reviewed.yaml --wait --timeout=10m
 
 Check that the Gateway and its policies are accepted for their current
 ``metadata.generation``. Check Envoy's xDS rejection counters and send traffic
