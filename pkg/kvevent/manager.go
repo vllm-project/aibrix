@@ -167,7 +167,7 @@ func (m *Manager) Stop() {
 
 // OnPodAdd handles new pod additions
 func (m *Manager) OnPodAdd(pod *v1.Pod) {
-	if !m.enabled || !isPodSubscribable(pod) {
+	if !m.enabled || !isPodReadyToSubscribe(pod) {
 		return
 	}
 
@@ -214,11 +214,17 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 
 	// A subscription is stale when the pod, its KV attribution (model/lora), or
 	// its subscription state changed.
-	if !cacheMoved && oldSubscribable == newSubscribable && !identityChanged {
+	stale := cacheMoved || oldSubscribable != newSubscribable || identityChanged
+	// A pod that turns Ready gets its first subscription here. A pod that was
+	// subscribed before a NotReady flap still has it, and subscribeToPod
+	// returns at once.
+	newReady := newSubscribable && utils.IsPodReady(newPod)
+	becameReady := newReady && !utils.IsPodReady(oldPod)
+	if !stale && !becameReady {
 		return
 	}
 
-	if oldSubscribable {
+	if stale && oldSubscribable {
 		m.unsubscribeFromPod(podKey)
 	}
 	// A restarted pod, a new attribution, or a pod that can no longer report
@@ -227,7 +233,9 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 	if oldModel != "" && (cacheMoved || identityChanged || (oldSubscribable && !newSubscribable)) {
 		m.purgePodPrefixCache(oldModel, oldLora, podKey)
 	}
-	if !newSubscribable {
+	// Not subscribable, or not Ready yet: the update that makes it Ready
+	// subscribes it.
+	if !newReady {
 		return
 	}
 
@@ -295,6 +303,7 @@ func podInfoFromPod(pod *v1.Pod) *PodInfo {
 		PodIP:     pod.Status.PodIP,
 		ModelName: modelName,
 		Labels:    pod.Labels,
+		Ready:     utils.IsPodReady(pod),
 	}
 }
 
@@ -330,7 +339,8 @@ func (m *Manager) purgePodPrefixCache(modelName string, loraID int64, podKey str
 func canSubscribeToPod(podInfo *PodInfo) bool {
 	return podInfo.Labels[constants.KVEventsEnabledLabel] == "true" &&
 		podInfo.PodIP != "" &&
-		podInfo.ModelName != ""
+		podInfo.ModelName != "" &&
+		podInfo.Ready
 }
 
 // Check if the pod can be subscribed
@@ -340,6 +350,17 @@ func isPodSubscribable(pod *v1.Pod) bool {
 		pod.Status.Phase == v1.PodRunning &&
 		pod.Status.PodIP != "" &&
 		hasModelName
+}
+
+// isPodReadyToSubscribe reports whether a subscription to the pod can start.
+// A pod is first subscribed once it is Ready, not as soon as it is Running:
+// vLLM binds its KV event sockets only after loading the model, before its API
+// server accepts connections, so with a readiness probe on the API server the
+// startup replay is answered at once instead of timing out. A pod without a
+// readiness probe is Ready as soon as its containers start. A subscribed pod
+// that later loses readiness keeps its subscription (see OnPodUpdate).
+func isPodReadyToSubscribe(pod *v1.Pod) bool {
+	return isPodSubscribable(pod) && utils.IsPodReady(pod)
 }
 
 func isSamePod(pod1 *v1.Pod, pod2 *v1.Pod) bool {
