@@ -810,43 +810,49 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 	}
 }
 
-// syncRunningRequestsGlobally computes the cross-gateway running request count for a pod and
-// stores it so GetMetricValueByPod returns the global total. It takes the other gateways' counts
-// from gatewayRemoteRunning (published every 100ms by initGatewaySnapshotSync — no Redis call
-// here) and adds this gateway's own local atomic counter (always fresher than the Redis snapshot
-// for the local instance). Remote counts last actually read more than remoteRunningMaxAge ago
-// are left out, as GetPodsRunningRequestsApprox leaves them out (#3441): a sync that keeps
-// missing a pod's keys would otherwise report counts frozen when it first missed them.
-// With the remote running reader on, the other gateways' counts come from it instead: an unread
-// pod skips emission (matching the snapshot hold-back above), while a stale count falls back to
-// this gateway's own count.
+// syncRunningRequestsGlobally updates the routing metric cache with the same estimate that
+// the scrape-time collector computes directly. The collector must not read this cache slot:
+// request start/finish also write it with the local count and refresh its timestamp.
 func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
+	total, ready := c.runningRequestsEstimate(pod, c.snapshotNow())
+	if !ready {
+		return
+	}
+	totalValue := &metrics.SimpleMetricValue{Value: total}
+	if err := c.updatePodRecord(pod, "", metrics.RealtimeNumRequestsRunning,
+		metrics.PodMetricScope, totalValue); err != nil {
+		klog.V(4).ErrorS(err, "failed to update global running requests", "pod", pod.Name)
+	}
+}
+
+// runningRequestsEstimate adds the local atomic counter to fresh remote contributions without
+// accessing Redis or the metric cache. An active reader takes precedence over the snapshot;
+// unread reader pods and an uninitialized snapshot withhold the estimate. Once initialized,
+// freshCount excludes expired remote contributions, falling back to the local count.
+func (c *Store) runningRequestsEstimate(pod *Pod, now time.Time) (float64, bool) {
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	var remoteRunning float64
 	if reader := c.remoteRunningReader.Load(); reader != nil {
-		count, seen := reader.freshCount(podKey, c.snapshotNow())
+		count, seen := reader.freshCount(podKey, now)
 		if !seen {
-			return
+			return 0, false
 		}
 		remoteRunning = float64(count)
 	} else {
 		snap := c.gatewayRemoteRunning.Load()
 		if snap == nil {
-			return
+			return 0, false
 		}
-		remoteRunning = float64(snap.freshCount(podKey, c.snapshotNow()))
+		remoteRunning = float64(snap.freshCount(podKey, now))
 	}
 
 	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
 	total := localRunning + remoteRunning
-	klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
-
-	totalValue := &metrics.SimpleMetricValue{Value: total}
-	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeNumRequestsRunning, totalValue, nil)
-	if err := c.updatePodRecord(pod, "", metrics.RealtimeNumRequestsRunning,
-		metrics.PodMetricScope, totalValue); err != nil {
-		klog.V(4).ErrorS(err, "failed to update global running requests", "pod", pod.Name)
+	if klog.V(5).Enabled() {
+		klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
 	}
+
+	return total, true
 }
 
 // updateRealtimeRunningRequestsDrainRate1m computes the 1-minute rolling rate at which completed

@@ -19,6 +19,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -27,8 +28,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +41,30 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
+
+func TestStartGatewayHTTPServerExposesIdleGauge(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		t.Run(fmt.Sprintf("early model list=%t", early), func(t *testing.T) {
+			labels := []string{"gateway_pod"}
+			podName := metrics.GatewayPodName()
+			metrics.DeleteGaugeMetric(metrics.GatewayInFlight, labels, podName)
+			t.Cleanup(func() { metrics.DeleteGaugeMetric(metrics.GatewayInFlight, labels, podName) })
+			gw := gateway.NewServerWithOptions(nil, nil, nil, gateway.ServerOptions{
+				Cache: cache.NewWithPodsForTest(nil, "test-model"),
+			})
+			t.Cleanup(gw.Shutdown)
+			gate, err := startEarlyModelListGate(early, "127.0.0.1:0")
+			require.NoError(t, err)
+			t.Cleanup(gate.Shutdown)
+			require.NoError(t, startGatewayHTTPServer(gate, gw, "127.0.0.1:0"))
+			expected := fmt.Sprintf("# HELP %s %s\n# TYPE %s gauge\n%s{gateway_pod=%q} 0\n",
+				metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight),
+				metrics.GatewayInFlight, metrics.GatewayInFlight, podName)
+			require.NoError(t, testutil.GatherAndCompare(prometheus.DefaultGatherer,
+				strings.NewReader(expected), metrics.GatewayInFlight))
+		})
+	}
+}
 
 func TestModelDiscoveryFlags(t *testing.T) {
 	for _, tc := range []struct {

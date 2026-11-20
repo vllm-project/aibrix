@@ -1,4 +1,14 @@
 {{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) }}
+{{- $shutdown := .Values.gateway.envoyProxy.gracefulShutdown | default dict }}
+{{- if $shutdown.enabled }}
+{{- /* Budget for the shutdown-manager's extra 10s readiness wait in the supported
+Envoy Gateway v1.2+ baseline; recheck generated hooks when upgrading EG.
+See envoyproxy/gateway v1.2.0 internal/infrastructure/kubernetes/proxy/resource.go,
+expectedShutdownManagerArgs. */}}
+{{- if or (le (int $shutdown.terminationGracePeriodSeconds) (int (add $shutdown.drainTimeoutSeconds 10))) (le (int $shutdown.drainTimeoutSeconds) (int $shutdown.minDrainDurationSeconds)) }}
+{{- fail "gateway.envoyProxy.gracefulShutdown requires terminationGracePeriodSeconds > drainTimeoutSeconds + 10 and drainTimeoutSeconds > minDrainDurationSeconds." }}
+{{- end }}
+{{- end }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
@@ -76,6 +86,11 @@ spec:
         {{- end }}
     {{- end }}
 {{- end }}
+  {{- if $shutdown.enabled }}
+  shutdown:
+    drainTimeout: {{ printf "%ds" (int $shutdown.drainTimeoutSeconds) }}
+    minDrainDuration: {{ printf "%ds" (int $shutdown.minDrainDurationSeconds) }}
+  {{- end }}
   provider:
     type: Kubernetes
     kubernetes:
@@ -84,7 +99,7 @@ spec:
         strategy:
           type: RollingUpdate
           rollingUpdate:
-            maxUnavailable: 1
+            maxUnavailable: {{ ternary 0 1 ($shutdown.enabled | default false) }}
             maxSurge: 1
         pod:
           {{- with .Values.gateway.envoyProxy.tolerations }}
@@ -99,12 +114,18 @@ spec:
           type: StrategicMerge
           value:
             spec:
+              {{- if $shutdown.enabled }}
+              minReadySeconds: 10
+              {{- end }}
               template:
                 metadata:
                   labels:
                     app.kubernetes.io/name: envoy
                     app.kubernetes.io/component: proxy
                 spec:
+                  {{- if $shutdown.enabled }}
+                  terminationGracePeriodSeconds: {{ $shutdown.terminationGracePeriodSeconds }}
+                  {{- end }}
                   {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gateway.envoyProxy.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 18 }}
                   containers:
                     - name: envoy

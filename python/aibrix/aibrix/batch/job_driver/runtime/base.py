@@ -71,6 +71,12 @@ from aibrix.batch.job_entity import (
     ConditionType,
     JobRuntimeRef,
 )
+from aibrix.batch.metrics import (
+    metric_duration_ms,
+    tags_for_execution_phase,
+    tags_for_job_latency_log,
+    tags_from_job,
+)
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 from aibrix.metadata.core.metrics import Emitter, T, metrics_names
@@ -558,12 +564,19 @@ class RuntimeBase:
             raise ValueError("owner_ref and reconnect_payload must be provided")
 
         now = datetime.now(timezone.utc)
+        connected_at = None
+        if (
+            existing is not None
+            and not existing.delete_started()
+            and not existing.deleted()
+        ):
+            connected_at = existing.connected_at
         return JobRuntimeRef(
             driverType=self._get_runtime_key(job),
             attempt=existing.attempt if existing is not None else 1,
             ownerRef=owner_ref,
             reconnectPayload=reconnect_payload,
-            connectedAt=existing.connected_at if existing is not None else now,
+            connectedAt=connected_at or now,
             heartbeatAt=now,
         )
 
@@ -1043,6 +1056,70 @@ class RuntimeBase:
         # meaningful left to tear down; retry by provisioning a fresh resource.
         return not self._is_not_found_error(exc)
 
+    def _emit_runtime_ready_metric(self, job: BatchJob) -> None:
+        runtime_ref = self._load_runtime_ref(job)
+        self._emit_runtime_phase_metric(
+            job,
+            phase="runtime_ready",
+            start_at=runtime_ref.connected_at if runtime_ref is not None else None,
+            end_at=datetime.now(timezone.utc),
+        )
+
+    def _emit_runtime_phase_metric(
+        self,
+        job: BatchJob,
+        *,
+        phase: str,
+        start_at: Optional[datetime],
+        end_at: Optional[datetime],
+    ) -> None:
+        try:
+            phase_ms = metric_duration_ms(start_at, end_at)
+            if phase_ms is None or phase_ms < 0:
+                return
+            Emitter.timer(
+                f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms",
+                phase_ms,
+                *tags_from_job(job),
+                *tags_for_job_latency_log(job),
+                *tags_for_execution_phase(phase),
+                T("log_map", "phase_duration_ms"),
+                T("log_key", phase),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to emit runtime phase metric",
+                job_id=job.job_id,
+                phase=phase,
+                exc_info=True,
+            )  # type: ignore[call-arg]
+
+    def _emit_runtime_provision_metric(
+        self,
+        job: BatchJob,
+        *,
+        previous_runtime_ref: Optional[JobRuntimeRef],
+        provision_started_at: Optional[datetime],
+    ) -> None:
+        runtime_ref = self._load_runtime_ref(job)
+        if (
+            runtime_ref is None
+            or runtime_ref.connected_at is None
+            or (
+                previous_runtime_ref is not None
+                and previous_runtime_ref.connected_at is not None
+                and not previous_runtime_ref.delete_started()
+                and not previous_runtime_ref.deleted()
+            )
+        ):
+            return
+        self._emit_runtime_phase_metric(
+            job,
+            phase="runtime_provision",
+            start_at=provision_started_at,
+            end_at=runtime_ref.connected_at,
+        )
+
     def _get_session_retry_delay_s(self, attempt: int) -> float:
         # set a hard-coded cap for avoiding OverflowError
         safe_attempt = min(attempt, 10)
@@ -1264,11 +1341,19 @@ class RuntimeBase:
                     # persists the active runtime ref; on reconnect it refreshes
                     # the worker-local execution binding so the recovered/live
                     # session continues updating the correct owner_ref slot.
+                    previous_runtime_ref = self._load_runtime_ref(job)
+                    provision_started_at = job.status.in_progress_at
                     job, session_worker_id = await self._persist_runtime_ref(
                         job,
                         progress_manager=progress_manager,
                         worker_id_generator=worker_id_generator,
                     )
+                    if phase == "provision":
+                        self._emit_runtime_provision_metric(
+                            job,
+                            previous_runtime_ref=previous_runtime_ref,
+                            provision_started_at=provision_started_at,
+                        )
                     wait_mode = (
                         RUNTIME_WAIT_MODE_PROVISION
                         if phase == "provision"
@@ -1276,6 +1361,8 @@ class RuntimeBase:
                     )
                     phase = "wait_ready"
                     await self._invoke_wait_ready(handle, wait_mode)
+                    if wait_mode == RUNTIME_WAIT_MODE_PROVISION:
+                        self._emit_runtime_ready_metric(job)
                     # Only yield a connected endpoint after both startup phases
                     # succeed within the same attempt.
                     break
