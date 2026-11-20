@@ -19,7 +19,6 @@ package cache
 import (
 	"context"
 	"errors"
-	"math"
 	"net"
 	"strconv"
 	"sync/atomic"
@@ -781,9 +780,8 @@ func sumLiveFields(fields map[string]string, live map[string]struct{}) (total in
 	return total, excluded
 }
 
-// sumLiveFieldsAndOther sums live gateway fields in one pass, returning both the total live count
-// (matching sumLiveFields) and the saturated sum of positive live counts from gateways other than
-// runningRequestsGatewayInstanceID (matching sumOtherLiveRunning).
+// sumLiveFieldsAndOther returns the saturated live count and saturated count from
+// other live gateways in one pass.
 func sumLiveFieldsAndOther(fields map[string]string, live map[string]struct{}) (total, otherPositive int64, excluded []string) {
 	for gatewayID, valStr := range fields {
 		if _, ok := live[gatewayID]; !ok {
@@ -791,19 +789,12 @@ func sumLiveFieldsAndOther(fields map[string]string, live map[string]struct{}) (
 			continue
 		}
 		n, err := strconv.ParseInt(valStr, 10, 64)
-		if err != nil {
+		if err != nil || n <= 0 {
 			continue
 		}
-		if n < 0 {
-			n = 0
-		}
-		total += n
-		if gatewayID != runningRequestsGatewayInstanceID && n > 0 {
-			if n > math.MaxInt64-otherPositive {
-				otherPositive = math.MaxInt64
-			} else {
-				otherPositive += n
-			}
+		total = addSaturatedInt64(total, n)
+		if gatewayID != runningRequestsGatewayInstanceID {
+			otherPositive = addSaturatedInt64(otherPositive, n)
 		}
 	}
 	return total, otherPositive, excluded

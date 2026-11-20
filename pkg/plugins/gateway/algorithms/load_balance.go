@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"math"
+	"math/big"
 	"os"
 	"strconv"
 	"sync"
@@ -515,14 +516,19 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 	}
 
 	minValue = -1
-	sum := 0
+	var sumOfOthers uint64
+	needsWideSum := false
 	for _, v := range podRequestCount {
-		sum += v
 		if minValue < 0 || v < minValue {
 			minValue = v
 		}
-		if v > maxValue {
-			maxValue = v
+		// Keep one maximum out of the sum and round only at the final comparison.
+		other := min(v, maxValue)
+		maxValue = max(v, maxValue)
+		if other < 0 || uint64(other) > math.MaxUint64-sumOfOthers {
+			needsWideSum = true
+		} else {
+			sumOfOthers += uint64(other)
 		}
 	}
 
@@ -530,7 +536,16 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 		return nil, minValue, maxValue, false
 	}
 	if n > 2 {
-		meanOfOthers := float64(sum-maxValue) / float64(n-1)
+		otherTotal := float64(sumOfOthers)
+		if needsWideSum {
+			var sum, term big.Int
+			for _, v := range podRequestCount {
+				sum.Add(&sum, term.SetInt64(int64(v)))
+			}
+			sum.Sub(&sum, term.SetInt64(int64(maxValue)))
+			otherTotal, _ = sum.Float64()
+		}
+		meanOfOthers := otherTotal / float64(n-1)
 		if float64(maxValue) <= imbalanceFactor*(meanOfOthers+1) {
 			return nil, minValue, maxValue, false
 		}

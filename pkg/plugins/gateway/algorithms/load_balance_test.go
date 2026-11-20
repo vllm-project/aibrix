@@ -559,6 +559,16 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			expectImbalance: false,
 		},
 		{
+			name:            "sum_of_other_counts_exceeds_int_range",
+			requestCounts:   map[string]int{"p0": math.MaxInt, "p1": math.MaxInt, "p2": 8},
+			expectImbalance: false,
+		},
+		{
+			name:            "sum_of_other_counts_exceeds_uint64_range_on_64_bit",
+			requestCounts:   map[string]int{"p0": math.MaxInt, "p1": math.MaxInt, "p2": math.MaxInt, "p3": math.MaxInt, "p4": 8},
+			expectImbalance: false,
+		},
+		{
 			name:            "small_absolute_gap_no_imbalance",
 			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 5},
 			expectImbalance: false, // gap=5 < minGap=8
@@ -650,4 +660,18 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetTargetPodListOnLoadImbalance_PreservesLargeCountThreshold(t *testing.T) {
+	var large int64 = 1 << 53
+	if int64(math.MaxInt) < large+3 {
+		t.Skip("load counts require a 64-bit int")
+	}
+	pods := []*v1.Pod{makeLBPod("p0", ""), makeLBPod("p1", ""), makeLBPod("p2", "")}
+	counts := defaultNamespaceKeys(map[string]int{"p0": int(large + 1), "p1": 1, "p2": int(large + 3)})
+
+	// Rounding each peer count before summing loses two requests from the threshold.
+	result, _, _, imbalanced := getTargetPodListOnLoadImbalance(counts, pods, 2, 8)
+	assert.False(t, imbalanced)
+	assert.Empty(t, result)
 }
