@@ -74,7 +74,8 @@ func TestStoreProviderAdapterPodOperations(t *testing.T) {
 			},
 		},
 		Status: v1.PodStatus{
-			PodIP: "10.0.0.1",
+			PodIP:      "10.0.0.1",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 		},
 	}
 
@@ -110,12 +111,19 @@ func TestStoreProviderAdapterPodOperations(t *testing.T) {
 		t.Errorf("Expected model name 'test-model', got %s", podInfo.ModelName)
 	}
 
+	if !podInfo.Ready {
+		t.Error("Expected the pod to be Ready")
+	}
+
 	// Test RangePods
 	count := 0
 	err := podProvider.RangePods(ctx, func(key string, pod *kvevent.PodInfo) bool {
 		count++
 		if key != podKey {
 			t.Errorf("Expected key %s, got %s", podKey, key)
+		}
+		if !pod.Ready {
+			t.Error("Expected the pod to be Ready in RangePods")
 		}
 		return true
 	})
