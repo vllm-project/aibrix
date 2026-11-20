@@ -312,6 +312,30 @@ The sample claims:
    * - ``engineConfig.args``
      - Engine flags and their values, as strings. An empty string adds a flag
        without a value.
+   * - ``engineConfig.env``
+     - Optional literal string overrides for this engine and its workers. They
+       override the runtime container's defaults for this engine only and are
+       reused after an engine restart or reschedule.
+
+       The runtime sets ``ENABLE_KVCACHED=true``, ``KVCACHED_AUTOPATCH=1`` and
+       a per-engine ``KVCACHED_IPC_NAME`` after applying model overrides. These
+       runtime values take precedence over any values in the claim.
+
+       Kubernetes rejects ``CUDA_VISIBLE_DEVICES`` and
+       ``NVIDIA_VISIBLE_DEVICES`` in this field to preserve the pool's device
+       visibility. It also rejects ``VLLM_SERVER_DEV_MODE``, which enables the
+       vLLM sleep and wake endpoints. The runtime defaults
+       ``VLLM_SERVER_DEV_MODE`` to ``1`` when the container does not set it.
+
+       Environment settings such as GPU allocator options can change memory
+       usage. Measure ``perGPU.maximumFootprint`` and ``perGPU.kvFloor`` with
+       the final effective engine configuration, including
+       ``engineConfig.args`` and ``engineConfig.env``. Placement uses these
+       declarations to decide whether the engine fits alongside other models.
+
+       Grant ModelClaim write access only to trusted operators because engine
+       environment variables can affect code loading. Do not use this field for
+       credentials.
    * - ``perGPU.maximumFootprint``
      - Needed for placement. The most GPU memory one instance holds on a GPU
        apart from its KV cache. That covers weights, CUDA graphs, activations

@@ -597,6 +597,54 @@ msgid ""
 msgstr ""
 "引擎参数及其取值，均为字符串。值为空字符串时，只添加参数本身，不带值。"
 
+#: ../../source/features/model-serving/model-claim.rst:315
+msgid "``engineConfig.env``"
+msgstr "``engineConfig.env``"
+
+#: ../../source/features/model-serving/model-claim.rst:316
+msgid ""
+"Optional literal string overrides for this engine and its workers. They "
+"override the runtime container's defaults for this engine only and are "
+"reused after an engine restart or reschedule."
+msgstr ""
+"可选。为该引擎及其工作进程设置字符串字面值，仅覆盖该引擎继承的 Runtime 容器默认值。引擎重启或重新调度后仍使用这些配置。"
+
+#: ../../source/features/model-serving/model-claim.rst:320
+msgid ""
+"The runtime sets ``ENABLE_KVCACHED=true``, ``KVCACHED_AUTOPATCH=1`` and "
+"a per-engine ``KVCACHED_IPC_NAME`` after applying model overrides. These "
+"runtime values take precedence over any values in the claim."
+msgstr ""
+"Runtime 在应用模型的覆盖值后，会设置 ``ENABLE_KVCACHED=true``、``KVCACHED_AUTOPATCH=1`` 和每个引擎独立的 ``KVCACHED_IPC_NAME``。这些 Runtime 设置优先于 Claim 中的值。"
+
+#: ../../source/features/model-serving/model-claim.rst:324
+msgid ""
+"Kubernetes rejects ``CUDA_VISIBLE_DEVICES`` and "
+"``NVIDIA_VISIBLE_DEVICES`` in this field to preserve the pool's device "
+"visibility. It also rejects ``VLLM_SERVER_DEV_MODE``, which enables the "
+"vLLM sleep and wake endpoints. The runtime defaults "
+"``VLLM_SERVER_DEV_MODE`` to ``1`` when the container does not set it."
+msgstr ""
+"为了保留资源池配置的设备可见范围，Kubernetes 拒绝在此字段中设置 ``CUDA_VISIBLE_DEVICES`` 和 ``NVIDIA_VISIBLE_DEVICES``，也拒绝设置用于开启 vLLM 休眠和唤醒端点的 ``VLLM_SERVER_DEV_MODE``。容器未设置该变量时，Runtime 默认使用 ``1``。"
+
+#: ../../source/features/model-serving/model-claim.rst:330
+msgid ""
+"Environment settings such as GPU allocator options can change memory "
+"usage. Measure ``perGPU.maximumFootprint`` and ``perGPU.kvFloor`` with "
+"the final effective engine configuration, including "
+"``engineConfig.args`` and ``engineConfig.env``. Placement uses these "
+"declarations to decide whether the engine fits alongside other models."
+msgstr ""
+"GPU 分配器选项等环境配置可能改变显存占用。请使用最终生效的引擎配置（包括 ``engineConfig.args`` 和 ``engineConfig.env``）测量 ``perGPU.maximumFootprint`` 和 ``perGPU.kvFloor``。放置时会根据这些声明判断引擎能否与其他模型共用 GPU。"
+
+#: ../../source/features/model-serving/model-claim.rst:336
+msgid ""
+"Grant ModelClaim write access only to trusted operators because engine "
+"environment variables can affect code loading. Do not use this field for "
+"credentials."
+msgstr ""
+"引擎环境变量可以影响代码加载，因此只应向受信任的运维人员授予 ModelClaim 写权限。请勿在此字段中存放凭证。"
+
 #: ../../source/features/model-serving/model-claim.rst:307
 msgid "``perGPU.maximumFootprint``"
 msgstr "``perGPU.maximumFootprint``"

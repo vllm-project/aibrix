@@ -67,6 +67,15 @@ spec:
                     additionalProperties:
                       type: string
                     type: object
+                  env:
+                    additionalProperties:
+                      type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: engineConfig.env cannot set CUDA_VISIBLE_DEVICES, NVIDIA_VISIBLE_DEVICES,
+                        or VLLM_SERVER_DEV_MODE
+                      rule: '!(''CUDA_VISIBLE_DEVICES'' in self || ''NVIDIA_VISIBLE_DEVICES''
+                        in self || ''VLLM_SERVER_DEV_MODE'' in self)'
                 type: object
               modelName:
                 type: string

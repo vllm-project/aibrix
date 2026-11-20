@@ -173,6 +173,13 @@ type ModelClaimEngineConfig struct {
 	// an empty string value.
 	// +optional
 	Args map[string]string `json:"args,omitempty"`
+
+	// Env overrides supported environment variables for this engine process.
+	// Values are literal strings and must not contain credentials.
+	// Keep the reserved keys aligned with the engine runtime's validation.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="!('CUDA_VISIBLE_DEVICES' in self || 'NVIDIA_VISIBLE_DEVICES' in self || 'VLLM_SERVER_DEV_MODE' in self)",message="engineConfig.env cannot set CUDA_VISIBLE_DEVICES, NVIDIA_VISIBLE_DEVICES, or VLLM_SERVER_DEV_MODE"
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ModelClaimPhase is a high-level summary of where a ModelClaim is in its
