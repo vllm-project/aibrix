@@ -284,7 +284,7 @@ func ValidateInference(t *testing.T, modelName string) {
 // and gateway caches have converged, so object existence alone is not enough.
 func WaitForInference(t *testing.T, modelName string) {
 	t.Helper()
-	waitForInferenceStable(t, modelName, 1, 60*time.Second)
+	WaitForStableInference(t, modelName, 1, 60*time.Second)
 }
 
 // WaitForStableInference polls the gateway until the model answers
@@ -293,15 +293,11 @@ func WaitForInference(t *testing.T, modelName string) {
 // from passing a readiness gate while the serving path is still flapping.
 func WaitForStableInference(t *testing.T, modelName string, consecutiveRequests int, timeout time.Duration) {
 	t.Helper()
-	waitForInferenceStable(t, modelName, consecutiveRequests, timeout)
-}
-
-func waitForInferenceStable(t *testing.T, modelName string, consecutiveRequests int, timeout time.Duration) {
-	t.Helper()
 	config := LoadConfig()
 	client := NewOpenAIClient(config.GatewayURL, config.APIKey)
 	start := time.Now()
 	streak := 0
+	failedAttempts := 0
 	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
@@ -312,16 +308,20 @@ func waitForInferenceStable(t *testing.T, modelName string, consecutiveRequests 
 			})
 			if err != nil {
 				streak = 0
+				failedAttempts++
 				t.Logf("waiting for inference route for %s: %s", modelName, inferenceFailureDetail(err))
 				return false, nil
 			}
 			streak++
 			return streak >= consecutiveRequests, nil
 		})
-	require.NoError(t, err, "model %s did not serve %d consecutive requests within %s",
-		modelName, consecutiveRequests, timeout)
-	t.Logf("%s served %d consecutive inference requests after %s of polling",
-		modelName, consecutiveRequests, time.Since(start).Round(time.Millisecond))
+	require.NoError(t, err, "model %s did not serve %d consecutive requests within %s (%d failed attempts)",
+		modelName, consecutiveRequests, timeout, failedAttempts)
+	t.Logf("%s served %d consecutive inference requests after %d failed attempts in %s",
+		modelName, consecutiveRequests, failedAttempts, time.Since(start).Round(time.Millisecond))
+	if failedAttempts > 0 {
+		t.Logf("WARNING: %d gateway failures were swallowed while waiting for inference on %s", failedAttempts, modelName)
+	}
 }
 
 func ValidateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
@@ -386,10 +386,10 @@ func inferenceFailureDetail(err error) string {
 		body)
 }
 
-// DumpGatewayPluginLogs writes the recent gateway plugin logs to the test
-// output. The gateway turns some internal errors into Envoy-generated 5xx
-// without logging them (#3476), so on failure these logs are the first place
-// to look for what the plugin saw on the ext_proc stream.
+// DumpGatewayPluginLogs writes up to 1000 lines per gateway plugin pod from
+// the last five minutes to the test output. The gateway turns some internal
+// errors into Envoy-generated 5xx without logging them (#3476), so on failure
+// these logs are the first place to look for what the plugin saw on the ext_proc stream.
 func DumpGatewayPluginLogs(t *testing.T, client *kubernetes.Clientset) {
 	t.Helper()
 	// The e2e runner uses -timeout 0, so bound the diagnostics: a stalled
@@ -406,8 +406,10 @@ func DumpGatewayPluginLogs(t *testing.T, client *kubernetes.Clientset) {
 		return
 	}
 	for i := range pods.Items {
-		logs, logErr := client.CoreV1().Pods(namespace).GetLogs(pods.Items[i].Name,
-			&corev1.PodLogOptions{TailLines: ptr.To[int64](300)}).DoRaw(ctx)
+		logs, logErr := client.CoreV1().Pods(namespace).GetLogs(pods.Items[i].Name, &corev1.PodLogOptions{
+			SinceSeconds: ptr.To[int64](300),
+			TailLines:    ptr.To[int64](1000),
+		}).DoRaw(ctx)
 		if logErr != nil {
 			t.Logf("failed to get gateway plugin logs from %s: %v", pods.Items[i].Name, logErr)
 			continue
