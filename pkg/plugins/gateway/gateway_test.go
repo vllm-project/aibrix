@@ -864,6 +864,7 @@ func TestValidateHTTPRouteStatus_ParentReadiness(t *testing.T) {
 		Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionTrue, Reason: "ReferencesVerified",
 	}
 	pending := metav1.Condition{Type: resolved.Type, Status: metav1.ConditionUnknown, Reason: "Pending"}
+	notFound := metav1.Condition{Type: resolved.Type, Status: metav1.ConditionFalse, Reason: "BackendNotFound"}
 	programmed := metav1.Condition{Type: "Programmed", Status: metav1.ConditionTrue, Reason: "Programmed"}
 
 	for _, tc := range []struct {
@@ -885,8 +886,10 @@ func TestValidateHTTPRouteStatus_ParentReadiness(t *testing.T) {
 			parents: []gatewayv1.RouteParentStatus{parent(accepted, pending)},
 			wantErr: "Pending",
 		}, {
-			name:    "one ready parent",
-			parents: []gatewayv1.RouteParentStatus{parent(), parent(accepted, resolved), parent()},
+			name: "one ready parent",
+			parents: []gatewayv1.RouteParentStatus{
+				parent(accepted, notFound), parent(), parent(accepted, resolved), parent(),
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

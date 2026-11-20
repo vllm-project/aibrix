@@ -1151,12 +1151,12 @@ func httpRouteStatusError(namespace, name string, parents []gatewayv1.RouteParen
 			case gatewayv1.RouteConditionAccepted:
 				accepted = condition.Status == metav1.ConditionTrue
 				if !accepted {
-					reasons = append(reasons, "route is not accepted: "+condition.Reason+".")
+					reasons = append(reasons, "route is not accepted: "+condition.Reason)
 				}
 			case gatewayv1.RouteConditionResolvedRefs:
 				resolved = condition.Status == metav1.ConditionTrue
 				if !resolved {
-					reasons = append(reasons, "route's object references are not resolved: "+condition.Reason+".")
+					reasons = append(reasons, "route's object references are not resolved: "+condition.Reason)
 				}
 			}
 		}
