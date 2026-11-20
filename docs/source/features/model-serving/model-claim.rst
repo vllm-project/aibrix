@@ -573,6 +573,11 @@ A model that wakes then needs room again:
 * Otherwise, it waits for room for up to five minutes, and the next request
   asks again.
 
+If a model moves and stopping the old engine fails, the replacement can still
+serve. The controller retries cleanup when successive runtime snapshots show
+that the old engine still belongs to the claim and the claim is assigned to
+another Pod. The old Pod cannot take new models until that engine has exited.
+
 In such a pool, a new claim that no Pod has room for can get room too. The
 controller puts idle models to sleep on one Pod, and the claim's
 ``Scheduled`` condition reads ``MakingRoom`` until the claim is placed. As

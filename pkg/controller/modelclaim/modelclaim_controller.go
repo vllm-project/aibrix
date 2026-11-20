@@ -126,7 +126,8 @@ type ModelClaimReconciler struct {
 	WakeRequests *wakeRequestClock
 	// LimitWarnings remembers when each engine was last warned that its KV
 	// limit did not take. It is made on first use when unset.
-	LimitWarnings *limitWarningClock
+	LimitWarnings    *limitWarningClock
+	relocationChecks relocationChecks
 }
 
 func (r *ModelClaimReconciler) now() time.Time {
@@ -344,10 +345,12 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// or route-health convergence for this claim.
 	r.reconcilePoolPolicies(ctx, candidates, readings)
 	// Cards whose engines all declare what they cost are divided again by the
-	// planner that placement uses. Each share then follows load, and does not
-	// stay what it was when the last model landed. It runs last, after anything
-	// this pass changed on the cards.
+	// planner that placement uses. Each share then follows load after the
+	// placement and pool-policy changes in this pass.
 	r.divideCards(ctx, candidates, readings)
+	if len(pm.Status.Instances) > 0 {
+		r.reconcileRelocationCleanup(ctx, pm.Namespace, candidates, readings)
+	}
 	// A booting engine is looked at again soon, so it is routed within a few
 	// seconds of being ready. A pass that ended before the health check, as
 	// after a start that failed, keeps its own pace.

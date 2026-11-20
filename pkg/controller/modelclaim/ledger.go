@@ -205,6 +205,9 @@ type podLedger struct {
 	// engines are the instances recorded on this card, each with what its claim
 	// declared and what its engine currently holds.
 	engines []engineOnPod
+	// unclaimed holds engines that have no matching instance and still need
+	// to be stopped. Engines already stopping block admission separately.
+	unclaimed []RuntimeSnapshotModel
 }
 
 // maximumRoomBytes is the most memory this card could ever offer another
@@ -479,9 +482,9 @@ func podLedgersFrom(
 			// lives, which the processes that hold the card can outlive. So
 			// the phase is asked here, and not whether it is alive.
 			if model.Phase == runtimePhaseStopping {
-				ledgers[name] = ledger.withHole(fmt.Sprintf(
+				ledger = ledger.withHole(fmt.Sprintf(
 					"the engine that served %s there is still exiting", model.ModelName))
-				break
+				continue
 			}
 			// The runtime stops an engine it gives up on, and goes on listing
 			// it as failed. Once it is no longer alive, it has given its memory
@@ -491,10 +494,11 @@ func podLedgersFrom(
 			if model.Phase == runtimePhaseFailed && !model.Alive {
 				continue
 			}
-			ledgers[name] = ledger.withHole(fmt.Sprintf(
+			ledger = ledger.withHole(fmt.Sprintf(
 				"the engine serving %s there answers to no claim", model.ModelName))
-			break
+			ledger.unclaimed = append(ledger.unclaimed, model)
 		}
+		ledgers[name] = ledger
 	}
 	return ledgers
 }
