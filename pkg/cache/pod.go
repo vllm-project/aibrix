@@ -16,10 +16,10 @@ limitations under the License.
 package cache
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
@@ -28,9 +28,13 @@ import (
 
 type Pod struct {
 	*v1.Pod
-	Models       *utils.Registry[string]                    // Model/adapter names that the pod is running
-	Metrics      utils.SyncMap[string, metrics.MetricValue] // Pod metrics (metric_name -> value)
-	ModelMetrics utils.SyncMap[string, metrics.MetricValue] // Pod-model metrics (model_name/metric_name -> value)
+	Models       *utils.Registry[string]             // Model/adapter names that the pod is running
+	Metrics      utils.SyncMap[string, MetricRecord] // Pod metrics (metric_name -> record)
+	ModelMetrics utils.SyncMap[string, MetricRecord] // Pod-model metrics (model_name/metric_name -> record)
+
+	// Shared gateway labels are immutable for this Pod object and rebuilt on update.
+	gatewayMetricLabelsOnce sync.Once
+	gatewayMetricLabels     []string
 
 	// Realtime statstistic
 	runningRequests        int32 // Realtime running requests counter.
@@ -49,8 +53,8 @@ type Pod struct {
 	// readySince is the UnixNano time this gateway first saw the pod routable
 	// (utils.FilterReadyPod), not when it was added, so time spent Pending or NotReady doesn't
 	// count against the ramp. 0 means never routable yet. It is kept across same-IP re-adds and
-	// NotReady flaps (see addPodLocked) and restarts on a new IP. Read only by
-	// LeastRequestTopKRouter's ramp.
+	// NotReady flaps (see addPodLocked) and restarts on a new IP. Read by
+	// LeastRequestTopKRouter's ramp and by the load-balance capacity warm-up.
 	readySince atomic.Int64
 }
 

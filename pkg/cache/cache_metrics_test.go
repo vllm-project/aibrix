@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -340,6 +341,138 @@ func TestEmitMetricToPrometheus_GaugeAndCounter(t *testing.T) {
 	require.Len(t, gaugeCalls, 1)
 	require.Equal(t, metrics.NumRequestsRunning, gaugeCalls[0].name)
 	require.Equal(t, 3.0, gaugeCalls[0].value)
+}
+
+func TestSyncRunningRequestsGloballyExportsGauge(t *testing.T) {
+	tests := []struct {
+		name       string
+		label      string
+		annotation string
+		wantModel  string
+	}{
+		{name: "label", label: "label-model", annotation: "org/annotation-model", wantModel: "label-model"},
+		{name: "annotation", annotation: "org/annotation-model", wantModel: "org/annotation-model"},
+		{name: "no-metadata"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := runningRequestsTestPod("inference", "running-gauge-test-"+tt.name)
+			pod.Labels = map[string]string{constants.ModelLabelName: tt.label}
+			pod.Annotations = map[string]string{constants.ModelLabelName: tt.annotation}
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			store.metaPods.Store(podKey, pod)
+			handler := runningRequestsMetricsHandler(t, store)
+
+			checkGauge := func(want float64) {
+				t.Helper()
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+				require.Equal(t, http.StatusOK, w.Code)
+				var parser expfmt.TextParser
+				families, err := parser.TextToMetricFamilies(w.Body)
+				require.NoError(t, err)
+				family := families[metrics.RealtimeNumRequestsRunning]
+				require.NotNil(t, family, "missing %s metric family in /metrics response", metrics.RealtimeNumRequestsRunning)
+				for _, m := range family.GetMetric() {
+					name, _ := metrics.GetLabelValueForKey(m, "pod")
+					namespace, _ := metrics.GetLabelValueForKey(m, "namespace")
+					if name == pod.Name && namespace == pod.Namespace {
+						model, err := metrics.GetLabelValueForKey(m, "model")
+						require.NoError(t, err)
+						require.Equal(t, tt.wantModel, model)
+						require.NotNil(t, m.Gauge)
+						require.Equal(t, want, m.Gauge.GetValue())
+						return
+					}
+				}
+				t.Fatalf("missing %s for pod %s", metrics.RealtimeNumRequestsRunning, podKey)
+			}
+
+			pod.runningRequests = 1
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+				entries: map[string][]remoteRunningEntry{podKey: {{count: 2, readAt: time.Now()}}},
+			})
+			store.syncRunningRequestsGlobally(pod)
+			checkGauge(3)
+
+			pod.runningRequests = 0
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
+			store.syncRunningRequestsGlobally(pod)
+			checkGauge(0)
+		})
+	}
+}
+
+func TestSyncRunningRequestsGloballyExportsGaugeRemoteReader(t *testing.T) {
+	tests := []struct {
+		name   string
+		seen   bool
+		remote int64
+		stale  bool
+		local  int32
+		want   []float64
+	}{
+		{name: "unread", local: 2},
+		{name: "empty-first-read", seen: true, local: 2, want: []float64{2}},
+		{name: "fresh", seen: true, remote: 4, local: 2, want: []float64{6}},
+		{name: "stale", seen: true, remote: 4, stale: true, local: 2, want: []float64{2}},
+		{name: "zero", seen: true, want: []float64{0}},
+	}
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{snapshotClock: func() time.Time { return now }}
+			pod := runningRequestsTestPod("inference", "running-reader-gauge-test-"+tt.name)
+			const modelName = "reader-model"
+			pod.Labels = map[string]string{constants.ModelLabelName: modelName}
+			pod.runningRequests = tt.local
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			store.metaPods.Store(podKey, pod)
+			handler := runningRequestsMetricsHandler(t, store)
+
+			// The reader must take precedence over a conflicting snapshot, even
+			// while the pod is unread and the gauge must not be emitted.
+			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+				entries: map[string][]remoteRunningEntry{podKey: {{count: 99, readAt: now}}},
+			})
+			reader := newRemoteRunningReader(store, time.Second)
+			store.remoteRunningReader.Store(reader)
+			if tt.seen {
+				readAt := now
+				if tt.stale {
+					readAt = now.Add(-reader.maxAge - time.Nanosecond)
+				}
+				reader.publish(podKey, tt.remote, readAt)
+			}
+			store.syncRunningRequestsGlobally(pod)
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			require.Equal(t, http.StatusOK, w.Code)
+			var parser expfmt.TextParser
+			families, err := parser.TextToMetricFamilies(w.Body)
+			require.NoError(t, err)
+			var values []float64
+			if family := families[metrics.RealtimeNumRequestsRunning]; family != nil {
+				for _, m := range family.GetMetric() {
+					name, _ := metrics.GetLabelValueForKey(m, "pod")
+					namespace, _ := metrics.GetLabelValueForKey(m, "namespace")
+					if name != pod.Name || namespace != pod.Namespace {
+						continue
+					}
+					model, err := metrics.GetLabelValueForKey(m, "model")
+					require.NoError(t, err)
+					require.Equal(t, modelName, model)
+					require.NotNil(t, m.Gauge)
+					values = append(values, m.Gauge.GetValue())
+				}
+			}
+			require.Equal(t, tt.want, values, "unexpected %s samples for pod %s", metrics.RealtimeNumRequestsRunning, podKey)
+		})
+	}
 }
 
 func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
@@ -1001,7 +1134,7 @@ func TestUpdateRealtimeOutputTokenRateEWMA(t *testing.T) {
 	c.updateRealtimeOutputTokenRateEWMA(pod)
 	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
 	require.True(t, ok)
-	require.InDelta(t, 100, v.GetSimpleValue(), 1)
+	require.InDelta(t, 100, v.Value.GetSimpleValue(), 1)
 
 	// A higher window rate (~200 tokens/s) moves the estimate only part of the way toward it.
 	atomic.StoreInt64(&pod.completedOutputTokens, 6000)
@@ -1010,9 +1143,9 @@ func TestUpdateRealtimeOutputTokenRateEWMA(t *testing.T) {
 	require.True(t, ok)
 	alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
 	want := alpha*200 + (1-alpha)*100
-	require.InDelta(t, want, v.GetSimpleValue(), 2)
-	require.Greater(t, v.GetSimpleValue(), 100.0)
-	require.Less(t, v.GetSimpleValue(), 200.0)
+	require.InDelta(t, want, v.Value.GetSimpleValue(), 2)
+	require.Greater(t, v.Value.GetSimpleValue(), 100.0)
+	require.Less(t, v.Value.GetSimpleValue(), 200.0)
 }
 
 // A window with no completed output tokens says nothing about capacity, so the previous
@@ -1028,7 +1161,7 @@ func TestUpdateRealtimeOutputTokenRateEWMA_IdleKeepsPreviousEstimate(t *testing.
 
 	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
 	require.True(t, ok)
-	require.Equal(t, 123.0, v.GetSimpleValue())
+	require.Equal(t, 123.0, v.Value.GetSimpleValue())
 }
 
 func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) {
@@ -1181,12 +1314,116 @@ func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
 
 	gen, ok := decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgGenerationThroughputToksPerS))
 	require.True(t, ok, "the decode pod must get a generation throughput")
-	require.InDelta(t, 100.0, gen.GetSimpleValue(), 5.0)
+	require.InDelta(t, 100.0, gen.Value.GetSimpleValue(), 5.0)
 	prompt, ok := prefill.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
 	require.True(t, ok, "the prefill pod must get a prompt throughput")
-	require.InDelta(t, 100.0, prompt.GetSimpleValue(), 5.0)
+	require.InDelta(t, 100.0, prompt.Value.GetSimpleValue(), 5.0)
 
 	// A role only gets the rate of its own counter.
 	_, ok = decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
 	require.False(t, ok)
+}
+
+// fakeQuarantine quarantines the pods named in the set.
+type fakeQuarantine map[string]bool
+
+func (q fakeQuarantine) IsQuarantined(pod *v1.Pod) bool { return q[pod.Name] }
+
+// pointerQuarantine is a comparable checker, as a real one (a pointer) is.
+type pointerQuarantine struct{ quarantined bool }
+
+func (q *pointerQuarantine) IsQuarantined(*v1.Pod) bool { return q.quarantined }
+
+func TestClearPodQuarantineChecker(t *testing.T) {
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-1"}}
+	first, second := &pointerQuarantine{true}, &pointerQuarantine{true}
+	store := NewForTest()
+
+	store.SetPodQuarantineChecker(first)
+	require.True(t, store.isPodQuarantined(pod))
+	store.ClearPodQuarantineChecker(first)
+	require.False(t, store.isPodQuarantined(pod), "the checker that was set can clear itself")
+
+	// One slot, last set wins: an earlier checker clearing itself afterwards must not
+	// take the later one's registration with it.
+	store.SetPodQuarantineChecker(first)
+	store.SetPodQuarantineChecker(second)
+	store.ClearPodQuarantineChecker(first)
+	require.True(t, store.isPodQuarantined(pod), "clearing a checker that is no longer in the slot changes nothing")
+	store.ClearPodQuarantineChecker(second)
+	require.False(t, store.isPodQuarantined(pod))
+
+	// Clearing an empty slot, or with a checker of an uncomparable type, is harmless.
+	require.NotPanics(t, func() {
+		store.ClearPodQuarantineChecker(second)
+		store.SetPodQuarantineChecker(fakeQuarantine{"pod-1": true})
+		store.ClearPodQuarantineChecker(fakeQuarantine{"pod-1": true})
+	})
+}
+
+func TestUpdatePodMetricsSkipsQuarantinedPods(t *testing.T) {
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
+	store := &Store{podMetricsJobs: make(chan *Pod, 10)}
+	for _, name := range []string{"pod-0", "pod-1"} {
+		pod := newReadyMetricsPod(name, "uid-"+name)
+		store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	}
+
+	store.updatePodMetrics()
+	require.Equal(t, 2, len(store.podMetricsJobs), "without a checker every ready pod is scraped")
+	for len(store.podMetricsJobs) > 0 {
+		store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+	}
+
+	var checker PodQuarantineChecker = fakeQuarantine{"pod-1": true}
+	store.SetPodQuarantineChecker(checker)
+	store.updatePodMetrics()
+
+	require.Equal(t, 1, len(store.podMetricsJobs))
+	require.Equal(t, "pod-0", (<-store.podMetricsJobs).Name, "only the pod that is not quarantined is scraped")
+	require.Zero(t, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonQueueFull))
+}
+
+func TestUpdateModelReplicaMetricsSkipsQuarantinedPods(t *testing.T) {
+	t.Setenv("POD_NAME", "gateway-0")
+
+	var emitted []string
+	originalFn := metrics.SetGaugeMetricFnForTest
+	defer func() { metrics.SetGaugeMetricFnForTest = originalFn }()
+	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name != metrics.ModelReplicas {
+			return
+		}
+		for i, ln := range labelNames {
+			if ln == "pod" {
+				emitted = append(emitted, labelValues[i])
+			}
+		}
+	}
+
+	store := &Store{}
+	for _, name := range []string{"pod-0", "pod-1"} {
+		store.metaPods.Store("default/"+name, newReadyMetricsPod(name, "uid-"+name))
+	}
+
+	store.updateModelReplicaMetrics()
+	require.ElementsMatch(t, []string{"pod-0", "pod-1"}, emitted)
+	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+
+	// pod-1 is quarantined: it stops counting as a replica and its series goes.
+	store.SetPodQuarantineChecker(fakeQuarantine{"pod-1": true})
+	emitted = nil
+	store.updateModelReplicaMetrics()
+	require.Equal(t, []string{"pod-0"}, emitted)
+	require.Equal(t, 1, store.modelReplicaEmitted.Len())
+
+	// The quarantine ends: it counts again.
+	store.SetPodQuarantineChecker(fakeQuarantine{})
+	emitted = nil
+	store.updateModelReplicaMetrics()
+	require.ElementsMatch(t, []string{"pod-0", "pod-1"}, emitted)
+	require.Equal(t, 2, store.modelReplicaEmitted.Len())
 }

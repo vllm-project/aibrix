@@ -18,9 +18,10 @@ package cache
 
 import (
 	"fmt"
+	"math"
+	"reflect"
 	"sort"
 	"sync/atomic"
-	"time"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -165,10 +166,16 @@ func (c *Store) ModelBaseModel(modelName string) (string, bool) {
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod or metric doesn't exist
 func (c *Store) GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error) {
+	record, err := c.GetMetricRecordByPod(podName, podNamespace, metricName)
+	return record.Value, err
+}
+
+// GetMetricRecordByPod returns the last successful local update, including its age metadata.
+func (c *Store) GetMetricRecordByPod(podName, podNamespace, metricName string) (MetricRecord, error) {
 	key := utils.GeneratePodKey(podNamespace, podName)
 	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
+		return MetricRecord{}, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return c.getPodMetricImpl(podName, &metaPod.Metrics, metricName)
@@ -187,10 +194,16 @@ func (c *Store) GetMetricValueByPod(podName, podNamespace, metricName string) (m
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod, model or metric doesn't exist
 func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string, metricName string) (metrics.MetricValue, error) {
+	record, err := c.GetMetricRecordByPodModel(podName, podNamespace, modelName, metricName)
+	return record.Value, err
+}
+
+// GetMetricRecordByPodModel returns the last successful update for one pod/model metric.
+func (c *Store) GetMetricRecordByPodModel(podName, podNamespace, modelName, metricName string) (MetricRecord, error) {
 	key := utils.GeneratePodKey(podNamespace, podName)
 	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
+		return MetricRecord{}, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
@@ -302,12 +315,16 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 }
 
 // GetPodsRunningRequestsApprox implements ApproxRunningRequestsProvider: the local atomic plus
-// the other gateways' counts from the latest snapshot, with no Redis call.
+// the other gateways' counts from the latest snapshot, with no Redis call. Each other gateway's
+// count is added only while its snapshot was read within remoteRunningMaxAge (see freshCount).
+// With the remote running reader on, the other gateways' counts come from it instead.
 func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
-	var remote map[string]int64
-	if snap := c.gatewayRemoteRunning.Load(); snap != nil && time.Since(snap.readStart) <= remoteRunningMaxAge {
-		remote = snap.counts
+	reader := c.remoteRunningReader.Load()
+	var snap *remoteRunningSnapshot
+	if reader == nil {
+		snap = c.gatewayRemoteRunning.Load()
 	}
+	now := c.snapshotNow()
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {
 		if pod == nil {
@@ -318,9 +335,23 @@ func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 		if !ok {
 			continue
 		}
-		result[podKey] = int64(atomic.LoadInt32(&metaPod.runningRequests)) + remote[podKey]
+		count := int64(atomic.LoadInt32(&metaPod.runningRequests))
+		if reader != nil {
+			remote, _ := reader.freshCount(podKey, now)
+			count = addSaturatedInt64(count, remote)
+		} else if snap != nil {
+			count = addSaturatedInt64(count, snap.freshCount(podKey, now))
+		}
+		result[podKey] = count
 	}
 	return result
+}
+
+func addSaturatedInt64(base, add int64) int64 {
+	if add > 0 && base > math.MaxInt64-add {
+		return math.MaxInt64
+	}
+	return base + add
 }
 
 // GetPodsReadySince implements PodReadySinceProvider. It is a local read with no Redis: ramp
@@ -545,4 +576,54 @@ func (c *Store) GetRouter(ctx *types.RoutingContext) (types.Router, error) {
 
 func (c *Store) RegisterRequestTracker(tracker RequestTracker) {
 	c.requestTrackers = append(c.requestTrackers, tracker)
+}
+
+// RegisterPodLifecycleListener implements PodLifecycleRegistry.
+func (c *Store) RegisterPodLifecycleListener(listener PodLifecycleListener) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.podLifecycleListeners = append(c.podLifecycleListeners, listener)
+}
+
+// UnregisterPodLifecycleListener implements PodLifecycleRegistry.
+func (c *Store) UnregisterPodLifecycleListener(listener PodLifecycleListener) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// A new slice, not an in-place filter: podLifecycleListenersLocked copies under
+	// c.mu, but a copy is cheap insurance against sharing the backing array.
+	kept := make([]PodLifecycleListener, 0, len(c.podLifecycleListeners))
+	for _, l := range c.podLifecycleListeners {
+		if !sameRegistration(l, listener) {
+			kept = append(kept, l)
+		}
+	}
+	c.podLifecycleListeners = kept
+}
+
+// SetPodQuarantineChecker implements PodQuarantineRegistry.
+func (c *Store) SetPodQuarantineChecker(checker PodQuarantineChecker) {
+	c.podQuarantine.Store(&checker)
+}
+
+// ClearPodQuarantineChecker implements PodQuarantineRegistry.
+func (c *Store) ClearPodQuarantineChecker(checker PodQuarantineChecker) {
+	if current := c.podQuarantine.Load(); current != nil && sameRegistration(*current, checker) {
+		c.podQuarantine.CompareAndSwap(current, nil)
+	}
+}
+
+// sameRegistration reports whether a and b are the same registered value. Values of
+// an uncomparable dynamic type never match instead of panicking in ==.
+func sameRegistration(a, b any) bool {
+	t := reflect.TypeOf(a)
+	return t != nil && t == reflect.TypeOf(b) && t.Comparable() && a == b
+}
+
+// isPodQuarantined is false when no checker is set.
+func (c *Store) isPodQuarantined(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	checker := c.podQuarantine.Load()
+	return checker != nil && (*checker).IsQuarantined(pod)
 }

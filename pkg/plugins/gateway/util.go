@@ -292,6 +292,12 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 
+	// The model name is kept for as long as the request is tracked (routing
+	// context, in-flight gauges, log fields), but the validate* helpers decode
+	// with sonic's default config, which does not copy strings: model would be a
+	// slice of sonic's private copy of the entire request body and keep it alive.
+	model = strings.Clone(model)
+
 	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "messageBytes", len(message), "stream", stream)
 	if v := klog.V(6); v.Enabled() {
 		text, truncated := truncateForLog([]byte(message))
@@ -1496,9 +1502,9 @@ func modelConfigFromCache(c cache.Cache, model string) string {
 //     requestsInflight and requestsPerSecondPerReplica are independent, user-configured
 //     limits: when inflight is set below the resolved replica RPS, it is left as configured
 //     (only logged via warnIfReplicaInflightBelowRPS) rather than raised, since silently
-//     loosening the concurrency cap the user set would defeat its purpose. Unlike
-//     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
-//     env-var form: both are configured directly in the profile.
+//     loosening the concurrency cap the user set would defeat its purpose. Neither
+//     requestsPerSecondPerReplica nor requestsInflight has an env-var form: both are
+//     configured directly in the profile.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
@@ -1542,6 +1548,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		AuthoritativeRoutingPolicy: cfg.AuthoritativeRoutingPolicy,
 	}
 	if profile != nil {
+		cp.ProfileName = profileName
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
 		cp.Routing = configprofiles.ParseRoutingConfig(profile.RoutingConfig)

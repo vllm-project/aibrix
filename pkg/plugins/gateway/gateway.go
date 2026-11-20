@@ -51,6 +51,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -110,6 +111,12 @@ type Server struct {
 	asyncJobsOnce sync.Once
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
+	// podBlacklist is the per-pod exclusion list (probe sweep, load-outlier flag,
+	// flaky re-add) that selectTargetPod consults before routing (see the blacklist package). Its
+	// zero value is ready to use.
+	podBlacklist blacklist.PodBlacklist
+	// allBlacklistedLog throttles the "every ready pod is blacklisted" line per model.
+	allBlacklistedLog allBlacklistedLogThrottle
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -382,11 +389,14 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
 			rb.Start(shutdown, redisClient)
 		}
 	}
+	s.registerPodLifecycle()
+	s.registerPodQuarantine()
 	return s
 }
 
@@ -763,6 +773,11 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 				})
 				st.lastRespHeaders = mutation.SetHeaders
 			}
+		} else if req.GetResponseHeaders().GetEndOfStream() {
+			// A headers-only success (a 204, an empty-body 200): no body callback
+			// will follow to mark it complete, and without this the stream closing
+			// afterwards would be counted as a cancelled request (499).
+			st.completed = true
 		}
 		st.metricLabel = gatewayRespHeaders
 
@@ -977,11 +992,18 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
-	if limit := replicaInflightLimit(routeCtx); limit > 0 {
-		readyPods = s.filterSaturatedReplicaInflight(routeCtx, readyPods, limit)
-		if len(readyPods) == 0 {
-			return "", errReplicaInflightExceeded
-		}
+	// Drop pods the blacklist currently excludes (a pod the probe sweep found dead or
+	// degraded, a load outlier, or one that just flapped back in). If that empties the list,
+	// route anyway rather than fail every request outright -- a blacklist is a
+	// soft preference, not a hard exclusion.
+	//
+	// The exclusive strategies see every ready pod, so the whole list is filtered here. Every
+	// other request is filtered after the candidate stage, on its K candidates only (below):
+	// filtering the ready list first costs a lookup per pod on every request. That holds with a
+	// replica-inflight limit too, since its filter also runs on the candidates, after the
+	// blacklist's (narrowToInflightCapacity).
+	if isExclusive {
+		readyPods = s.excludeBlacklisted(routeCtx, readyPods)
 	}
 
 	routerManager := s.routerManager
@@ -998,6 +1020,12 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	}
 
 	if isExclusive {
+		// For exclusive strategies the set is the full ready set, and the filter runs before
+		// engine validation so a request that will be rejected for saturation is not failed on
+		// a pod it never uses.
+		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflightScopeFleet); err != nil {
+			return "", err
+		}
 		if isPD {
 			engine, err := routing.ValidateAndGetLLMEngine(readyPods)
 			if err != nil {
@@ -1007,12 +1035,32 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		}
 	} else {
 		// Narrow the pods to a bounded candidate set when AIBRIX_ROUTING_CANDIDATE_K is set, so
-		// the gate and the router read running counts for those pods only (RFC #3188).
-		readyPods = routing.SelectCandidates(routeCtx, router, readyPods)
+		// the filter, the gate and the router read running counts for those pods only (RFC #3188).
+		// The cache lets the stage skip pods already at the profile's inflight cap before ranking
+		// them, from memory only; the Redis filter below still decides the 429.
+		allReady := readyPods
+		readyBeforeCandidates := len(readyPods)
+		readyPods = routing.SelectCandidates(routeCtx, s.cache, router, readyPods)
+		// The scope is what the filter actually ran on, not which branch ran: with the candidate
+		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
+		// It is read before the blacklist drops pods, which says nothing about what was sampled.
+		scope := inflightScopeFleet
+		if len(readyPods) < readyBeforeCandidates {
+			scope = inflightScopeCandidates
+		}
+		readyPods = s.excludeBlacklistedCandidates(routeCtx, router, allReady, readyPods)
+		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, scope); err != nil {
+			return "", err
+		}
 		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
-		// this request. Exclusive strategies (pd, slo*) are exempted above: they manage their
-		// own pod subsets (prefill/decode, SLO tiers), which a blanket running-request-count
-		// filter would distort.
+		// this request, after the filter so it compares pods that can still admit. Exclusive
+		// strategies (pd, slo*) are exempted above: they manage their own pod subsets
+		// (prefill/decode, SLO tiers), which a blanket running-request-count filter would
+		// distort.
+		//
+		// The gate does not depend on the pod blacklist and runs with it on or off. Pods the
+		// blacklist excluded are already out of readyPods here, and the gate narrows what is
+		// left from the live counts, exactly as it does without a blacklist.
 		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
 	}
 
@@ -1179,6 +1227,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 }
 
 // StartHTTPServer starts the gateway's HTTP server with metrics and API handlers.
+// Both /v1/models and /v1/models/ use the same handler without redirects.
 // In local/standalone mode, Envoy routes /v1/models here since there is no metadata service.
 // In standard K8s deployment, Envoy routes /v1/models to the metadata service instead,
 // so the /v1/models handler here is never reached — no conflict.
@@ -1198,6 +1247,7 @@ func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Serv
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/v1/models", handler)
+	mux.HandleFunc("/v1/models/{$}", handler)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -1266,7 +1316,10 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) Shutdown() {
 	if s.shutdown != nil {
-		s.shutdownOnce.Do(func() { close(s.shutdown) })
+		s.shutdownOnce.Do(func() {
+			close(s.shutdown)
+			s.unregisterFromCache()
+		})
 	}
 	if s.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
