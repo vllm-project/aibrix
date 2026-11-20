@@ -146,6 +146,17 @@ func (h *MetricHistory) GetStats(now time.Time) WindowStats {
 	}
 }
 
+// Snapshot returns a copy of the recorded points in recording order.
+// Callers may sort or filter the copy without racing writers.
+func (h *MetricHistory) Snapshot() []MetricPoint {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	points := make([]MetricPoint, len(h.history))
+	copy(points, h.history)
+	return points
+}
+
 // TimeWindow manages a sliding window of metric values
 type TimeWindow struct {
 	mu          sync.RWMutex

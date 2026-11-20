@@ -30,6 +30,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -665,6 +666,7 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 		Conditions:      conds,
 		ScalingHistory:  paCopy.Status.ScalingHistory,
 		ScheduledBounds: scheduledBoundsStatus(paCopy, time.Now()),
+		Predictive:      mergePredictiveStatus(pa.Spec.Predictive, nil, paCopy.Status.Predictive),
 	}
 	paCopy.Status = *st
 	return r.updateStatusIfNeeded(ctx, &pa.Status, paCopy)
@@ -1008,7 +1010,7 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 	currentReplicas := counts.Configured
 	scaleDecision, err := r.computeScaleDecision(ctx, *pa, scaleObj, currentReplicas)
 	if err != nil {
-		setStatus(pa, counts.Observed, currentReplicas, false, ReasonFailedComputeScale, false, false, err)
+		setStatus(pa, counts.Observed, currentReplicas, false, ReasonFailedComputeScale, false, false, err, nil)
 		// setStatus reports a held replica count as Stable. Say why it is held
 		// instead: like the HPA, a failure to compute a recommendation is
 		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
@@ -1048,7 +1050,8 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 
 	// Step 5: Update status
 	setStatus(pa, counts.Observed, scaleDecision.DesiredReplicas,
-		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError)
+		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError,
+		scaleDecision.Predictive)
 
 	if scaleError != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, scaleError)
@@ -1122,7 +1125,8 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 
 // setStatus recreates the status of the given PA, updating the current and
 // desired replicas, as well as the metric statuses and optionally records a scaling decision
-func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive bool, success bool, err error) {
+func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive bool, success bool, err error, predictive *autoscalingv1alpha1.PredictiveStatus) {
+	previousPredictive := pa.Status.Predictive
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
 		ActualScale:     currentReplicas,
 		DesiredScale:    desiredReplicas,
@@ -1130,6 +1134,7 @@ func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredRe
 		Conditions:      pa.Status.Conditions,
 		ScalingHistory:  pa.Status.ScalingHistory, // preserve existing history
 		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
+		Predictive:      mergePredictiveStatus(pa.Spec.Predictive, predictive, previousPredictive),
 	}
 
 	scalingActive := desiredReplicas != currentReplicas
@@ -1232,6 +1237,9 @@ type ScaleDecision struct {
 	Reason                    string
 	Algorithm                 string
 	PendingReplicaGuardActive bool
+	// Predictive is the projection evaluated for this decision. It is reported
+	// even when it did not change the decision.
+	Predictive *autoscalingv1alpha1.PredictiveStatus
 }
 
 // getScaleResource retrieves the scale resource for the PodAutoscaler target
@@ -1358,13 +1366,86 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		reason = "stable"
 	}
 
+	// The projection is reported even when it did not change the decision:
+	// Preview mode is observable through the status, and wouldBeReplicas
+	// answers what Auto mode would apply.
+	var predictive *autoscalingv1alpha1.PredictiveStatus
+	if evaluation := replicaResult.Predictive; evaluation != nil {
+		predictive = r.predictiveStatusFor(&pa, scalingContext, evaluation, desiredReplicas, minReplicas, maxReplicas, currentReplicas)
+	}
+
 	return &ScaleDecision{
 		DesiredReplicas:           desiredReplicas,
 		ShouldScale:               shouldScale,
 		Reason:                    reason,
 		Algorithm:                 metricName,
 		PendingReplicaGuardActive: pendingGuardActive,
+		Predictive:                predictive,
 	}, nil
+}
+
+// predictiveStatusFor renders one evaluation for the status subresource.
+// reactiveReplicas is the count the reactive pipeline selected in this round.
+// wouldBeReplicas runs the composed count through the same cooldown and replica
+// bounds as the applied decision, without recording it in the history, so
+// Preview mode can answer whether Auto would change anything.
+func (r *PodAutoscalerReconciler) predictiveStatusFor(
+	pa *autoscalingv1alpha1.PodAutoscaler,
+	scalingContext scalingctx.ScalingContext,
+	evaluation *PredictiveResult,
+	reactiveReplicas, minReplicas, maxReplicas, currentReplicas int32,
+) *autoscalingv1alpha1.PredictiveStatus {
+	wouldBeReplicas := r.previewStabilized(pa, scalingContext, evaluation.ComposedReplicas, currentReplicas)
+	if wouldBeReplicas > maxReplicas {
+		wouldBeReplicas = maxReplicas
+	} else if wouldBeReplicas < minReplicas {
+		wouldBeReplicas = minReplicas
+	}
+
+	now := metav1.NewTime(r.nowTime())
+	return &autoscalingv1alpha1.PredictiveStatus{
+		Mode:              evaluation.Mode,
+		Metric:            evaluation.MetricName,
+		ObservedValue:     formatMetricValue(evaluation.ObservedValue),
+		PredictedValue:    formatMetricValue(evaluation.PredictedValue),
+		PredictedReplicas: evaluation.PredictedReplicas,
+		ReactiveReplicas:  reactiveReplicas,
+		WouldBeReplicas:   wouldBeReplicas,
+		LastUpdated:       &now,
+	}
+}
+
+// formatMetricValue renders a metric value with a fixed precision so repeated
+// evaluations of the same series produce the same status.
+func formatMetricValue(value float64) string {
+	return strconv.FormatFloat(value, 'f', 3, 64)
+}
+
+// mergePredictiveStatus merges the evaluation of this round with the previous
+// status entry. The entry is dropped when spec.predictive is removed. When
+// this round produced no projection (a boundary check, a failed metric round,
+// a series that is too sparse) the previous entry is kept, so a temporary gap
+// does not erase a good observation. The timestamp only moves when the entry
+// itself changes, so a steady series does not rewrite the status on every
+// resync.
+func mergePredictiveStatus(spec *autoscalingv1alpha1.PredictiveSpec, next, previous *autoscalingv1alpha1.PredictiveStatus) *autoscalingv1alpha1.PredictiveStatus {
+	if spec == nil {
+		return nil
+	}
+	if next == nil {
+		return previous
+	}
+	if previous != nil &&
+		previous.Mode == next.Mode &&
+		previous.Metric == next.Metric &&
+		previous.ObservedValue == next.ObservedValue &&
+		previous.PredictedValue == next.PredictedValue &&
+		previous.PredictedReplicas == next.PredictedReplicas &&
+		previous.ReactiveReplicas == next.ReactiveReplicas &&
+		previous.WouldBeReplicas == next.WouldBeReplicas {
+		next.LastUpdated = previous.LastUpdated
+	}
+	return next
 }
 
 // applyScaling applies the scaling decision to the target resource
@@ -1453,13 +1534,38 @@ func (r *PodAutoscalerReconciler) stabilizeRecommendation(
 		timestamp:      now,
 	})
 
-	// Scale up only to the lowest recommendation seen in the scale-up window and
-	// scale down only to the highest recommendation seen in the scale-down window.
+	stabilized := stabilizedRecommendation(r.recommendations[key], now, recommendation, current, scaleUpWindow, scaleDownWindow)
+
+	klog.V(4).InfoS("Stabilization applied",
+		"pa", key,
+		"recommendation", recommendation,
+		"current", current,
+		"stabilized", stabilized,
+		"scaleUpWindow", scaleUpWindow,
+		"scaleDownWindow", scaleDownWindow,
+		"historyCount", len(r.recommendations[key]))
+
+	return stabilized
+}
+
+// stabilizedRecommendation holds a recommendation inside the cooldown windows:
+// scale-up moves to the lowest recommendation seen in the scale-up window and
+// scale-down moves to the highest seen in the scale-down window. It is shared
+// by the applied path and the status preview so both read the same history the
+// same way.
+func stabilizedRecommendation(
+	history []timestampedRecommendation,
+	now time.Time,
+	recommendation,
+	current int32,
+	scaleUpWindow,
+	scaleDownWindow time.Duration,
+) int32 {
 	upRecommendation := recommendation
 	downRecommendation := recommendation
 	upCutoff := now.Add(-scaleUpWindow)
 	downCutoff := now.Add(-scaleDownWindow)
-	for _, rec := range r.recommendations[key] {
+	for _, rec := range history {
 		if rec.timestamp.After(upCutoff) && rec.recommendation < upRecommendation {
 			upRecommendation = rec.recommendation
 		}
@@ -1475,17 +1581,33 @@ func (r *PodAutoscalerReconciler) stabilizeRecommendation(
 	if stabilized > downRecommendation {
 		stabilized = downRecommendation
 	}
-
-	klog.V(4).InfoS("Stabilization applied",
-		"pa", key,
-		"recommendation", recommendation,
-		"current", current,
-		"stabilized", stabilized,
-		"scaleUpWindow", scaleUpWindow,
-		"scaleDownWindow", scaleDownWindow,
-		"historyCount", len(r.recommendations[key]))
-
 	return stabilized
+}
+
+// previewStabilized returns what stabilizeRecommendation would return for the
+// given recommendation without recording it, so the status can report what
+// Auto mode would apply through the same cooldown windows.
+func (r *PodAutoscalerReconciler) previewStabilized(
+	pa *autoscalingv1alpha1.PodAutoscaler,
+	scalingContext scalingctx.ScalingContext,
+	recommendation,
+	current int32,
+) int32 {
+	key := fmt.Sprintf("%s/%s", pa.Namespace, pa.Name)
+	now := r.nowTime()
+	scaleUpWindow := scalingContext.GetScaleUpCooldownWindow()
+	scaleDownWindow := scalingContext.GetScaleDownCooldownWindow()
+
+	r.recommendationsMu.RLock()
+	history := make([]timestampedRecommendation, len(r.recommendations[key]))
+	copy(history, r.recommendations[key])
+	r.recommendationsMu.RUnlock()
+
+	history = append(history, timestampedRecommendation{
+		recommendation: recommendation,
+		timestamp:      now,
+	})
+	return stabilizedRecommendation(history, now, recommendation, current, scaleUpWindow, scaleDownWindow)
 }
 
 func (r *PodAutoscalerReconciler) nowTime() time.Time {
