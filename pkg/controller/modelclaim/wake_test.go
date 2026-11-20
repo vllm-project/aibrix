@@ -366,6 +366,43 @@ func TestRelocatedFromRequiresClaimAndAuthoritativeList(t *testing.T) {
 	assert.False(t, relocatedFrom(nil, "warm-source", servedModelName(owner), claims))
 }
 
+func TestPendingClaimCanCleanItsOwnRelocatedEngine(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pm.UID = "claim-uid"
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "lost-target", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	source, snapshot := sizedWarmPod("warm-source", "10.0.0.1", 1000)
+	source.UID = "source-uid"
+	snapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
+		ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+	}}
+	r, runtime := newReconciler(t, pm, source)
+	runtime.snapshots = map[string]*RuntimeSnapshot{source.Status.PodIP: snapshot}
+	now := time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	r.Backoff = newPlacementBackoff(r.Now)
+
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+	waiting := getModel(t, r, pm.Name)
+	require.Empty(t, waiting.Status.Instances)
+	require.Equal(t, modelv1alpha1.ModelClaimPending, waiting.Status.Phase)
+	require.Empty(t, runtime.deactivateCalls)
+	now = now.Add(time.Minute)
+	reconcileOnce(t, r, pm.Name)
+	require.Equal(t, []string{source.Status.PodIP}, runtime.deactivatedOn)
+
+	snapshot.Models = nil
+	now = now.Add(time.Minute)
+	reconcileOnce(t, r, pm.Name)
+	placed := getModel(t, r, pm.Name)
+	require.Len(t, placed.Status.Instances, 1)
+	assert.Equal(t, source.Name, placed.Status.Instances[0].Pod)
+}
+
 func TestReconcileSaysWakingOnlyForTheCallThatWokeTheEngine(t *testing.T) {
 	r, runtime, pm, _ := sleepingClaim(t)
 	askWake(t, r, "warm-1", pm.Name, "2026-10-01T08:00:00Z")
