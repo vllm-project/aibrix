@@ -37,7 +37,12 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func runningRequestsTestPod(namespace, name string) *Pod {
+	return &Pod{Pod: requestTrackerTestPod(name, namespace, "", "10.0.0.1")}
+}
 
 func runningRequestsMetricsHandler(t *testing.T, store *Store) http.Handler {
 	t.Helper()
@@ -70,62 +75,73 @@ func runningRequestGaugeSamples(t *testing.T, handler http.Handler, namespace, p
 	return values
 }
 
-func TestPodGatewayMetricsCollector_IndependentGauges(t *testing.T) {
-	for _, order := range []string{"running-first", "record-first"} {
-		t.Run(order, func(t *testing.T) {
-			now := time.Now()
-			store := NewForTest()
-			store.snapshotClock = func() time.Time { return now }
-			pod := namespacedTestPod("inference", "multiple-gauges")
-			atomic.StoreInt32(&pod.runningRequests, 2)
-			store.metaPods.Store("inference/multiple-gauges", pod)
-			const recordGaugeName = "test_gateway_pod_record_gauge"
-			pod.Metrics.Store(recordGaugeName, MetricRecord{
-				Value: &metrics.SimpleMetricValue{Value: 7}, Timestamp: now,
-			})
-			collector := newPodGatewayMetricsCollector(store)
-			// This test-only gauge has a different readiness/freshness policy.
-			// Production currently registers only the running-request gauge.
-			recordGauge := podGaugeSpec{
-				desc: prometheus.NewDesc(recordGaugeName, "Test gauge backed by a metric record.", collector.labelNames, nil),
-				read: func(_ *Store, pod *Pod, now time.Time) (float64, bool) {
-					record, ok := pod.Metrics.Load(recordGaugeName)
-					if !ok || record.Value == nil || now.Sub(record.Timestamp) > time.Minute {
-						return 0, false
-					}
-					return record.Value.GetSimpleValue(), true
-				},
-			}
-			if order == "running-first" {
-				collector.gauges = append(collector.gauges, recordGauge)
-			} else {
-				collector.gauges = append([]podGaugeSpec{recordGauge}, collector.gauges...)
-			}
-			registry := prometheus.NewPedanticRegistry()
-			registry.MustRegister(collector)
-			scrape := func() map[string]float64 {
-				t.Helper()
-				families, err := registry.Gather()
-				require.NoError(t, err)
-				values := make(map[string]float64)
-				for _, family := range families {
-					require.Len(t, family.Metric, 1)
-					require.NotNil(t, family.Metric[0].Gauge)
-					values[family.GetName()] = family.Metric[0].GetGauge().GetValue()
+func TestPodGatewayMetricsCollector_PodEligibility(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*v1.Pod)
+		quarantine bool
+	}{
+		{name: "unready", mutate: func(pod *v1.Pod) { pod.Status.Conditions[0].Status = v1.ConditionFalse }},
+		{name: "no-ready-condition", mutate: func(pod *v1.Pod) { pod.Status.Conditions = nil }},
+		{name: "no-ip", mutate: func(pod *v1.Pod) { pod.Status.PodIP = "" }},
+		{name: "terminating", mutate: func(pod *v1.Pod) {
+			now := metav1.Now()
+			pod.DeletionTimestamp = &now
+		}},
+		{name: "draining", mutate: func(pod *v1.Pod) {
+			pod.Annotations = map[string]string{constants.PodDrainingAnnotationKey: "true"}
+		}},
+		{name: "quarantined", quarantine: true},
+	}
+	for _, source := range []string{"snapshot", "reader"} {
+		for _, tt := range tests {
+			t.Run(source+"/"+tt.name, func(t *testing.T) {
+				now := time.Now()
+				store := NewForTest()
+				store.snapshotClock = func() time.Time { return now }
+				original := requestTrackerTestPod("eligible", "inference", "model", "10.0.0.1")
+				store.addPod(original)
+				const key = "inference/eligible"
+				pod, ok := store.metaPods.Load(key)
+				require.True(t, ok)
+				atomic.StoreInt32(&pod.runningRequests, 2)
+				maxAge := remoteRunningMaxAge
+				store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+					entries: map[string][]remoteRunningEntry{key: {{count: 5, readAt: now}}},
+				})
+				if source == "reader" {
+					reader := newRemoteRunningReader(store, time.Second)
+					reader.publish(key, 5, now)
+					store.remoteRunningReader.Store(reader)
+					maxAge = reader.maxAge
 				}
-				return values
-			}
+				handler := runningRequestsMetricsHandler(t, store)
+				scrape := func() map[string]float64 {
+					return runningRequestGaugeSamples(t, handler, original.Namespace, original.Name)
+				}
+				require.Equal(t, map[string]float64{"model": 7}, scrape())
 
-			require.Equal(t, map[string]float64{recordGaugeName: 7}, scrape(), "an unread remote source must not withhold other gauges")
-			store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
-			require.Equal(t, map[string]float64{
-				metrics.RealtimeNumRequestsRunning: 2, recordGaugeName: 7,
-			}, scrape(), "one collector must describe and export both gauge families")
-			now = now.Add(time.Minute + time.Nanosecond)
-			require.Equal(t, map[string]float64{metrics.RealtimeNumRequestsRunning: 2}, scrape(), "an expired record must not expire other gauges")
-			store.metaPods.Delete("inference/multiple-gauges")
-			require.Empty(t, scrape(), "deleted pods must stop contributing")
-		})
+				updated := original.DeepCopy()
+				if tt.mutate != nil {
+					tt.mutate(updated)
+					store.updatePod(original, updated)
+				}
+				checker := &pointerQuarantine{quarantined: tt.quarantine}
+				store.SetPodQuarantineChecker(checker)
+				require.Empty(t, scrape(), "ineligible pods must not look like idle or loaded routing candidates")
+				now = now.Add(maxAge + time.Nanosecond)
+				require.Empty(t, scrape(), "remote expiry must not bring an ineligible pod back as a local-only sample")
+
+				store.ClearPodQuarantineChecker(checker)
+				if tt.mutate != nil {
+					store.updatePod(updated, original)
+				}
+				pod, ok = store.metaPods.Load(key)
+				require.True(t, ok)
+				atomic.StoreInt32(&pod.runningRequests, 0)
+				require.Equal(t, map[string]float64{"model": 0}, scrape(), "a recovered pod exports a valid local zero without another sync")
+			})
+		}
 	}
 }
 
@@ -244,7 +260,7 @@ func TestRunningRequestsGauge_Freshness(t *testing.T) {
 			now := time.Now()
 			store := NewForTest()
 			store.snapshotClock = func() time.Time { return now }
-			pod := namespacedTestPod("inference", "freshness")
+			pod := runningRequestsTestPod("inference", "freshness")
 			pod.Labels = map[string]string{constants.ModelLabelName: "model"}
 			atomic.StoreInt32(&pod.runningRequests, 2)
 			const podKey = "inference/freshness"
@@ -299,14 +315,16 @@ func TestRunningRequestsGauge_Freshness(t *testing.T) {
 
 func TestPodGatewayMetricsCollector_SharedLabels(t *testing.T) {
 	store := NewForTest()
-	pod := namespacedTestPod("inference", "decode-0")
-	pod.Labels = map[string]string{constants.ModelLabelName: "model", constants.ModelLabelEngine: "sglang", "role-name": "decode"}
-	pod.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{
+	original := requestTrackerTestPod("decode-0", "inference", "model", "10.0.0.1")
+	original.Labels = map[string]string{constants.ModelLabelName: "model", constants.ModelLabelEngine: "sglang", "role-name": "decode"}
+	original.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{
 		{Name: "ROLESET_NAME", Value: "group-a"},
 		{Name: "ROLE_NAME", Value: "prefill"},
 		{Name: "ROLE_REPLICA_INDEX", Value: "2"},
 	}}}
-	store.metaPods.Store("inference/decode-0", pod)
+	store.addPod(original)
+	pod, ok := store.metaPods.Load("inference/decode-0")
+	require.True(t, ok)
 	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
 	atomic.StoreInt32(&pod.runningRequests, 8)
 	registry := prometheus.NewPedanticRegistry()
@@ -328,6 +346,31 @@ func TestPodGatewayMetricsCollector_SharedLabels(t *testing.T) {
 		"gateway_pod": metrics.GatewayPodName(),
 	}, labels)
 	require.Equal(t, float64(8), sample.GetGauge().GetValue())
+
+	updated := original.DeepCopy()
+	updated.Labels[constants.ModelLabelName] = "updated-model"
+	updated.Labels[constants.ModelLabelEngine] = "vllm"
+	updated.Labels["role-name"] = "prefill"
+	updated.Spec.Containers[0].Env = []v1.EnvVar{
+		{Name: "ROLESET_NAME", Value: "group-b"},
+		{Name: "ROLE_REPLICA_INDEX", Value: "3"},
+	}
+	store.updatePod(original, updated)
+	families, err = registry.Gather()
+	require.NoError(t, err)
+	require.Len(t, families, 1)
+	require.Len(t, families[0].Metric, 1, "old label combinations must disappear")
+	sample = families[0].Metric[0]
+	labels = make(map[string]string)
+	for _, label := range sample.Label {
+		labels[label.GetName()] = label.GetValue()
+	}
+	require.Equal(t, map[string]string{
+		"namespace": "inference", "pod": "decode-0", "model": "updated-model", "lora_adapter": "",
+		"engine_type": "vllm", "roleset": "group-b", "role": "prefill", "role_replica_index": "3",
+		"gateway_pod": metrics.GatewayPodName(),
+	}, labels, "pod replacement must rebuild all cached metadata labels without another sync")
+	require.Equal(t, float64(8), sample.GetGauge().GetValue())
 }
 
 func TestPodGatewayMetricsCollector_InvalidPods(t *testing.T) {
@@ -335,10 +378,10 @@ func TestPodGatewayMetricsCollector_InvalidPods(t *testing.T) {
 	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
 	store.metaPods.Store("inference/nil", nil)
 	store.metaPods.Store("inference/empty", &Pod{})
-	pod := namespacedTestPod("inference", "invalid-model")
+	pod := runningRequestsTestPod("inference", "invalid-model")
 	pod.Annotations = map[string]string{constants.ModelLabelName: "bad\xffname"}
 	store.metaPods.Store("inference/invalid-model", pod)
-	valid := namespacedTestPod("inference", "valid")
+	valid := runningRequestsTestPod("inference", "valid")
 	valid.Labels = map[string]string{constants.ModelLabelName: "model"}
 	atomic.StoreInt32(&valid.runningRequests, 2)
 	store.metaPods.Store("inference/valid", valid)
@@ -352,27 +395,43 @@ func TestPodGatewayMetricsCollector_InvalidPods(t *testing.T) {
 
 func TestPodGatewayMetricsCollector_ConcurrentUpdatesAndScrapes(t *testing.T) {
 	store := NewForTest()
-	pod := namespacedTestPod("inference", "concurrent")
-	store.metaPods.Store("inference/concurrent", pod)
+	original := requestTrackerTestPod("concurrent", "inference", "model", "10.0.0.1")
+	original.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "ROLESET_NAME", Value: "group-0"}}}}
+	store.addPod(original)
 	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
 	registry := prometheus.NewPedanticRegistry()
 	registry.MustRegister(newPodGatewayMetricsCollector(store))
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		<-start
+		current := original
 		for i := 0; i < 100; i++ {
 			requestID := strconv.Itoa(i)
 			ctx := types.NewRoutingContext(context.Background(), "least-request", "model", "", requestID, "")
-			ctx.SetTargetPod(pod.Pod)
+			ctx.SetTargetPod(current)
 			term := store.AddRequestCount(ctx, requestID, "model")
+			pod, ok := store.metaPods.Load("inference/concurrent")
+			if !ok {
+				t.Error("pod missing before update")
+				return
+			}
 			store.syncRunningRequestsGlobally(pod)
+			updated := current.DeepCopy()
+			updated.Spec.Containers[0].Env[0].Value = "group-" + strconv.Itoa(i%2)
+			updated.Status.Conditions[0].Status = v1.ConditionFalse
+			store.updatePod(current, updated)
+			ready := updated.DeepCopy()
+			ready.Status.Conditions[0].Status = v1.ConditionTrue
+			store.updatePod(updated, ready)
 			store.DoneRequestCount(ctx, requestID, "model", term)
-			store.metaPods.Delete("inference/concurrent")
-			store.metaPods.Store("inference/concurrent", pod)
+			current = ready
 		}
 	}()
 	defer wg.Wait()
+	close(start)
 	for i := 0; i < 100; i++ {
 		families, err := registry.Gather()
 		require.NoError(t, err)
@@ -380,6 +439,9 @@ func TestPodGatewayMetricsCollector_ConcurrentUpdatesAndScrapes(t *testing.T) {
 			for _, sample := range family.Metric {
 				require.GreaterOrEqual(t, sample.GetGauge().GetValue(), float64(0))
 				require.LessOrEqual(t, sample.GetGauge().GetValue(), float64(1))
+				roleset, err := metrics.GetLabelValueForKey(sample, "roleset")
+				require.NoError(t, err)
+				require.Contains(t, []string{"group-0", "group-1"}, roleset)
 			}
 		}
 	}
@@ -438,7 +500,7 @@ func TestInitWithOptions_PodGatewayMetricsCollector(t *testing.T) {
 
 func TestInitPodGatewayMetricsCollector_RegistrationLifecycle(t *testing.T) {
 	store := NewForTest()
-	pod := namespacedTestPod("inference", "registration")
+	pod := runningRequestsTestPod("inference", "registration")
 	store.metaPods.Store("inference/registration", pod)
 	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{})
 	atomic.StoreInt32(&pod.runningRequests, 3)

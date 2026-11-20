@@ -358,7 +358,7 @@ func TestSyncRunningRequestsGloballyExportsGauge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &Store{}
-			pod := namespacedTestPod("inference", "running-gauge-test-"+tt.name)
+			pod := runningRequestsTestPod("inference", "running-gauge-test-"+tt.name)
 			pod.Labels = map[string]string{constants.ModelLabelName: tt.label}
 			pod.Annotations = map[string]string{constants.ModelLabelName: tt.annotation}
 			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
@@ -425,7 +425,7 @@ func TestSyncRunningRequestsGloballyExportsGaugeRemoteReader(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &Store{snapshotClock: func() time.Time { return now }}
-			pod := namespacedTestPod("inference", "running-reader-gauge-test-"+tt.name)
+			pod := runningRequestsTestPod("inference", "running-reader-gauge-test-"+tt.name)
 			const modelName = "reader-model"
 			pod.Labels = map[string]string{constants.ModelLabelName: modelName}
 			pod.runningRequests = tt.local

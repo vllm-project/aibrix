@@ -848,7 +848,9 @@ func (c *Store) runningRequestsEstimate(pod *Pod, now time.Time) (float64, bool)
 
 	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
 	total := localRunning + remoteRunning
-	klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
+	if klog.V(5).Enabled() {
+		klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
+	}
 
 	return total, true
 }
