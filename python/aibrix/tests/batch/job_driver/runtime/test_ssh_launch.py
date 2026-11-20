@@ -131,7 +131,7 @@ async def test_wait_ready_polls_until_200():
         return R()
 
     with patch(
-        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPXClientWrapper.get",
+        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPClient.get",
         new=AsyncMock(side_effect=fake_get),
     ):
         await rt._wait_ready(_handle())
@@ -149,7 +149,7 @@ async def test_wait_ready_times_out():
         return R()
 
     with patch(
-        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPXClientWrapper.get",
+        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPClient.get",
         new=AsyncMock(side_effect=always_503),
     ):
         with pytest.raises(TimeoutError):
@@ -169,7 +169,7 @@ async def test_check_liveness_accepts_healthy_endpoint():
         return R()
 
     with patch(
-        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPXClientWrapper.get",
+        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPClient.get",
         new=AsyncMock(side_effect=healthy),
     ):
         await rt._check_liveness(_handle())
@@ -188,7 +188,7 @@ async def test_check_liveness_rejects_unhealthy_endpoint():
         return R()
 
     with patch(
-        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPXClientWrapper.get",
+        "aibrix.batch.job_driver.runtime.ssh_launch.HTTPClient.get",
         new=AsyncMock(side_effect=unhealthy),
     ):
         with pytest.raises(RuntimeError, match="returned 503"):

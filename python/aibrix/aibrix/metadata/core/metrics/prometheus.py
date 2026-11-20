@@ -21,7 +21,7 @@ from typing import Any
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 from aibrix.logger import init_logger
-from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_tags
+from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_metric_tags
 
 logger = init_logger(__name__)
 
@@ -112,7 +112,7 @@ class PrometheusSink(Sink):
         return tuple(tag.value for tag in tags)
 
     def counter(self, name: str, value: float, *tags: Tag) -> None:
-        normalized = normalize_tags(tags)
+        normalized = normalize_metric_tags(tags)
         metric = self._metric("counter", name, f"Counter for {name}", normalized)
         if metric is None:
             return
@@ -122,7 +122,7 @@ class PrometheusSink(Sink):
         cast_metric.inc(value)
 
     def gauge(self, name: str, value: float, *tags: Tag) -> None:
-        normalized = normalize_tags(tags)
+        normalized = normalize_metric_tags(tags)
         metric = self._metric("gauge", name, f"Gauge for {name}", normalized)
         if metric is None:
             return
@@ -132,7 +132,7 @@ class PrometheusSink(Sink):
         cast_metric.set(value)
 
     def timer(self, name: str, value: float, *tags: Tag) -> None:
-        normalized = normalize_tags(tags)
+        normalized = normalize_metric_tags(tags)
         metric = self._metric("histogram", name, f"Histogram for {name}", normalized)
         if metric is None:
             return
