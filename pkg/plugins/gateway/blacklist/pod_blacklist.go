@@ -182,7 +182,12 @@ type podFailureState struct {
 	// one request never waits for another to finish with the entry. The lock's own counter is
 	// still shared, so many requests asking about the same pod at once still cost on the order
 	// of 100 ns each. Everything that changes the state takes the write lock.
-	mu    sync.RWMutex
+	mu sync.RWMutex
+	// uid is the UID of the pod the state was observed on. A pod recreated under the same
+	// name has a new UID: readers treat the entry as absent for it, and the first write for
+	// it starts the entry over (adoptLocked). Until then the old pod's exclusion still counts
+	// toward excluded and the excluded-pods gauge.
+	uid   string
 	state circuitState
 
 	// tripCount counts consecutive open cycles and drives the backoff. A healthy
@@ -272,6 +277,36 @@ func (state *podFailureState) excludingLocked() bool {
 	return !state.removed && (state.loadExcluded || state.state == circuitOpen || !state.requestBlockedUntil.IsZero())
 }
 
+// adoptLocked starts state over for pod when state was observed on another pod of the same
+// name, so a recreated pod inherits no block, probe or request-failure counts, or backoff
+// from the one it replaced. It is not a recovery: the old pod did not get better. Every
+// writer given the pod calls it first, and ends with syncCountLocked, which takes a
+// cleared exclusion off the count.
+//
+// mu, counted, removed and lastUpdated are kept. Caller must hold state.mu for writing.
+func (state *podFailureState) adoptLocked(pod *v1.Pod) {
+	if state.uid == string(pod.UID) {
+		return
+	}
+	state.uid = string(pod.UID)
+	state.state = circuitClosed
+	state.tripCount = 0
+	state.openUntil = time.Time{}
+	state.openReason = ""
+	state.loadExcluded = false
+	state.probeFailures = 0
+	state.probeDeadSweeps = 0
+	state.probeHealthySweeps = 0
+	state.quarantinedUntil = time.Time{}
+	state.requestBlockedUntil = time.Time{}
+	state.requestBlockReason = ""
+	state.requestFailures = 0
+	state.requestTrips = 0
+	state.requestSuccesses = 0
+	state.lastRequestFailure = time.Time{}
+	state.requestTripEnd = time.Time{}
+}
+
 // lapseLocked closes an open breaker, and a request-failure block, whose block has
 // ended, so the writers that branch on the state see a pod that is already admitted as
 // closed. The trip counts are kept: a pod that is blocked again still escalates its
@@ -299,7 +334,8 @@ func (state *podFailureState) expireRequestLocked(now time.Time) {
 	}
 }
 
-// PodBlacklist is a per-pod exclusion list keyed by namespace/name.
+// PodBlacklist is a per-pod exclusion list keyed by namespace/name. Each entry
+// belongs to the pod UID it was observed on (see podFailureState.uid).
 // Zero value is ready to use. Pods created by a StormService and pods that
 // carry a ModelClaim binding are never tracked (see ignoredPod).
 type PodBlacklist struct {
@@ -633,7 +669,8 @@ func backoffDuration(tripCount int) time.Duration {
 // open with a block that has yet to end, and not blocked by request failures with a
 // block that has yet to end. A pod whose block has ended is a candidate again, with
 // no probe request; the background sweep (or, for a request block, its probation)
-// decides whether it is excluded afresh. It only reads: it takes the entry's read lock and does
+// decides whether it is excluded afresh. An entry observed on another pod UID does
+// not apply. It only reads: it takes the entry's read lock and does
 // not count as a touch, so it does not keep an entry from aging out.
 func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
 	if !Enabled || pod == nil {
@@ -652,7 +689,7 @@ func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	return !state.blocksLocked(time.Now())
+	return state.uid != string(pod.UID) || !state.blocksLocked(time.Now())
 }
 
 // IsBlacklisted is a read-only exclusion check (open breaker, request-failure
@@ -676,7 +713,7 @@ func (b *PodBlacklist) IsBlacklisted(pod *v1.Pod) bool {
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	return state.blocksLocked(time.Now())
+	return state.uid == string(pod.UID) && state.blocksLocked(time.Now())
 }
 
 // IsQuarantined reports whether pod is inside the one-hour block the probe
@@ -699,7 +736,7 @@ func (b *PodBlacklist) IsQuarantined(pod *v1.Pod) bool {
 	}
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	return state.state == circuitOpen && time.Now().Before(state.quarantinedUntil)
+	return state.uid == string(pod.UID) && state.state == circuitOpen && time.Now().Before(state.quarantinedUntil)
 }
 
 // BlacklistReason returns a short human-readable explanation for why pod is
@@ -723,6 +760,9 @@ func (b *PodBlacklist) BlacklistReason(pod *v1.Pod) string {
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
+	if state.uid != string(pod.UID) {
+		return ""
+	}
 
 	var reasons []string
 	if state.loadExcluded {
@@ -782,6 +822,7 @@ func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool
 			return false
 		}
 		state.mu.Lock()
+		state.adoptLocked(pod)
 		changed = state.loadExcluded
 		state.loadExcluded = false
 		state.lastUpdated = time.Now()
@@ -800,6 +841,7 @@ func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool
 		return false
 	}
 	state.mu.Lock()
+	state.adoptLocked(pod)
 	changed = !state.loadExcluded
 	state.loadExcluded = true
 	state.lastUpdated = time.Now()
@@ -819,10 +861,12 @@ func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool
 // neither escalates nor resets the backoff of an unrelated earlier block.
 //
 // The breaker is otherwise unaffected by the informer's delete/re-add cycle (it's
-// keyed by pod name, independent of the cache's *Pod object identity), so a pod
-// already open here means it was excluded for an unrelated reason (e.g. a probe
-// sweep blocked it when this flap happened) -- this only extends openUntil if the
-// new deadline is later.
+// keyed by pod name, independent of the cache's *Pod object identity, and the
+// re-added pod usually has the same UID), so a pod already open here means it was
+// excluded for an unrelated reason (e.g. a probe sweep blocked it when this flap
+// happened) -- this only extends openUntil if the new deadline is later. A pod
+// with a new UID (recreated on the same IP, e.g. with host networking) starts
+// over (adoptLocked).
 func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
 	if !Enabled || pod == nil || ignoredPod(pod) {
 		return
@@ -836,6 +880,7 @@ func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
 	}
 
 	state.mu.Lock()
+	state.adoptLocked(pod)
 	now := time.Now()
 	state.lastUpdated = now
 	state.lapseLocked(now)
@@ -977,6 +1022,7 @@ func (b *PodBlacklist) RecordResponse(pod *v1.Pod, status int) (blocked bool) {
 	func() {
 		defer state.mu.Unlock()
 		defer b.syncCountLocked(state) // deferred after the unlock, so it runs before it
+		state.adoptLocked(pod)
 		now := time.Now()
 		state.lapseLocked(now)
 		if state.blocksLocked(now) {
@@ -1042,6 +1088,7 @@ func (b *PodBlacklist) RecordResponse(pod *v1.Pod, status int) (blocked bool) {
 // ends a quarantine as well.
 func (b *PodBlacklist) recordHealthySweep(pod *v1.Pod, key string, state *podFailureState) {
 	state.mu.Lock()
+	state.adoptLocked(pod)
 	now := time.Now()
 	state.probeFailures = 0
 	state.probeDeadSweeps = 0
@@ -1121,6 +1168,7 @@ func (b *PodBlacklist) RecordProbeResult(pod *v1.Pod, result ProbeResult, failur
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	defer b.syncCountLocked(state) // deferred after the unlock, so it runs before it
+	state.adoptLocked(pod)
 	now := time.Now()
 	state.lastUpdated = now
 	state.lapseLocked(now)

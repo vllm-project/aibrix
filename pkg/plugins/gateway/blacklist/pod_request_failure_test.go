@@ -226,6 +226,35 @@ func TestRecordResponse_BlockEndsOnItsDeadlineAndPodIsOnProbation(t *testing.T) 
 	assert.Contains(t, b.BlacklistReason(pod), "request trip #2")
 }
 
+// A pod recreated under the name of a request-blocked one is a new pod: its failures are
+// counted, not ignored as if it were blocked, and it needs the full threshold.
+func TestRecordResponse_RecreatedPodIsNotBlockedByTheOldPod(t *testing.T) {
+	var b PodBlacklist
+	b.SetRequestFailureThreshold(5)
+	oldPod := blacklistTestPodWithUID("1", "uid-old")
+	require.Equal(t, 1, failTimes(&b, oldPod, 503, 5))
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	assert.True(t, b.Allow(newPod))
+	assert.Empty(t, b.BlacklistReason(newPod))
+	assert.Zero(t, failTimes(&b, newPod, 503, 4))
+	assert.True(t, b.RecordResponse(newPod, 503), "the fifth failure of the new pod blocks it")
+	assert.Contains(t, b.BlacklistReason(newPod), "request trip #1")
+}
+
+// Nor is it on the old pod's probation.
+func TestRecordResponse_RecreatedPodIsNotOnTheOldPodsProbation(t *testing.T) {
+	var b PodBlacklist
+	b.SetRequestFailureThreshold(5)
+	oldPod := blacklistTestPodWithUID("1", "uid-old")
+	require.Equal(t, 1, failTimes(&b, oldPod, 503, 5))
+	endRequestBlock(t, &b, oldPod)
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	assert.False(t, b.RecordResponse(newPod, 503), "one failure does not block a pod that was never blocked")
+	assert.True(t, b.Allow(newPod))
+}
+
 func TestRecordResponse_BackoffDoublesAndIsCapped(t *testing.T) {
 	var b PodBlacklist
 	b.SetRequestFailureThreshold(1)

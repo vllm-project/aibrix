@@ -99,13 +99,16 @@ Which pods it is given depends on the candidate stage (`AIBRIX_ROUTING_CANDIDATE
 | Pod state | `Allow` returns |
 |---|---|
 | No entry, or closed | true |
-| `loadExcluded` set | false (checked first) |
+| Entry for another pod UID | true (checked first) |
+| `loadExcluded` set | false (checked before the breaker) |
 | Open, before its deadline | false |
 | Open, deadline passed | true |
 | Blocked by request failures, before its deadline | false |
 | Blocked by request failures, deadline passed | true (on probation, section 5) |
 
 `IsBlacklisted` is the read-only variant. It reports a pod only while it is load-excluded, open before its deadline, or blocked by request failures before its deadline.
+
+An entry belongs to the pod UID it was observed on. A pod deleted and recreated under the same name (a StatefulSet replica, or a pod recreated by hand) has a new UID and is a new pod: `Allow`, `IsBlacklisted`, `IsQuarantined` and `BlacklistReason` ignore the old pod's entry for it. The first sweep result, load verdict, response or flaky re-add for the new pod starts the entry over, which takes the old pod's exclusion off `excluded` and the excluded-pods gauge (within one 30 s load sweep for a ready pod). That is not reported as a recovery.
 
 **The exclusion cap.** The blacklist may exclude at most `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` (default 50) of the pods a request considers. Past that, `selectTargetPod` routes the request across all of them as if none were excluded, and counts it (`gateway_pod_blacklist_fallback_total{reason="over_cap"}`, with a throttled `too many pods are blacklisted` log line). It is the same fallback as for a model with every pod excluded, extended to most of them: the few pods left would carry all the model's traffic, and a verdict wrong for many pods at once (a network fault on the gateway's side, a probe path that something changed) is more likely than most of a fleet failing together. At the default one pod of two, two of four and three of eight may be excluded; two of three may not. A model with a single pod therefore never excludes it. `100` turns the cap off: only a model with every pod excluded falls back. With the candidate stage the cap is judged on the K candidates a request is given. When they are over it but the ready pods as a whole are not, the stage runs again over the pods that are not excluded; when the ready pods are over it too, the request goes across the candidates. Near the cap a sample can fall either side by chance, so some requests keep their exclusions and some do not.
 
