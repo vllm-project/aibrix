@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -66,6 +67,7 @@ var (
 	httpAddr        string
 	metricsAddr     string // deprecated: use httpAddr
 	standalone      bool
+	checkRedis      bool
 	endpointsConfig string
 	pprofAddr       string
 )
@@ -163,10 +165,47 @@ func (o kubeAPIOptions) applyTo(config *rest.Config) {
 	config.Burst = o.burst
 }
 
+func checkRedisConnectivity(ctx context.Context, retryInterval time.Duration, check func(context.Context) error) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := check(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		klog.Infof("Waiting for Redis: %v", err)
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func runRedisConnectivityCheck(timeout time.Duration) error {
+	if timeout < 0 {
+		return fmt.Errorf("--check-redis-timeout must be nonnegative")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	return checkRedisConnectivity(ctx, 2*time.Second, utils.CheckRedisConnectivity)
+}
+
 func main() {
 	var kubeAPI kubeAPIOptions
 	kubeAPI.addFlags(flag.CommandLine)
 	var modelDiscovery modelDiscoveryOptions
+	var checkRedisTimeout time.Duration
 	modelDiscovery.addFlags(flag.CommandLine)
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
@@ -174,6 +213,9 @@ func main() {
 	flag.BoolVar(&standalone, "standalone", false, "Run in standalone mode without Kubernetes.")
 	flag.StringVar(&pprofAddr, "pprof-bind-address", "localhost:6060",
 		"The address the pprof debug server binds to. Empty disables it.")
+	flag.BoolVar(&checkRedis, "check-redis", false, "Check Redis connectivity and exit without starting the gateway.")
+	flag.DurationVar(&checkRedisTimeout, "check-redis-timeout", 0,
+		"Maximum wait for Redis with --check-redis; 0 waits indefinitely.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
 	klog.InitFlags(flag.CommandLine)
@@ -184,6 +226,13 @@ func main() {
 	}
 	if err := modelDiscovery.validate(); err != nil {
 		klog.Fatal(err)
+	}
+
+	if checkRedis {
+		if err := runRedisConnectivityCheck(checkRedisTimeout); err != nil {
+			klog.Exitf("Redis connectivity check stopped: %v", err)
+		}
+		return
 	}
 
 	// Resolve HTTP bind address: prefer --http-bind-address, fall back to deprecated --metrics-bind-address
@@ -201,7 +250,8 @@ func main() {
 		klog.Fatal("--endpoints-config is required when running in standalone mode")
 	}
 
-	redisClient := utils.GetRedisClient()
+	redisClients := utils.GetRedisClients()
+	redisClient := redisClients.Shared()
 	if redisClient == nil {
 		if standalone {
 			klog.Warning("Running without Redis: rate limiting and user auth disabled")
@@ -210,7 +260,7 @@ func main() {
 		}
 	} else {
 		defer func() {
-			if err := redisClient.Close(); err != nil {
+			if err := redisClients.Close(); err != nil {
 				klog.Warningf("Error closing Redis client: %v", err)
 			}
 		}()
@@ -274,7 +324,7 @@ func main() {
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
 		IsGateway:                    true,
 		EnableKVSync:                 kvSyncEnabled && remoteTokenizerEnabled,
-		RedisClient:                  redisClient,
+		RedisClients:                 redisClients,
 		ModelRouterProvider:          routing.ModelRouterFactory,
 		DiscoveryProvider:            discoveryProvider,
 		DisableModelClaimPodBindings: !standalone && !modelDiscovery.watchModelClaims,
@@ -286,7 +336,7 @@ func main() {
 		klog.Fatalf("failed to listen: %v", err)
 	}
 
-	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gateway.ServerOptions{
+	gatewayServer := gateway.NewServerWithRedisClients(redisClients, k8sClient, gatewayK8sClient, gateway.ServerOptions{
 		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
 		PriorityTier:        utils.LoadEnvBool(envPriorityTierEnabled, false),
 		ModelListMode:       gateway.ModelListMode(modelDiscovery.listMode),

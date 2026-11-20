@@ -22,16 +22,19 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/alicebob/miniredis/v2/server"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -601,6 +604,72 @@ func TestSessionAffinityStartClosesDerivedClientOnStop(t *testing.T) {
 		return errors.Is(derived.Ping(context.Background()).Err(), redis.ErrClosed)
 	}, time.Second, 5*time.Millisecond, "the derived client's pool must be released when the router stops")
 	assert.NoError(t, shared.Ping(context.Background()).Err(), "the shared client belongs to the gateway and must stay usable")
+}
+
+func TestSessionAffinitySentinelSwitchWithReachableOldMaster(t *testing.T) {
+	oldMaster, newMaster, sentinel := miniredis.RunT(t), miniredis.RunT(t), miniredis.RunT(t)
+	oldMaster.RequireAuth("data-password")
+	newMaster.RequireAuth("data-password")
+	var address atomic.Value
+	address.Store(oldMaster.Addr())
+	require.NoError(t, sentinel.Server().Register("SENTINEL", func(c *server.Peer, _ string, args []string) {
+		if len(args) != 2 || args[1] != "mymaster" {
+			c.WriteError("ERR unknown master")
+			return
+		}
+		switch strings.ToLower(args[0]) {
+		case "get-master-addr-by-name":
+			host, port, _ := net.SplitHostPort(address.Load().(string))
+			c.WriteStrings([]string{host, port})
+		case "sentinels":
+			c.WriteLen(0)
+		default:
+			c.WriteError("ERR unsupported Sentinel command")
+		}
+	}))
+	for key, value := range map[string]string{
+		"REDIS_SENTINEL_ENABLED": "true", "REDIS_SENTINEL_MASTER_NAME": "mymaster",
+		"REDIS_SENTINEL_ADDRESSES": sentinel.Addr(), "REDIS_PASSWORD": "data-password",
+		"REDIS_SENTINEL_USERNAME": "", "REDIS_SENTINEL_PASSWORD": "",
+	} {
+		t.Setenv(key, value)
+	}
+	clients := utils.GetRedisClients()
+	shared := clients.Shared()
+	require.NotNil(t, shared)
+	t.Cleanup(func() { _ = shared.Close() })
+	t.Setenv("REDIS_PASSWORD", "wrong-password")
+	t.Setenv("REDIS_SENTINEL_ENABLED", "false")
+	router := &sessionAffinityRouter{}
+	stop := make(chan struct{})
+	router.StartWithRedisClients(stop, clients)
+	t.Cleanup(func() {
+		close(stop)
+		_ = router.redisClient.Close()
+	})
+	cacheKey := sessionCacheKey("model", "session")
+	require.NoError(t, oldMaster.Set(sessionAffinityRedisKey(cacheKey), "old-pod"))
+	require.NoError(t, newMaster.Set(sessionAffinityRedisKey(cacheKey), "new-pod"))
+	ctx := &types.RoutingContext{Model: "model", RequestID: "failover-test"}
+	got, ok := router.readSessionKeyFromRedis(ctx, cacheKey)
+	require.True(t, ok)
+	require.Equal(t, "old-pod", got)
+	router.storeSessionKeyLocal(cacheKey, got, true)
+	oldHost, oldPort, _ := net.SplitHostPort(oldMaster.Addr())
+	newHost, newPort, _ := net.SplitHostPort(newMaster.Addr())
+	address.Store(newMaster.Addr())
+	require.Eventually(t, func() bool {
+		sentinel.Publish("+switch-master", fmt.Sprintf("mymaster %s %s %s %s", oldHost, oldPort, newHost, newPort))
+		value, found := router.readSessionKeyFromRedis(ctx, cacheKey)
+		return found && value == "new-pod"
+	}, 2*time.Second, 10*time.Millisecond)
+	router.syncSessionKeyPodsFromRedis()
+	cached, found := router.sessionKeyPods.Load(cacheKey)
+	require.True(t, found)
+	require.Equal(t, "new-pod", cached.(sessionKeyCacheItem).addr)
+	require.NoError(t, router.redisClient.Set(context.Background(), "after-switch", "new", 0).Err())
+	require.True(t, newMaster.Exists("after-switch"))
+	require.False(t, oldMaster.Exists("after-switch"))
 }
 
 // BenchmarkSessionAffinityRouterConcurrent hammers one router instance from many goroutines at

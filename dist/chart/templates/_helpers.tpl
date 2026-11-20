@@ -188,6 +188,34 @@ Create the name of the metadata service service account
 {{- $builtInRedisEnabled := dig "redis" "enabled" true .Values.metadata -}}
 {{- $sharedEnablePassword := dig "redis" "enablePassword" false .Values.metadata -}}
 {{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}
+{{- $gatewaySentinel := dig "dependencies" "redis" "sentinel" dict .Values.gatewayPlugin -}}
+{{- $gatewaySentinelEnabled := dig "enabled" false $gatewaySentinel -}}
+
+{{- if $gatewaySentinelEnabled -}}
+{{- if and (not (dig "authEnabled" true $gatewaySentinel)) (or (dig "username" "" $gatewaySentinel) (dig "password" "" $gatewaySentinel)) -}}
+{{- fail "gatewayPlugin.dependencies.redis.sentinel.authEnabled=false requires empty Sentinel username and password." -}}
+{{- end -}}
+{{- if $builtInRedisEnabled -}}
+{{- fail "gatewayPlugin.dependencies.redis.sentinel.enabled=true requires metadata.redis.enabled=false." -}}
+{{- end -}}
+{{- if empty (trim (dig "masterName" "" $gatewaySentinel)) -}}
+{{- fail "gatewayPlugin.dependencies.redis.sentinel.masterName is required when Sentinel is enabled." -}}
+{{- end -}}
+{{- if empty (dig "addresses" list $gatewaySentinel) -}}
+{{- fail "gatewayPlugin.dependencies.redis.sentinel.addresses is required when Sentinel is enabled." -}}
+{{- end -}}
+{{- range $address := $gatewaySentinel.addresses -}}
+{{- if not (regexMatch "^([^[:space:]:,]+|\\[[^[:space:]]+\\]):[0-9]+$" $address) -}}
+{{- fail "gatewayPlugin.dependencies.redis.sentinel.addresses must contain host:port addresses." -}}
+{{- end -}}
+{{- end -}}
+{{- $gatewayEnvs := default dict .Values.gatewayPlugin.container.envs -}}
+{{- range $key := list "REDIS_SENTINEL_ENABLED" "REDIS_SENTINEL_MASTER_NAME" "REDIS_SENTINEL_ADDRESSES" "REDIS_SENTINEL_USERNAME" "REDIS_SENTINEL_PASSWORD" -}}
+{{- if hasKey $gatewayEnvs $key -}}
+{{- fail (printf "%s is managed by gatewayPlugin.dependencies.redis.sentinel; do not also set it in container.envs." $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 
 {{- /* Shared Redis password must be non-empty when enablePassword is true */ -}}
 {{- if and $sharedEnablePassword (empty (trim $sharedPassword)) -}}
@@ -200,7 +228,7 @@ Create the name of the metadata service service account
 {{- if empty (trim (dig "service" "redis" "host" "" .Values.metadata)) -}}
   {{- $missingHosts = append $missingHosts "metadata.service.redis.host" -}}
 {{- end -}}
-{{- if empty (trim (dig "dependencies" "redis" "host" "" .Values.gatewayPlugin)) -}}
+{{- if and (not $gatewaySentinelEnabled) (empty (trim (dig "dependencies" "redis" "host" "" .Values.gatewayPlugin))) -}}
   {{- $missingHosts = append $missingHosts "gatewayPlugin.dependencies.redis.host" -}}
 {{- end -}}
 {{- if empty (trim (dig "dependencies" "redis" "host" "" .Values.gpuOptimizer)) -}}
@@ -266,7 +294,44 @@ Return whether the Redis Secret should be rendered.
   (include "aibrix.redis.sharedHasPassword" .)
   (include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "metadataService"))
   (include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin"))
+  (dig "dependencies" "redis" "sentinel" "password" "" .Values.gatewayPlugin)
   (include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gpuOptimizer")) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Use the same Redis environment for Sentinel discovery in the init and gateway containers.
+*/}}
+{{- define "aibrix.gateway.redisSentinelEnv" -}}
+{{- $sentinel := .Values.gatewayPlugin.dependencies.redis.sentinel -}}
+{{- $hasRedisPassword := include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin") -}}
+- name: REDIS_SENTINEL_ENABLED
+  value: "true"
+- name: REDIS_SENTINEL_MASTER_NAME
+  value: {{ $sentinel.masterName | trim | quote }}
+- name: REDIS_SENTINEL_ADDRESSES
+  value: {{ join "," $sentinel.addresses | quote }}
+{{- if and $sentinel.authEnabled $sentinel.username }}
+- name: REDIS_SENTINEL_USERNAME
+  value: {{ $sentinel.username | quote }}
+{{- end }}
+{{- if and $sentinel.authEnabled (or $sentinel.password $hasRedisPassword) }}
+- name: REDIS_SENTINEL_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "aibrix.fullname" . }}-redis
+      {{- if $sentinel.password }}
+      key: gateway-plugin-redis-sentinel-password
+      {{- else }}
+      key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
+      {{- end }}
+{{- end }}
+{{- if $hasRedisPassword }}
+- name: REDIS_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "aibrix.fullname" . }}-redis
+      key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
+{{- end }}
 {{- end -}}
 
 {{/*

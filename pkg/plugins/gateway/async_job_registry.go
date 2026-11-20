@@ -852,11 +852,12 @@ func newRedisAsyncJobStore(client redis.Cmdable) *redisAsyncJobStore {
 // Redis (tests and standalone local development), records live in this process
 // only. Production gateways use the Redis implementation so every replica sees
 // the same records.
-func newAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJobRegistry {
-	if client == nil {
-		return newMemoryAsyncJobRegistry(pods)
+func newAsyncJobRegistryForClients(clients *utils.RedisClients, pods podResolver) (AsyncJobRegistry, *redis.Client) {
+	if clients.Shared() == nil {
+		return newMemoryAsyncJobRegistry(pods), nil
 	}
-	return newRedisAsyncJobRegistry(asyncJobStoreClient(client), pods)
+	client := asyncJobStoreClient(clients)
+	return newRedisAsyncJobRegistry(client, pods), client
 }
 
 // asyncJobStoreClient derives the client the store uses from the gateway's
@@ -868,12 +869,10 @@ func newAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJ
 // budget would mean nothing. The rest of the gateway keeps the shared client's
 // defaults - only this store owns a retry policy of its own.
 //
-// MaxRetries is -1 rather than 0 because go-redis reads 0 as "use the default".
-func asyncJobStoreClient(client *redis.Client) *redis.Client {
-	options := *client.Options()
-	options.MaxRetries = -1
-	options.ContextTimeoutEnabled = true
-	return redis.NewClient(&options)
+// RedisClients translates the effective zero retry count to go-redis's -1 input
+// and constructs an independent Sentinel failover client for this pool.
+func asyncJobStoreClient(clients *utils.RedisClients) *redis.Client {
+	return clients.Derive(&utils.RedisClientSettings{Name: "async-jobs", ContextTimeoutEnabled: true})
 }
 
 // asyncJobRegistry returns the Server's registry, building it on first use. The
@@ -882,7 +881,11 @@ func asyncJobStoreClient(client *redis.Client) *redis.Client {
 func (s *Server) asyncJobRegistry() AsyncJobRegistry {
 	s.asyncJobsOnce.Do(func() {
 		if s.asyncJobs == nil {
-			s.asyncJobs = newAsyncJobRegistryForClient(s.redisClient, s.cache)
+			clients := s.redisClients
+			if clients == nil {
+				clients = utils.NewDirectRedisClients(s.redisClient)
+			}
+			s.asyncJobs, s.asyncRedisClient = newAsyncJobRegistryForClients(clients, s.cache)
 		}
 	})
 	return s.asyncJobs
