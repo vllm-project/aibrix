@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -369,14 +370,41 @@ func (c *Store) updatePodMetrics() {
 	})
 }
 
+// podMetricTarget identifies an engine, not just a Pod. A warm ModelClaim pod
+// can serve multiple independent metrics endpoints, one per active binding.
+type podMetricTarget struct {
+	model string
+	port  int
+}
+
+func podMetricTargets(pod *Pod) []podMetricTarget {
+	bindings := utils.ModelClaimBindingsFromPod(pod.Pod)
+	if len(bindings) == 0 {
+		return []podMetricTarget{{port: getPodMetricPort(pod)}}
+	}
+	targets := make([]podMetricTarget, 0, len(bindings))
+	for model, binding := range bindings {
+		if binding.State == constants.ModelClaimRoutingStateActive && binding.Port > 0 {
+			targets = append(targets, podMetricTarget{model: model, port: binding.Port})
+		}
+	}
+	// Map iteration order must not influence scrape or test ordering.
+	sort.Slice(targets, func(i, j int) bool { return targets[i].model < targets[j].model })
+	return targets
+}
+
 func (c *Store) worker(jobs <-chan *Pod) {
 	for pod := range jobs {
 		c.markPodMetricsInFlight(pod)
-		ctx, cancel := context.WithTimeout(context.Background(), podMetricsFetchTimeout)
-		podMetricPort := getPodMetricPort(pod)
 		func() {
 			defer c.finishPodMetricsScheduling(pod)
-			defer cancel()
+			targets := podMetricTargets(pod)
+			anySuccess := false
+			for _, target := range targets {
+				ctx, cancel := context.WithTimeout(context.Background(), podMetricsFetchTimeout)
+				func() {
+					defer cancel()
+					podMetricPort := target.port
 
 			// Use centralized typed metrics fetcher for better engine abstraction and error handling
 			metricsToFetch := c.getAllAvailableMetrics()
@@ -386,13 +414,41 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
 			if err != nil {
 				metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
-				c.recordPodMetricsFetchFailure(pod, time.Now())
 				klog.V(4).InfoS("Failed to fetch typed metrics from engine pod",
 					"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
 				return
 			}
+			anySuccess = true
 			fetchedAt := time.Now()
-			c.recordPodMetricsFetchSuccess(pod)
+			if target.model != "" {
+				// The endpoint belongs to this exact ModelClaim binding even if
+				// its engine uses a different internal/HF model_name label.
+				remapped := make(map[string]metrics.MetricValue, len(result.ModelMetrics))
+				for key, value := range result.ModelMetrics {
+					_, metricName := parseModelMetricKey(key)
+					if metricName == "" {
+						continue
+					}
+					switch typed := value.(type) {
+					case *metrics.SimpleMetricValue:
+						if typed.Labels != nil {
+							labels := make(map[string]string, len(typed.Labels))
+							for k, v := range typed.Labels { labels[k] = v }
+							labels["model_name"] = target.model
+							typed.Labels = labels
+						}
+					case *metrics.HistogramMetricValue:
+						if typed.Labels != nil {
+							labels := make(map[string]string, len(typed.Labels))
+							for k, v := range typed.Labels { labels[k] = v }
+							labels["model_name"] = target.model
+							typed.Labels = labels
+						}
+					}
+					remapped[target.model+"/"+metricName] = value
+				}
+				result.ModelMetrics = remapped
+			}
 
 			for metricName, metricValue := range result.Metrics {
 				sanitizeMetricValueLabels(pod, metricValue)
@@ -431,7 +487,11 @@ func (c *Store) worker(jobs <-chan *Pod) {
 					// above: those can differ (HF path vs model.aibrix.ai/name),
 					// and RemovePrefix silently no-ops on a (modelName, loraID)
 					// it never subscribed under (review on #2735).
-					if podModelName, ok := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations); ok {
+					podModelName := target.model
+					if podModelName == "" {
+						podModelName, _ = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+					}
+					if podModelName != "" {
 						podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 						c.kvEventManager.CheckSleepStateBackstop(ctx, podKey, podModelName, podLoraID(pod), metricValue.GetSimpleValue())
 					}
@@ -458,6 +518,13 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				"podMetrics", len(result.Metrics),
 				"modelMetrics", len(result.ModelMetrics),
 				"errors", len(result.Errors))
+				}()
+			}
+			if anySuccess {
+				c.recordPodMetricsFetchSuccess(pod)
+			} else if len(targets) > 0 {
+				c.recordPodMetricsFetchFailure(pod, time.Now())
+			}
 		}()
 	}
 }
