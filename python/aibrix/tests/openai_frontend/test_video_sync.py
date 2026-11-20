@@ -40,33 +40,21 @@ JOB = {
 
 
 @pytest.mark.parametrize(
-    "env, engine_env, expected",
+    "env, expected",
     [
-        ({}, {}, "/tmp/storage"),
-        ({"VLLM_OMNI_STORAGE_PATH": "/tmp/legacy"}, {}, "/tmp/legacy"),
-        (
-            {"VLLM_OMNI_SERVER_STORAGE": '{"path":"/tmp/json","file_ttl":null}'},
-            {},
-            "/tmp/json",
-        ),
+        ({}, "/tmp/storage"),
+        ({"VLLM_OMNI_STORAGE_PATH": "/tmp/legacy"}, "/tmp/legacy"),
+        ({"VLLM_OMNI_SERVER_STORAGE": '{"path":"/tmp/json"}'}, "/tmp/json"),
         (
             {
                 "VLLM_OMNI_STORAGE_PATH": "/tmp/legacy",
                 "VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/current",
             },
-            {},
             "/tmp/current",
-        ),
-        (
-            {"VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/current"},
-            {"VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/engine"},
-            "/tmp/engine",
         ),
     ],
 )
-def test_video_storage_path_matches_engine_environment(
-    monkeypatch, env, engine_env, expected
-):
+def test_video_storage_path_matches_engine_environment(monkeypatch, env, expected):
     for key in (
         "VLLM_OMNI_STORAGE_PATH",
         "VLLM_OMNI_SERVER_STORAGE",
@@ -75,12 +63,13 @@ def test_video_storage_path_matches_engine_environment(
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    assert video_sync.video_storage_path(engine_env) == Path(expected).resolve()
+    assert video_sync.video_storage_path() == Path(expected).resolve()
 
 
 @pytest.mark.asyncio
 async def test_video_storage_path_passes_absolute_path_to_engine(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VLLM_OMNI_SERVER_STORAGE__PATH", "/tmp/current")
     engine_env = {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
     engine = ProxyEngine(
         ["unused"], spec=VLLM_OMNI_SPEC, engine_env=engine_env, fetch_media=False
