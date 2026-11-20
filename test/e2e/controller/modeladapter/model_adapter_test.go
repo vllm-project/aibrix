@@ -654,6 +654,11 @@ func TestModelAdapterConcurrentAdaptersShareBaseModelPods(t *testing.T) {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
 			adapterBName, v1.DeleteOptions{})
 	})
+	t.Cleanup(func() {
+		if t.Failed() {
+			dumpGatewayLogs(t, k8sClient)
+		}
+	})
 
 	t.Log("creating two model adapters that target the same base model pods")
 	_, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(),
@@ -668,9 +673,7 @@ func TestModelAdapterConcurrentAdaptersShareBaseModelPods(t *testing.T) {
 	assert.NotEmpty(t, gotA.Status.Instances)
 	assert.NotEmpty(t, gotB.Status.Instances)
 
-	t.Log("running inference against both adapters on the shared pods")
-	validateInference(t, adapterAName)
-	validateInference(t, adapterBName)
+	waitForStableAdapters(t, adapterAName, adapterBName)
 }
 
 // TestModelAdapterDeletionCleansUpOwnedResources verifies that deleting a ModelAdapter
