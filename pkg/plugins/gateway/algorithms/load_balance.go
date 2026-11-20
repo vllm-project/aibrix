@@ -18,7 +18,6 @@ package routingalgorithms
 
 import (
 	"math"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -138,7 +137,7 @@ func (r *loadBalanceRouter) Cache() cache.Cache { return r.cache }
 
 // ScoreAll returns the effective load of each pod (see loadBalanceScore):
 //
-//	(running + λ·queued) / EWMA(output tokens/sec) × (1 + α·(1−kvFree)²)
+//	(running + λ·queued) / EWMA(output tokens per request-second) × (1 + α·(1−kvFree)²)
 //
 // Lower means the pod has more headroom for this request. A pod below the critical free-KV
 // fraction scores +Inf so it is passed over until it recovers.
@@ -212,7 +211,7 @@ func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v
 }
 
 // loadBalanceScore is the effective load of a replica: the work already committed to it, divided by
-// how fast it drains work, inflated as its KV cache fills. capacity is in tokens/sec and kvFree in
+// how fast it drains work, inflated as its KV cache fills. capacity is in output tokens per request-second and kvFree in
 // [0, 1]. Below the critical free-KV fraction the replica is unusable and the score is +Inf.
 // The penalty strength and that fraction are the environment defaults unless the request's
 // model config profile overrides them (see types.RoutingOverrides).
@@ -302,30 +301,30 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 	return ctx.TargetAddress(), nil
 }
 
-// capacities returns each pod's capacity, the observed output tokens/sec (see
-// RealtimeOutputTokenRateEWMA). The gateway learns relative hardware speed from this rather than
-// from pod labels, so a mixed B40/A100/H20 pool needs no configuration.
+// capacities returns each pod's capacity, its observed per-request decode rate: output tokens per
+// second of a request's time on the pod (see RealtimeOutputTokensPerRequestSecondEWMA). The gateway
+// learns relative hardware speed from this rather than from pod labels, so a mixed B40/A100/H20
+// pool needs no configuration. It is not the pod's total tokens/sec: below saturation that grows
+// with the traffic a pod receives, so a pod that got more traffic looked faster and kept getting
+// more (#3450). A saturated pod's requests take longer, so its estimate falls.
 //
 // A pod with no positive estimate yet (just started, or no completed output tokens in the last
 // window) is given the mean of the pods that have one, so it competes as an average replica. A
-// fixed fallback such as 1.0 would be off by the tokens/sec scale (thousands) against measured pods
+// fixed fallback such as 1.0 would be off by the estimate's scale (tens of tokens per request-second) against measured pods
 // and shut the new pod out of the traffic it needs to be measured. With no estimate anywhere every
 // pod gets 1.0, which makes the score plain load × KV penalty.
 //
-// The same uniform 1.0 applies while any candidate is still warming up (see
-// capacityWarmingUp): its estimate covers less than one rate window, so it is not yet comparable
-// with the other pods' estimates.
+// A pod also has no estimate until it has completed a minimum number of requests (see
+// loadBalanceCapacityMinSamples in pkg/cache). That replaced the time-based warm-up of #3459,
+// which gave every candidate the same capacity for a minute after any of them became routable:
+// the per-request rate does not depend on how long a pod's rate history is, so pods that became
+// routable at different times are comparable from the start (see the runs on #3491, made with a
+// v0.8.0 backport of this change).
 func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 	caps := make([]float64, len(pods))
-	if r.capacityWarmingUp(pods, time.Now()) {
-		for i := range caps {
-			caps[i] = 1.0
-		}
-		return caps
-	}
 	sum, known := 0.0, 0
 	for i, pod := range pods {
-		v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokenRateEWMA)
+		v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokensPerRequestSecondEWMA)
 		if err != nil || v == nil {
 			continue
 		}
@@ -346,71 +345,6 @@ func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 		}
 	}
 	return caps
-}
-
-const (
-	loadBalanceCapacityWarmupEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP"
-	// One full window of the rate behind RealtimeOutputTokenRateEWMA (window1mTarget in
-	// pkg/cache/utils.go). Keep the two in step.
-	loadBalanceCapacityWarmupDefault = time.Minute
-)
-
-// loadBalanceCapacityWarmup is how long after a pod becomes routable its capacity estimate is
-// not trusted. Until a pod has a full window of history, its output-token rate is divided by the
-// time since its own first snapshot, not by the window. Pods that became routable at different
-// times therefore divide the same traffic by different lengths of time, and the pod with the
-// shorter history looks faster, attracts more traffic, and its estimate then grows with the
-// traffic it gets. In #3450 a split set in the first ~10 s after a rollout held at 73:27. Once
-// every candidate has a full window the estimates are comparable. On by default; 0 disables it.
-var loadBalanceCapacityWarmup = loadLoadBalanceCapacityWarmup()
-
-// loadLoadBalanceCapacityWarmup reads loadBalanceCapacityWarmupEnv. utils.LoadEnvDuration rejects
-// non-positive values and falls back to the (positive) default, so an explicit "0" has to be
-// handled here for it to be an off switch (same as least-request's ramp window).
-func loadLoadBalanceCapacityWarmup() time.Duration {
-	if d, err := time.ParseDuration(os.Getenv(loadBalanceCapacityWarmupEnv)); err == nil && d == 0 {
-		klog.Infof("set %s: 0, load-balance capacity warm-up disabled", loadBalanceCapacityWarmupEnv)
-		return 0
-	}
-	return utils.LoadEnvDuration(loadBalanceCapacityWarmupEnv, loadBalanceCapacityWarmupDefault)
-}
-
-// capacityWarmingUp reports whether any of pods became routable less than
-// loadBalanceCapacityWarmup ago. It uses the readySince the cache keeps for
-// LeastRequestTopKRouter's ramp, so a cache without it (cache.PodReadySinceProvider), or a pod it
-// has no time for, counts as warm.
-//
-// The window lasts while any candidate is younger than it, so across a rolling update or a
-// scale-up ramp that is the whole rollout plus one window, and a mixed-hardware pool routes
-// without the capacity term for that long.
-//
-// LatestPodReadySince keeps the per-pod read off the hot path once the whole fleet is warm. It
-// is the newest stamp in the whole cache, so a pod becoming routable for any model sends every
-// call down the per-pod read for one window.
-func (r *loadBalanceRouter) capacityWarmingUp(pods []*v1.Pod, now time.Time) bool {
-	window := loadBalanceCapacityWarmup
-	if window <= 0 {
-		return false
-	}
-	provider, ok := r.cache.(cache.PodReadySinceProvider)
-	if !ok {
-		return false
-	}
-	nowNanos := now.UnixNano()
-	if latest := provider.LatestPodReadySince(); latest == 0 || time.Duration(nowNanos-latest) >= window {
-		return false
-	}
-	readySince, err := provider.GetPodsReadySince(pods)
-	if err != nil {
-		return false
-	}
-	for _, pod := range pods {
-		rs := readySince[utils.GeneratePodKey(pod.Namespace, pod.Name)]
-		if rs != 0 && time.Duration(nowNanos-rs) < window {
-			return true
-		}
-	}
-	return false
 }
 
 // kvFreeFraction returns free KV in [0, 1], or NaN as the internal stale-record

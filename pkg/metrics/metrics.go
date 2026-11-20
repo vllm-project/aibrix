@@ -95,8 +95,16 @@ const (
 	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
 	RealtimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
 	// RealtimeOutputTokenRateEWMA is the smoothed rate, in tokens/sec, at which a pod completes
-	// output tokens (pod-scoped, gateway-tracked). It is the capacity signal of the load-balance router.
+	// output tokens (pod-scoped, gateway-tracked). Below saturation it tracks the share of traffic the
+	// pod receives, so load-balance uses RealtimeOutputTokensPerRequestSecondEWMA instead (#3450).
 	RealtimeOutputTokenRateEWMA = "realtime_output_token_rate_ewma"
+	// RealtimeOutputTokensPerRequestSecondEWMA is the smoothed rate, in output tokens per second
+	// of one request's time on the pod, at which a pod decodes (pod-scoped, gateway-tracked):
+	// completed output tokens divided by the time those requests spent on the pod. Unlike
+	// RealtimeOutputTokenRateEWMA it does not grow with the share of traffic a pod receives, and it
+	// falls when requests queue on a saturated pod. It is the capacity signal of the load-balance
+	// router.
+	RealtimeOutputTokensPerRequestSecondEWMA = "realtime_output_tokens_per_request_second_ewma"
 
 	// ModelReplicas tracks ready engine pods backing a model (1 per routable pod).
 	ModelReplicas = "model_replicas"

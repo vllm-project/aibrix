@@ -287,9 +287,13 @@ msgstr "对每个 Pod 打分，并选择得分最低的 Pod："
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:222
 msgid ""
-"``EWMA(output_tokens_per_second)`` is the gateway-observed rate at which "
-"the pod completes output tokens."
-msgstr "``EWMA(output_tokens_per_second)`` 是网关观测到的该 Pod 完成输出 token 的速率。"
+"``EWMA(output_tokens_per_request_second)`` is the gateway-observed per-"
+"request rate of the pod: the output tokens it completed divided by the "
+"time those requests spent on it. It does not grow with the share of "
+"traffic the pod receives."
+msgstr ""
+"``EWMA(output_tokens_per_request_second)`` 是网关观测到的该 Pod 按请求计算的速率：它完成的输出 token "
+"数除以这些请求在该 Pod 上停留的时间。它不会随该 Pod 获得的流量份额增长。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:223
 msgid "``kv_free`` is the pod's free KV-cache fraction."
@@ -335,9 +339,13 @@ msgstr "**缺少 KV 指标：** 引擎未上报 KV cache 使用量，或上报 `
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:231
 msgid ""
-"**No token-rate estimate yet:** the pod is scored at the mean estimate of"
-" the others (uniform capacity when none has one)."
-msgstr "**尚无 token 速率估计：** 该 Pod 按其他 Pod 的平均估计值打分（若都没有估计值，则视为容量一致）。"
+"**No capacity estimate yet** (a new pod, or one with fewer than "
+"``AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES`` completed requests): the pod"
+" is scored at the mean estimate of the others (uniform capacity when none"
+" has one)."
+msgstr ""
+"**尚无容量估计** （新 Pod，或已完成的请求少于 ``AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES`` "
+"个）：该 Pod 按其他 Pod 的平均估计值打分（若都没有估计值，则视为容量一致）。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:232
 msgid ""

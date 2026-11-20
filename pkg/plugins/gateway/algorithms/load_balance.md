@@ -3,7 +3,7 @@
 `load-balance` routes each request to the replica with the lowest **effective load**: the work
 already committed to it, divided by how fast it has been observed to drain work, inflated as its
 KV cache fills. It needs no hardware labels. A mixed B40 / A100 / H20 pool teaches the gateway
-its relative speeds from observed output-token throughput, and faster replicas receive
+its relative speeds from the observed per-request decode rate, and faster replicas receive
 proportionally more traffic.
 
 Source: [load_balance.go](load_balance.go). Environment variables:
@@ -24,7 +24,7 @@ blacklist on or off, and when the blacklist has excluded pods it narrows the pod
 ```
                    running + λ · queued
 score  =  ─────────────────────────────────────  ×  (1 + α · (1 − kvFree)²)
-           EWMA(output tokens completed / sec)
+           EWMA(output tokens per request-second)
 
 kvFree < kvCritical   ⇒   score = +Inf
 ```
@@ -34,13 +34,19 @@ purpose only:
 
 | Part | Question | Source |
 |---|---|---|
-| `EWMA(output tokens/sec)` | How fast does this replica drain work? (**capacity**) | `RealtimeOutputTokenRateEWMA`, derived in the cache from completed output tokens |
+| `EWMA(output tokens per request-second)` | How fast does this replica drain work? (**capacity**) | `RealtimeOutputTokensPerRequestSecondEWMA`, derived in the cache from completed output tokens and the time those requests spent on the pod |
 | `running + λ·queued` | How much work is already committed to it? (**load**) | `GetPodsRunningRequests` (live cross-gateway count); `num_requests_waiting` when `λ > 0` |
 | `1 + α(1 − kvFree)²` | How close is it to memory pressure? (**headroom**) | `kv_cache_usage_perc` (`KVCacheUsagePerc`) |
 
 Capacity and load are kept apart on purpose. A saturated GPU has high token throughput *because*
 it is busy; if throughput were used as "load", the scheduler would send it even more traffic.
 Here throughput only sets the denominator, and load comes from the committed work.
+
+Capacity is a **per-request** rate, not the pod's total tokens/sec. Below saturation a pod's total
+rate is just the traffic it receives: a pod that got more requests completed more tokens, looked
+faster, and kept getting more, so a split set by the first seconds after a rollout never recovered
+(#3450). The per-request rate does not change with the traffic share. It is higher on faster
+hardware, and it falls on a saturated pod whose requests queue.
 
 ### Defaults
 
@@ -56,7 +62,7 @@ queued inside the engine; adding `num_requests_waiting` on top would count them 
 
 ### Worked example
 
-| Replica | Running | Tokens/s | KV free | Calculation | Score |
+| Replica | Running | Capacity | KV free | Calculation | Score |
 |---|---|---|---|---|---|
 | B40 | 30 | 6000 | 50% | 30/6000 × (1 + 2·0.50²) | **0.0075** |
 | A100 | 20 | 4000 | 30% | 20/4000 × (1 + 2·0.70²) | 0.0099 |
@@ -68,23 +74,32 @@ asserted in `TestLoadBalanceScoreAll_HeterogeneousExample`.
 ## Where the capacity signal comes from
 
 ```
-gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens   (monotonic counter)
-                                                    │  every metrics refresh (default 1s)
+gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens     (monotonic counters,
+             time since addPodStats    ──► Pod.completedOutputBusyNanos    same requests)
+                                                    │  every metrics refresh
                                                     ▼
-                          calculateRate1m: tokens/sec over ~1 minute window
+             calculateRate1m of each, same ~1 minute window: tokens / busy seconds
                                                     │
                                                     ▼
-                          EWMA, time constant 10s ──► RealtimeOutputTokenRateEWMA (pod-scoped)
+             EWMA, time constant 10s ──► RealtimeOutputTokensPerRequestSecondEWMA (pod-scoped)
 ```
 
 - The counter is **gateway-tracked**, like `completedRequests`, so it works for every engine
   (vLLM, SGLang, TRT-LLM, xLLM) without depending on engine metric names. Code:
-  `donePodStats` in `pkg/cache/cache_trace.go`, `updateRealtimeOutputTokenRateEWMA` in
-  `pkg/cache/cache_metrics.go`.
+  `donePodStats` in `pkg/cache/cache_trace.go`, `updateRealtimeOutputTokensPerRequestSecondEWMA`
+  in `pkg/cache/cache_metrics.go`.
+- The busy time is from `addPodStats` (the request is counted as running on the pod) to
+  `donePodStats`, so it is the same interval the running count covers.
 - Output tokens are the request's completion-token usage. A request that finishes through the
-  count-only path (no usage available) adds one completion and **zero** tokens.
-- The counter survives a brief pod delete/re-add (informer flap) the same way `completedRequests`
+  count-only path (no usage available) adds one completion and **zero** tokens, and no busy time,
+  so both counters cover the same requests.
+- `RealtimeOutputTokenRateEWMA` (total tokens/sec) is still computed, but no longer read by
+  `load-balance`.
+- The counters survive a brief pod delete/re-add (informer flap) the same way `completedRequests`
   does.
+- No estimate is published until the pod has completed `AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES` requests with known
+  output tokens (default `8`), so the first one or two requests do not set its capacity. The first
+  estimate then covers everything the pod has completed.
 - A window with no completed tokens carries no information about speed (the replica was idle,
   not slow), so the previous estimate is **kept**, not decayed toward zero. Decaying would make a
   briefly idle replica look weak and starve it of the traffic that would re-measure it.
@@ -93,9 +108,8 @@ gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens   (m
 
 | Situation | Behavior |
 |---|---|
-| Pod has no token-rate estimate yet (new pod, or no usage reported) | Scored at the **mean** estimate of the pods that have one, so it competes as an average replica. A fixed fallback such as `1.0` would be off by the tokens/sec scale (thousands) and lock the pod out of the traffic it needs to be measured. |
+| Pod has no capacity estimate yet (new pod, no usage reported, or fewer than `AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES` completed requests, default `8`) | Scored at the **mean** estimate of the pods that have one, so it competes as an average replica. A fixed fallback such as `1.0` would be off by the estimate's scale (tens of tokens per request-second) and lock the pod out of the traffic it needs to be measured. |
 | No pod has an estimate | Every pod gets capacity `1.0`; the score reduces to `running × KV penalty`. |
-| Any candidate became routable less than `AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP` (default `60s`) ago | Every candidate gets capacity `1.0`, as when no pod has an estimate. Until a pod has one full rate window of history its rate is divided by the time since its first snapshot, so pods that became routable at different times are not comparable, and the younger one looks faster (#3450). This lasts for a whole rolling update or scale-up plus the window; a mixed-hardware pool routes without the capacity term for that long. `0` disables it. |
 | Engine reports no fresh KV usage, or `NaN` | Treated as fully free: no penalty and no guardrail. |
 | `kvFree < kvCritical` | Score `+Inf` from `load-balance`. When `load-balance` routes alone this skips the pod entirely until it recovers. When `load-balance` is blended with other strategies (the default — see below), it is only a strong penalty, not a guaranteed exclusion. |
 | **Every** pod is below `kvCritical` | The request is **not** failed. Routing falls back to the tie-break over all pods, which picks the one with the least KV usage. This fallback is specific to `load-balance` routing alone; see below for the blended case. |
@@ -164,6 +178,9 @@ as full rather than producing a negative free fraction.
 At `-v=4` the gateway logs `load_balance_score` once per pod (`running_requests`,
 `capacity`, `kv_free`, and the resulting `score`) and `load_balance_selected` (with the
 winning `score`). `+Inf` scores are logged as strings so klog's JSON formatter does not
-fail. The cache logs `Updating output token rate metric` with the completed token count,
-the 1-minute rate, and the EWMA for each pod. The estimate is stored on the pod as
-`realtime_output_token_rate_ewma`; it is not currently exported as a Prometheus series.
+fail. The cache logs `Updating per-request output token rate metric` with the completed token
+count, the time those requests spent on the pod, the 1-minute rate, and the EWMA for each pod.
+The estimate is stored on the pod as `realtime_output_tokens_per_request_second_ewma`; it is not
+currently exported as a Prometheus series. (`Updating output token rate metric` and
+`realtime_output_token_rate_ewma` are the pod's total tokens/sec, which `load-balance` no longer
+reads.)

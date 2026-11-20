@@ -59,9 +59,9 @@ func newFleetBenchCache(n int) (*cache.Store, []*v1.Pod) {
 		pods[i].Labels = map[string]string{constants.ModelLabelPort: "8000"}
 		// Spread load, capacity and KV usage so that scores do not tie.
 		podMetrics[name] = map[string]metrics.MetricValue{
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: float64(i % 17)},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: float64(1000 + (i*37)%3000)},
-			metrics.KVCacheUsagePerc:            &metrics.SimpleMetricValue{Value: float64((i*13)%80) / 100},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: float64(i % 17)},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: float64(1000 + (i*37)%3000)},
+			metrics.KVCacheUsagePerc:                         &metrics.SimpleMetricValue{Value: float64((i*13)%80) / 100},
 		}
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
