@@ -27,7 +27,6 @@ var (
 	createOpenAIClient      = framework.NewOpenAIClient
 	validateAllPodsAreReady = framework.ValidateAllPodsAreReady
 	waitForInference        = framework.WaitForInference
-	waitForStableInference  = framework.WaitForStableInference
-	dumpGatewayPluginLogs   = framework.DumpGatewayPluginLogs
-	validateInference       = framework.ValidateInference
+	waitForStableAdapters   = framework.WaitForStableAdapterInference
+	dumpGatewayLogs         = framework.DumpGatewayLogs
 )
