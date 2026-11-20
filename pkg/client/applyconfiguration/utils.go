@@ -35,6 +35,8 @@ import (
 func ForKind(kind schema.GroupVersionKind) interface{} {
 	switch kind {
 	// Group=autoscaling, Version=v1alpha1
+	case v1alpha1.SchemeGroupVersion.WithKind("ElasticEPScalingStatus"):
+		return &autoscalingv1alpha1.ElasticEPScalingStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MetricSource"):
 		return &autoscalingv1alpha1.MetricSourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscaler"):
