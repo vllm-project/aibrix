@@ -26,7 +26,7 @@ import (
 
 func TestVLLMAdapterPrepareChatTokenizeRequestTools(t *testing.T) {
 	adapter := newVLLMAdapter("m")
-	messages := []ChatMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}
+	messages := json.RawMessage(`[{"role":"user","content":"hi"}]`)
 
 	t.Run("tools forwarded verbatim", func(t *testing.T) {
 		tools := json.RawMessage(`[{"type":"function","function":{"name":"f","description":"a < b"}}]`)
@@ -49,5 +49,17 @@ func TestVLLMAdapterPrepareChatTokenizeRequestTools(t *testing.T) {
 		var got map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal(body, &got))
 		assert.NotContains(t, got, "tools")
+	})
+
+	t.Run("messages forwarded verbatim", func(t *testing.T) {
+		rawMsgs := json.RawMessage(`[{"role":"assistant","content":null,"reasoning_content":"think","tool_calls":[{"id":"1"}]}]`)
+		req, err := adapter.PrepareTokenizeRequest(TokenizeInput{Type: ChatInput, Messages: rawMsgs})
+		require.NoError(t, err)
+		body, err := json.Marshal(req)
+		require.NoError(t, err)
+
+		var got map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.JSONEq(t, string(rawMsgs), string(got["messages"]))
 	})
 }
