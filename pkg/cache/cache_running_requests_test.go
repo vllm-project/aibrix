@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -31,6 +32,8 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -315,10 +318,65 @@ func TestAdmitRunningRequest_MalformedRepliesFallBackToLocalCount(t *testing.T) 
 
 func TestAdmitPodRunningRequest_MissingPod(t *testing.T) {
 	store := NewForTest()
-	admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 2)
+	admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 2, nil)
 	require.ErrorContains(t, err, "key does not exist in the cache")
 	require.False(t, admitted)
 	require.False(t, counted)
+}
+
+// TestAdmitPodRunningRequest_NilContextSkipsReservation pins the nil-ctx contract: a
+// direct-cache caller passes no routing context that could be stamped, and their request
+// is never tracked, so no unclaim path exists for them (donePodStats reads the claim off
+// the stamped context, and ReleasePodRunningRequest is for a request that reached
+// routing). Reserving before the Redis round trip as if the request were tracked then
+// strands one claimed slot on the pod's local counter for every nil-ctx admit, donePodStats
+// never unwinds it. The nil-ctx path therefore reads the live local count as the script's
+// floor, exactly as this API did before the reservation existed.
+func TestAdmitPodRunningRequest_NilContextSkipsReservation(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		seed     string
+		limit    int64
+		hook     *admitScriptHook
+		admitted bool
+		counted  bool
+	}{
+		{"confirmed admission", "", 4, nil, true, true},
+		{"pod at cap rejects", "4", 4, nil, false, false},
+		{"script unreachable falls back", "", 4, &admitScriptHook{process: failAdmitScript}, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newTestRunningRequestsClient(t)
+			if tt.hook != nil {
+				client.AddHook(*tt.hook)
+			}
+			store := NewForTest()
+			store.redisClient = client
+			pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+			store.addPod(pod)
+			metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+			require.True(t, ok)
+			if tt.seed != "" {
+				seedLiveGateway(t, client)
+				key := runningRequestsKey(testNamespace, testPodName)
+				require.NoError(t, client.HSet(context.Background(), key, runningRequestsGatewayInstanceID, tt.seed).Err())
+			}
+
+			admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, tt.limit, nil)
+			require.NoError(t, err)
+			require.Equal(t, tt.admitted, admitted)
+			require.Equal(t, tt.counted, counted)
+			require.Zero(t, atomic.LoadInt32(&metaPod.runningRequests),
+				"a nil-ctx admit must not leave a claim on the pod's local counter: nothing can unclaim it")
+
+			if tt.admitted && counted {
+				val, err := client.HGet(context.Background(), runningRequestsKey(testNamespace, testPodName),
+					runningRequestsGatewayInstanceID).Result()
+				require.NoError(t, err)
+				require.Equal(t, "1", val, "the script's own +1 for the admitted request must be visible in Redis")
+			}
+		})
+	}
 }
 
 // TestAdmitRunningRequest_ConcurrentCallsNeverExceedLimit is the regression this whole
@@ -442,6 +500,605 @@ func TestAdmitRunningRequest_SelfLiveWithOtherGateways(t *testing.T) {
 	val, err := client.HGet(ctx, key, runningRequestsGatewayInstanceID).Result()
 	require.NoError(t, err)
 	require.Equal(t, "1", val, "self field in hash should be incremented exactly once")
+}
+
+// TestAdmitPodRunningRequest_ConcurrentFallbackNeverExceedsLimit is the fallback
+// counterpart of TestAdmitRunningRequest_ConcurrentCallsNeverExceedLimit: when the admit
+// round trip errors, admitRunningRequest decides from localRunning alone. Before
+// admission-time reservations that fallback admitted every caller that hit it under the
+// cap -- with no slot reservation, concurrent callers before their addPodStats all read
+// the same zero count and a live Redis read does not exist to serialize them, so an
+// expired round trip under a tight limit admitted two requests at once. The under-count
+// behind the flaky e2e in issue #3346
+// (TestModelReplicaRequestsInflightLimit/concurrent_requests_beyond_cap_are_rejected:
+// expected 1 admitted under cap 1, got 2). AdmitPodRunningRequest now claims the slot on
+// the pod's local running-requests counter before the round trip, so concurrent callers
+// serialize on that claim however Redis behaves. Fire far more concurrent callers than
+// the limit, with every admit failing, and arrive at exactly limit admissions.
+func TestAdmitPodRunningRequest_ConcurrentFallbackNeverExceedsLimit(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	// A refused connection, admitScriptDidNotRun's dial error: the script provably never
+	// ran, so there is no half-applied hash state to reason about -- this test is purely
+	// about the fallback decision. The Redis store stays untouched throughout.
+	client.AddHook(admitScriptHook{process: failAdmitScript})
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+
+	const (
+		limit       = 5
+		concurrency = 50
+	)
+	var (
+		admittedCount atomic.Int32
+		sawCounted    atomic.Bool
+		sawUnreserved atomic.Bool
+	)
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(index int) {
+			defer wg.Done()
+			// One routing context per caller: the reservation stamping is per request,
+			// the same as the gateway would hand in (and shared contexts would race the
+			// flags across goroutines).
+			routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model",
+				"", strconv.Itoa(index), "")
+			if ok, counted, _ := store.AdmitPodRunningRequest(testPodName, testNamespace, limit, routingCtx); ok {
+				admittedCount.Add(1)
+				if counted {
+					sawCounted.Store(true)
+				}
+				if !routingCtx.ReplicaInflightReserved {
+					sawUnreserved.Store(true)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	require.False(t, sawCounted.Load(),
+		"with the script provably not running, no admission can be counted in the hash")
+	require.False(t, sawUnreserved.Load(),
+		"every admitted request must hold its reservation for request tracking to skip its increment against")
+	require.EqualValues(t, limit, admittedCount.Load(),
+		"the locally-serialized fallback must still be a hard cap under cap-hitting concurrency")
+
+	// Every admitted request holds exactly one slot on the local counter until request
+	// tracking takes over its bookkeeping; every rejected one must have left no claim.
+	metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+	require.EqualValues(t, limit, atomic.LoadInt32(&metaPod.runningRequests),
+		" admitted requests hold exactly their slots -- no stray claim, none above the admitted count")
+
+	// The script never ran, so nothing may exist in Redis's copy.
+	_, err := client.HGet(context.Background(), runningRequestsKey(testNamespace, testPodName),
+		runningRequestsGatewayInstanceID).Result()
+	require.ErrorIs(t, err, redis.Nil, "no failed admit may have touched the hash")
+}
+
+// TestAdmitPodRunningRequest_FallbackSeesFullyCommittedSlot is the mixed case the
+// concurrent fallback test cannot pin down deterministically: one request admitted
+// through the script (its +1 confirmed in the hash) and then -- with request tracking
+// not having run in between, so the count the fallback will read is exactly the
+// admission reservation -- Redis starts erroring and a second request faces cap 1.
+// The fallback cannot read the hash (that is what falling back means), but the slot's
+// reservation makes the still-running first request visible locally anyway. Without the
+// reservation both requests were admitted at once, which is the over-admission shape
+// the e2e in issue #3346 asserted against.
+func TestAdmitPodRunningRequest_FallbackSeesFullyCommittedSlot(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+	seedLiveGateway(t, client)
+	key := runningRequestsKey(testNamespace, testPodName)
+
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-1", "")
+	admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 1, routingCtx)
+	require.NoError(t, err)
+	require.True(t, admitted)
+	require.True(t, counted)
+	require.True(t, routingCtx.ReplicaInflightReserved)
+	val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, "1", val, "the committed request holds the only slot")
+	metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+	require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests),
+		"the reservation must have made the commit locally visible already, before request tracking runs")
+
+	// From here on every admit round trip errors like a blipped connection.
+	client.AddHook(admitScriptHook{process: failAdmitScript})
+
+	routingCtx2 := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-2", "")
+	admitted2, counted2, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 1, routingCtx2)
+	require.NoError(t, err)
+	require.False(t, admitted2,
+		"the fallback must honor the still-running first request, seen through its admission reservation rather than a (failing) Redis read")
+	require.False(t, counted2)
+	require.False(t, routingCtx2.ReplicaInflightReserved, "a rejected request must not stamp a reservation")
+	val, err = client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, "1", val, "the rejection must not have added anything to the hash")
+	require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests),
+		"the rejected request must not hold a slot that nothing will release")
+}
+
+// TestAdmitPodRunningRequest_ScriptRejectUnclaimsSlot covers the reject half of the slot
+// claim: another gateway already holds the cap, so the script's sum rejects after this
+// gateway already claimed a slot. The claim must be unclaimed, or every rejected local
+// admission would consume cap for a request that was never sent -- and nothing would
+// ever undo that, since addPodStats never runs for a 429'd request.
+func TestAdmitPodRunningRequest_ScriptRejectUnclaimsSlot(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+	seedLiveGateway(t, client)
+	key := runningRequestsKey(testNamespace, testPodName)
+	// This gateway's own field already at the cap, as a committed (counted) admission
+	// that request tracking has not processed yet would look once tracking is done
+	// elsewhere: the next request can only lose by the script's sum.
+	require.NoError(t, client.HSet(context.Background(), key, runningRequestsGatewayInstanceID, 1).Err())
+
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-1", "")
+	admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 1, routingCtx)
+	require.NoError(t, err)
+	require.False(t, admitted)
+	require.False(t, counted, "a rejection never applied the script's +1")
+	require.False(t, routingCtx.ReplicaInflightReserved, "the unclaimed slot must not stamp the rejected request")
+	val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, "1", val, "the rejection must not have applied a second increment to the hash")
+	metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+	require.EqualValues(t, 0, atomic.LoadInt32(&metaPod.runningRequests),
+		"the rollback must have freed the claimed slot")
+
+	// And the pod is admittable again the moment its running count clears.
+	require.NoError(t, client.HSet(context.Background(), key, runningRequestsGatewayInstanceID, 0).Err())
+	routingCtx2 := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-2", "")
+	admitted2, counted2, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 1, routingCtx2)
+	require.NoError(t, err)
+	require.True(t, admitted2)
+	require.True(t, counted2)
+	require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests),
+		"the next admitted request holds its slot again")
+}
+
+// TestReleasePodRunningRequest_UnclaimsAdmissionSlot pairs the release path with its
+// reservation: an admitted-but-untracked request (a replace or prefill failure during
+// route-with-early-admission, before AddRequestCount ever runs) holds both its admitted
+// hash increment and its slot claim, and ReleasePodRunningRequest must undo both.
+func TestReleasePodRunningRequest_UnclaimsAdmissionSlot(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+	seedLiveGateway(t, client)
+	key := runningRequestsKey(testNamespace, testPodName)
+
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-1", "")
+	admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 1, routingCtx)
+	require.NoError(t, err)
+	require.True(t, admitted)
+	require.True(t, counted)
+	metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+	require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests))
+
+	store.ReleasePodRunningRequest(testPodName, testNamespace, counted, routingCtx.ReplicaInflightReservedGen)
+
+	require.EqualValues(t, 0, atomic.LoadInt32(&metaPod.runningRequests),
+		"the released request must not keep its slot claim")
+	val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, "0", val, "the released request must not keep its hash increment either")
+}
+
+// TestAdmitPodRunningRequest_AfterRequestTrackingDoesNotLeakLocalSlot verifies that when a
+// request has already been tracked (e.g. queueRouter / SLO router calling AddRequestCount
+// before admission), AdmitPodRunningRequest skips reserving a local slot and skips setting
+// ReplicaInflightReserved. The local counter must return to baseline upon DoneRequestCount.
+func TestAdmitPodRunningRequest_AfterRequestTrackingDoesNotLeakLocalSlot(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+	seedLiveGateway(t, client)
+
+	metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+
+	t.Run("admitted_after_track", func(t *testing.T) {
+		require.EqualValues(t, 0, atomic.LoadInt32(&metaPod.runningRequests))
+		routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-slo-1", "")
+		routingCtx.SetTargetPod(pod)
+
+		// 1. Initial track (e.g. queueRouter.Route)
+		store.AddRequestCount(routingCtx, routingCtx.RequestID, "test-model")
+		require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests))
+		require.True(t, routingCtx.StatsAdded())
+
+		// 2. Admission runs after track
+		admitted, _, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 2, routingCtx)
+		require.NoError(t, err)
+		require.True(t, admitted)
+		require.False(t, routingCtx.ReplicaInflightReserved, "should skip local reservation because stats already added")
+		require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests), "local counter must not be double-incremented")
+
+		// 3. Downstream AddRequestCount is a deduped no-op
+		store.AddRequestCount(routingCtx, routingCtx.RequestID, "test-model")
+		require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests))
+
+		// 4. DoneRequestCount decrements to baseline
+		store.DoneRequestCount(routingCtx, routingCtx.RequestID, "test-model", 0)
+		require.EqualValues(t, 0, atomic.LoadInt32(&metaPod.runningRequests), "local counter must return to baseline")
+	})
+
+	t.Run("rejected_after_track", func(t *testing.T) {
+		require.EqualValues(t, 0, atomic.LoadInt32(&metaPod.runningRequests))
+		routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-slo-2", "")
+		routingCtx.SetTargetPod(pod)
+
+		// 1. Initial track
+		store.AddRequestCount(routingCtx, routingCtx.RequestID, "test-model")
+		require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests))
+
+		// 2. Admission checks limit 1: pod is already at cap (localRunning is 1 >= limit 1)
+		admitted, _, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 1, routingCtx)
+		require.NoError(t, err)
+		require.False(t, admitted)
+		require.False(t, routingCtx.ReplicaInflightReserved)
+		require.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests))
+
+		// 3. Request finishes after 429
+		store.DoneRequestCount(routingCtx, routingCtx.RequestID, "test-model", 0)
+		require.EqualValues(t, 0, atomic.LoadInt32(&metaPod.runningRequests), "local counter must return to baseline after reject")
+	})
+}
+
+// TestReleasePodRunningRequest_UncountedAdmissionDoesNotDecrementRedis verifies that when
+// admission falls back to the local counter (counted=false, e.g. because the admit script
+// had a dial error), ReleasePodRunningRequest with live Redis unclaims the local counter
+// without decrementing Redis.
+func TestReleasePodRunningRequest_UncountedAdmissionDoesNotDecrementRedis(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+	seedLiveGateway(t, client)
+	key := runningRequestsKey(testNamespace, testPodName)
+
+	// Seed Redis hash field to 2 and local counter to 2 (simulating 2 requests already running)
+	require.NoError(t, client.HSet(context.Background(), key, runningRequestsGatewayInstanceID, "2").Err())
+	metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+	atomic.StoreInt32(&metaPod.runningRequests, 2)
+
+	// Set admitRedisClient to an unreachable client so admitRunningRequest fails with dial error
+	// while store.redisClient remains alive.
+	store.admitRedisClient = redis.NewClient(&redis.Options{
+		Addr:        "127.0.0.1:1", // unreachable port
+		MaxRetries:  -1,
+		DialTimeout: 10 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = store.admitRedisClient.Close() })
+
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-fallback", "")
+	admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 4, routingCtx)
+	require.NoError(t, err)
+	require.True(t, admitted)
+	require.False(t, counted, "admit should be uncounted because script dial failed")
+	require.True(t, routingCtx.ReplicaInflightReserved, "local slot should be claimed")
+	require.EqualValues(t, 3, atomic.LoadInt32(&metaPod.runningRequests), "local counter incremented to 3 by reservation")
+
+	// Redis hash field must still be 2 (the script never ran)
+	val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, "2", val)
+
+	// Release with counted=false: must unclaim local counter without decrementing Redis
+	store.ReleasePodRunningRequest(testPodName, testNamespace, counted, routingCtx.ReplicaInflightReservedGen)
+
+	require.EqualValues(t, 2, atomic.LoadInt32(&metaPod.runningRequests), "local counter must return to 2")
+	valAfter, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, "2", valAfter, "Redis hash field must NOT be decremented when counted=false")
+}
+
+// TestAdmitPodRunningRequest_FlapBranches verifies that when a pod flaps between admission
+// and request tracking:
+// 1. Same generation (resumed): reservation is carried over and addPodStats skips its increment.
+// 2. Fresh generation: reservation is stranded on the orphan, new object tracks normally.
+// 3. Mid-gap snapshot: tracking hits the snapshot before re-add, and re-add resumes with the right count.
+// 4. Concurrent flap under -race with simultaneous admits, tracking, and delete+add.
+func TestAdmitPodRunningRequest_FlapBranches(t *testing.T) {
+	t.Run("same_generation_resumed", func(t *testing.T) {
+		client := newTestRunningRequestsClient(t)
+		seedLiveGateway(t, client)
+		store := NewForTest()
+		store.redisClient = client
+		pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+		store.addPod(pod)
+
+		routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-flap-1", "")
+		admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 2, routingCtx)
+		require.NoError(t, err)
+		require.True(t, admitted)
+		require.True(t, counted)
+		require.True(t, routingCtx.ReplicaInflightReserved)
+		routingCtx.ReplicaInflightAdmitted = counted
+
+		// Delete pod (moved to snapshot with same generation)
+		store.deletePod(pod)
+
+		// Re-add pod within grace with same IP (resumed generation)
+		store.addPod(pod)
+
+		resumedPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+		require.True(t, ok)
+		require.Equal(t, routingCtx.ReplicaInflightReservedGen, resumedPod.statsGeneration)
+
+		// addPodStats skips increment because generation matches
+		routingCtx.SetTargetPod(pod)
+		store.AddRequestCount(routingCtx, routingCtx.RequestID, "test-model")
+		require.EqualValues(t, 1, atomic.LoadInt32(&resumedPod.runningRequests))
+
+		// donePodStats decrements to 0
+		store.DoneRequestCount(routingCtx, routingCtx.RequestID, "test-model", 0)
+		require.EqualValues(t, 0, atomic.LoadInt32(&resumedPod.runningRequests))
+	})
+
+	t.Run("fresh_generation_tracks_normally", func(t *testing.T) {
+		client := newTestRunningRequestsClient(t)
+		seedLiveGateway(t, client)
+		store := NewForTest()
+		store.redisClient = client
+		pod1 := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+		store.addPod(pod1)
+
+		routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-flap-2", "")
+		admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 2, routingCtx)
+		require.NoError(t, err)
+		require.True(t, admitted)
+		require.True(t, counted)
+		require.True(t, routingCtx.ReplicaInflightReserved)
+		routingCtx.ReplicaInflightAdmitted = counted
+		oldGen := routingCtx.ReplicaInflightReservedGen
+
+		// Delete pod1
+		store.deletePod(pod1)
+
+		// Re-add with a DIFFERENT IP to force a fresh generation
+		pod2 := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.2")
+		store.addPod(pod2)
+
+		freshPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+		require.True(t, ok)
+		require.NotEqual(t, oldGen, freshPod.statsGeneration)
+
+		// addPodStats sees generation mismatch, so it does a normal increment
+		routingCtx.SetTargetPod(pod2)
+		store.AddRequestCount(routingCtx, routingCtx.RequestID, "test-model")
+		require.EqualValues(t, 1, atomic.LoadInt32(&freshPod.runningRequests))
+
+		// donePodStats decrements to 0
+		store.DoneRequestCount(routingCtx, routingCtx.RequestID, "test-model", 0)
+		require.EqualValues(t, 0, atomic.LoadInt32(&freshPod.runningRequests))
+	})
+
+	t.Run("mid_gap_snapshot_tracks_and_resumes", func(t *testing.T) {
+		client := newTestRunningRequestsClient(t)
+		seedLiveGateway(t, client)
+		store := NewForTest()
+		store.redisClient = client
+		pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+		store.addPod(pod)
+
+		routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-flap-3", "")
+		admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 2, routingCtx)
+		require.NoError(t, err)
+		require.True(t, admitted)
+		require.True(t, counted)
+		require.True(t, routingCtx.ReplicaInflightReserved)
+		routingCtx.ReplicaInflightAdmitted = counted
+
+		// Delete pod (moved to snapshot with same generation)
+		store.deletePod(pod)
+
+		// AddRequestCount while pod is in snapshot (deleted, not yet re-added)
+		// Hits snap != nil branch in addPodStats: skips increment because generation matches
+		routingCtx.SetTargetPod(pod)
+		store.AddRequestCount(routingCtx, routingCtx.RequestID, "test-model")
+
+		snap, ok := store.recentlyDeletedPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+		require.True(t, ok)
+		require.EqualValues(t, 1, atomic.LoadInt32(&snap.runningRequests))
+
+		// Re-add pod with same IP: resumes from snapshot with runningRequests = 1
+		store.addPod(pod)
+		resumedPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+		require.True(t, ok)
+		require.EqualValues(t, 1, atomic.LoadInt32(&resumedPod.runningRequests))
+
+		// donePodStats decrements to 0
+		store.DoneRequestCount(routingCtx, routingCtx.RequestID, "test-model", 0)
+		require.EqualValues(t, 0, atomic.LoadInt32(&resumedPod.runningRequests))
+	})
+
+	t.Run("concurrent_flap_under_race", func(t *testing.T) {
+		client := newTestRunningRequestsClient(t)
+		seedLiveGateway(t, client)
+		store := NewForTest()
+		store.redisClient = client
+		pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+		store.addPod(pod)
+
+		var wg sync.WaitGroup
+		stopCh := make(chan struct{})
+		var admitCount atomic.Int32
+
+		// Goroutine 1: Flapper (deletes and re-adds pod)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					store.deletePod(pod)
+					time.Sleep(100 * time.Microsecond)
+					store.addPod(pod)
+					time.Sleep(100 * time.Microsecond)
+				}
+			}
+		}()
+
+		// Goroutines 2-6: Concurrent requests
+		for i := 0; i < 5; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+				j := 0
+				for {
+					select {
+					case <-stopCh:
+						return
+					default:
+					}
+					j++
+					reqID := fmt.Sprintf("req-race-%d-%d", workerID, j)
+					ctx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", reqID, "")
+					admitted, counted, _ := store.AdmitPodRunningRequest(testPodName, testNamespace, 10, ctx)
+					if admitted {
+						admitCount.Add(1)
+						ctx.ReplicaInflightAdmitted = counted
+						ctx.SetTargetPod(pod)
+						store.AddRequestCount(ctx, reqID, "test-model")
+						time.Sleep(50 * time.Microsecond)
+						store.DoneRequestCount(ctx, reqID, "test-model", 0)
+					}
+				}
+			}(i)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+		close(stopCh)
+		wg.Wait()
+
+		// Re-add pod if the flapper terminated right after a delete
+		store.addPod(pod)
+
+		require.Greater(t, admitCount.Load(), int32(0), "some requests should have been admitted during the run")
+
+		livePod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+		require.True(t, ok)
+		require.EqualValues(t, 0, atomic.LoadInt32(&livePod.runningRequests), "local counter should return to baseline")
+
+		require.Eventually(t, func() bool {
+			rKey := runningRequestsKey(testNamespace, testPodName)
+			val, err := client.HGet(context.Background(), rKey, runningRequestsGatewayInstanceID).Result()
+			if err == redis.Nil {
+				return true
+			}
+			if err != nil {
+				return false
+			}
+			count, _ := strconv.ParseInt(val, 10, 64)
+			return count == 0
+		}, 2*time.Second, 10*time.Millisecond, "redis field should drain to 0")
+	})
+}
+
+// TestAdmitPodRunningRequest_MissingOnLockedReloadReturnsError verifies that if a pod is present
+// during the initial load but removed before the stripe lock is acquired, AdmitPodRunningRequest
+// returns an error (fail-open) rather than a spurious at-capacity rejection (admitted=false, err=nil).
+func TestAdmitPodRunningRequest_MissingOnLockedReloadReturnsError(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	seedLiveGateway(t, client)
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+
+	key := utils.GeneratePodKey(testNamespace, testPodName)
+	mu := store.podStatsLockFor(key)
+
+	// Hold the stripe lock so AdmitPodRunningRequest blocks after its initial Load.
+	mu.Lock()
+
+	done := make(chan struct{})
+	var (
+		admitted bool
+		counted  bool
+		err      error
+	)
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-miss", "")
+	go func() {
+		admitted, counted, err = store.AdmitPodRunningRequest(testPodName, testNamespace, 10, routingCtx)
+		close(done)
+	}()
+
+	// Give the goroutine a brief moment to execute the initial Load and block on mu.Lock().
+	time.Sleep(10 * time.Millisecond)
+
+	// Delete the pod while the lock is held, so curMeta, ok := c.metaPods.Load(key) returns false.
+	store.metaPods.Delete(key)
+	mu.Unlock()
+
+	<-done
+	require.Error(t, err, "should return an error when pod vanished on locked reload")
+	require.Contains(t, err.Error(), "key does not exist in the cache")
+	require.False(t, admitted)
+	require.False(t, counted)
+	require.False(t, routingCtx.ReplicaInflightReserved)
+}
+
+// TestReleasePodRunningRequest_FreshGenerationIgnored verifies that ReleasePodRunningRequest
+// will not decrement a fresh generation object if the reservation was made on an earlier generation.
+func TestReleasePodRunningRequest_FreshGenerationIgnored(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := NewForTest()
+	store.redisClient = client
+	pod1 := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod1)
+	seedLiveGateway(t, client)
+
+	meta1, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+	oldGen := meta1.statsGeneration
+
+	// Replace pod with fresh generation
+	store.deletePod(pod1)
+	pod2 := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.2")
+	store.addPod(pod2)
+
+	meta2, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+	require.True(t, ok)
+	atomic.StoreInt32(&meta2.runningRequests, 1)
+
+	// Release with oldGen: must not decrement meta2
+	store.ReleasePodRunningRequest(testPodName, testNamespace, false, oldGen)
+	require.EqualValues(t, 1, atomic.LoadInt32(&meta2.runningRequests), "fresh generation counter must not be decremented by stale release")
+}
+
+// TestReserveLocalRunningSlot_ClampsAboveMaxInt32 verifies that limits above math.MaxInt32
+// are clamped to math.MaxInt32 and do not overflow.
+func TestReserveLocalRunningSlot_ClampsAboveMaxInt32(t *testing.T) {
+	pod := &Pod{}
+	local, ok := reserveLocalRunningSlot(pod, math.MaxInt64)
+	require.True(t, ok)
+	require.EqualValues(t, 0, local)
+	require.EqualValues(t, 1, atomic.LoadInt32(&pod.runningRequests))
 }
 
 // writeRunningRequestsLivenessHeartbeat must sync this process's clock-offset

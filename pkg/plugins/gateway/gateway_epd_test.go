@@ -148,7 +148,7 @@ func Test_selectTargetPod_EPlusPD(t *testing.T) {
 			if tt.inflightLimit > 0 {
 				cache := &MockCache{}
 				cache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{}, nil)
-				cache.On("AdmitPodRunningRequest", mock.Anything, "default", tt.inflightLimit).Return(true, true, nil)
+				cache.On("AdmitPodRunningRequest", mock.Anything, "default", tt.inflightLimit, mock.Anything).Return(true, true, nil)
 				server.cache = cache
 				routeCtx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: tt.inflightLimit}
 			}
@@ -190,7 +190,7 @@ func Test_selectTargetPod_EPlusPDFullTargetSkipsEncode(t *testing.T) {
 
 	cache := &MockCache{}
 	cache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{}, nil)
-	cache.On("AdmitPodRunningRequest", mock.Anything, "default", int64(1)).Return(false, false, nil)
+	cache.On("AdmitPodRunningRequest", mock.Anything, "default", int64(1), mock.Anything).Return(false, false, nil)
 	server := &Server{cache: cache, encodeExecutor: encode.NewExecutor(encodeSrv.Client())}
 	routeCtx := types.NewRoutingContext(context.Background(), algo, "qwen-vl", "", "epd-request", "user")
 	defer routeCtx.Delete()

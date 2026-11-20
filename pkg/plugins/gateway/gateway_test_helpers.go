@@ -149,21 +149,23 @@ func (m *MockCache) GetPodRunningRequests(podName string, podNamespace string) (
 
 // AdmitPodRunningRequest defaults to admitting and counting (true, true, nil) without an
 // expectation, mirroring GetPodRunningRequests's harmless-zero-value default -- most tests
-// exercising other behavior don't care about the inflight cap at all.
-func (m *MockCache) AdmitPodRunningRequest(podName string, podNamespace string, limit int64) (bool, bool, error) {
+// exercising other behavior don't care about the inflight cap at all. The routingCtx
+// parameter is where the real cache stamps its admission-time reservation; the mock does
+// nothing with it (it holds no reservation bookkeeping of its own).
+func (m *MockCache) AdmitPodRunningRequest(podName string, podNamespace string, limit int64, routingCtx *types.RoutingContext) (bool, bool, error) {
 	if !m.hasExpectation("AdmitPodRunningRequest") {
 		return true, true, nil
 	}
-	args := m.Called(podName, podNamespace, limit)
+	args := m.Called(podName, podNamespace, limit, routingCtx)
 	return args.Bool(0), args.Bool(1), args.Error(2)
 }
 
 // ReleasePodRunningRequest is a no-op without an expectation, like AdmitPodRunningRequest.
-func (m *MockCache) ReleasePodRunningRequest(podName string, podNamespace string) {
+func (m *MockCache) ReleasePodRunningRequest(podName string, podNamespace string, counted bool, reservedGen int64) {
 	if !m.hasExpectation("ReleasePodRunningRequest") {
 		return
 	}
-	m.Called(podName, podNamespace)
+	m.Called(podName, podNamespace, counted, reservedGen)
 }
 
 func (m *MockCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {

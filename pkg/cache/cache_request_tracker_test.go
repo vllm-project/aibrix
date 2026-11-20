@@ -392,10 +392,17 @@ func TestAdmitPodRunningRequest_TrackerPreservesBaseline(t *testing.T) {
 			require.NoError(t, client.HSet(context.Background(), key, runningRequestsGatewayInstanceID, 3).Err())
 			seedLiveGateway(t, client)
 
-			admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 4)
+			routingCtx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", tt.name, "")
+			routingCtx.SetTargetPod(pod)
+
+			admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 4, routingCtx)
 			require.NoError(t, err)
 			require.True(t, admitted)
 			require.Equal(t, tt.counted, counted)
+			require.True(t, routingCtx.ReplicaInflightReserved,
+				"admission must stamp the reservation whose slot addPodStats skips its increment for")
+			require.Equal(t, metaPod.statsGeneration, routingCtx.ReplicaInflightReservedGen,
+				"the reservation must name the cache object it was claimed on")
 			val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
 			require.NoError(t, err)
 			if counted {
@@ -404,8 +411,7 @@ func TestAdmitPodRunningRequest_TrackerPreservesBaseline(t *testing.T) {
 				require.Equal(t, "3", val)
 			}
 
-			routingCtx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", tt.name, "")
-			routingCtx.SetTargetPod(pod)
+			// The gateway's half of the stamping, as admitReplicaInflight does it.
 			routingCtx.ReplicaInflightAdmitted = counted
 			term := store.AddRequestCount(routingCtx, routingCtx.RequestID, modelName)
 			stats, ok := store.podStats.Load(podStatsAttemptKey(routingCtx, modelName, routingCtx.RequestID))

@@ -302,10 +302,39 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 	}
 	podStats := &podStatsRecord{pod: metaPod, port: port, ctx: ctx, runningReqIncrDone: make(chan struct{})}
 
-	// Update running requests
+	// Update running requests. An admitted request may already hold the slot for this
+	// increment: admission claimed it on the pod's local running-requests counter before
+	// its Redis round trip (AdmitPodRunningRequest's reserveLocalRunningSlot), because
+	// nothing later -- most importantly the Redis-unavailable admission fallback,
+	// between this point and the admit, deciding from the counter alone -- would render
+	// that commit visible in time. Skip this call's own increment for such a request
+	// (counted via load, not add): the claim IS this request's increment, and
+	// donePodStats's single lifetime decrement pairs with it exactly as with the
+	// increment placed here for unreserved requests. The claim carries the
+	// statsGeneration of the object it was made on, so a delete/re-add flap between
+	// admission and this lock either re-surfaces it on whatever this request resolves to
+	// (same-generation snapshot or resumed object -- their counters were copied from the
+	// claim's object at delete, see deletePodLocked, and the reservation is in that copy)
+	// or strands it on the pre-flap object a fresh generation replaced. In the stranded
+	// case the request tracks with a normal increment instead; the orphaned +1 lives on
+	// an object unreachable via metaPods, same as any bookkeeping a genuinely recreated
+	// pod strands.
 	var requests int32
 	if snap != nil {
-		requests = atomic.AddInt32(&snap.runningRequests, 1)
+		if ctx.ReplicaInflightReserved && sameStatsGeneration(ctx.ReplicaInflightReservedGen, snap.statsGeneration) {
+			requests = atomic.LoadInt32(&snap.runningRequests)
+		} else {
+			requests = atomic.AddInt32(&snap.runningRequests, 1)
+		}
+	} else if ctx.ReplicaInflightReserved && sameStatsGeneration(ctx.ReplicaInflightReservedGen, metaPod.statsGeneration) {
+		requests = atomic.LoadInt32(&metaPod.runningRequests)
+		metricName := metrics.RealtimeNumRequestsRunning
+		if port > 0 {
+			metricName = metricName + "/" + strconv.Itoa(port)
+		}
+		if err := c.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+			klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID, err)
+		}
 	} else {
 		requests = atomic.AddInt32(&metaPod.runningRequests, 1)
 		metricName := metrics.RealtimeNumRequestsRunning
