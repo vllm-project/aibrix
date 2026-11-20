@@ -342,8 +342,28 @@ func TestRelocationCleanupRechecksOwnershipBeforeStopping(t *testing.T) {
 			now = now.Add(time.Minute)
 			r.reconcileRelocationCleanup(ctx, pm.Namespace, candidates, newRuntimeReadings(runtime))
 			assert.Empty(t, runtime.deactivateCalls)
+			if scenario == "claim read failed" {
+				// A failed authoritative read breaks the chain of observations.
+				r.APIReader = nil
+				now = now.Add(time.Minute)
+				r.reconcileRelocationCleanup(ctx, pm.Namespace, candidates, newRuntimeReadings(runtime))
+				assert.Empty(t, runtime.deactivateCalls)
+				now = now.Add(time.Minute)
+				r.reconcileRelocationCleanup(ctx, pm.Namespace, candidates, newRuntimeReadings(runtime))
+				assert.Equal(t, []string{source.Status.PodIP}, runtime.deactivatedOn)
+			}
 		})
 	}
+}
+
+func TestRelocatedFromRequiresClaimAndAuthoritativeList(t *testing.T) {
+	owner := claimWithCost(300, 100)
+	owner.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "warm-target"}}
+	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*owner}}
+
+	assert.True(t, relocatedFrom(owner, "warm-source", servedModelName(owner), claims))
+	assert.False(t, relocatedFrom(owner, "warm-source", servedModelName(owner), nil))
+	assert.False(t, relocatedFrom(nil, "warm-source", servedModelName(owner), claims))
 }
 
 func TestReconcileSaysWakingOnlyForTheCallThatWokeTheEngine(t *testing.T) {

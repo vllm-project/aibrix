@@ -1017,18 +1017,6 @@ msgid ""
 " asks again."
 msgstr "否则，它会等待空间，最多等五分钟，之后的下一个请求会再次请求唤醒。"
 
-#: ../../source/features/model-serving/model-claim.rst:576
-msgid ""
-"If a model moves and stopping the old engine fails, the replacement can "
-"still serve. The controller retries cleanup when successive runtime "
-"snapshots show that the old engine still belongs to the claim and the "
-"claim is assigned to another Pod. The old Pod cannot take new models "
-"until that engine has exited."
-msgstr ""
-"模型迁移后，如果停止旧引擎失败，新引擎仍可提供服务。"
-"当运行时的连续快照显示旧引擎仍属于该 Claim，且 Claim 已分配到另一个 Pod 时，"
-"控制器会重试清理。旧引擎退出前，原 Pod 不会接纳新模型。"
-
 #: ../../source/features/model-serving/model-claim.rst:494
 msgid ""
 "In such a pool, a new claim that no Pod has room for can get room too. "
