@@ -48,6 +48,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
 )
 
 func Test_ValidateRoutingStrategy(t *testing.T) {
@@ -851,6 +852,59 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPRouteStatus_ParentReadiness(t *testing.T) {
+	const model = "model"
+	parent := func(conditions ...metav1.Condition) gatewayv1.RouteParentStatus {
+		return gatewayv1.RouteParentStatus{Conditions: conditions}
+	}
+	accepted := metav1.Condition{
+		Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue, Reason: "ControllerAccepted",
+	}
+	resolved := metav1.Condition{
+		Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionTrue, Reason: "ReferencesVerified",
+	}
+	pending := metav1.Condition{Type: resolved.Type, Status: metav1.ConditionUnknown, Reason: "Pending"}
+	programmed := metav1.Condition{Type: "Programmed", Status: metav1.ConditionTrue, Reason: "Programmed"}
+
+	for _, tc := range []struct {
+		name    string
+		parents []gatewayv1.RouteParentStatus
+		wantErr string
+	}{
+		{name: "no parents", wantErr: "no parent reports"},
+		{
+			name:    "unrelated condition",
+			parents: []gatewayv1.RouteParentStatus{parent(programmed)},
+			wantErr: "no parent reports",
+		}, {
+			name:    "conditions on different parents",
+			parents: []gatewayv1.RouteParentStatus{parent(accepted), parent(resolved)},
+			wantErr: "no parent reports",
+		}, {
+			name:    "unknown condition",
+			parents: []gatewayv1.RouteParentStatus{parent(accepted, pending)},
+			wantErr: "Pending",
+		}, {
+			name:    "one ready parent",
+			parents: []gatewayv1.RouteParentStatus{parent(), parent(accepted, resolved), parent()},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "aibrix-system", Name: utils.ModelRouterName(model)},
+			}
+			route.Status.Parents = tc.parents
+			s := &Server{gatewayClient: gatewayfake.NewSimpleClientset(route)}
+			err := s.validateHTTPRouteStatus(context.Background(), model)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestValidateHTTPRouteStatus_StandaloneModeSkipsValidation(t *testing.T) {
 	s := &Server{gatewayClient: nil}
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "any-model"))
@@ -868,9 +922,11 @@ func TestValidateHTTPRouteStatus_CachesResult(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:   string(gatewayv1.RouteConditionAccepted),
 						Reason: string(gatewayv1.RouteReasonAccepted),
+						Status: metav1.ConditionTrue,
 					}, {
 						Type:   string(gatewayv1.RouteConditionResolvedRefs),
 						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+						Status: metav1.ConditionTrue,
 					}},
 				}},
 			},
@@ -906,9 +962,11 @@ func TestValidateHTTPRouteStatus_CacheExpiry(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:   string(gatewayv1.RouteConditionAccepted),
 						Reason: string(gatewayv1.RouteReasonAccepted),
+						Status: metav1.ConditionTrue,
 					}, {
 						Type:   string(gatewayv1.RouteConditionResolvedRefs),
 						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+						Status: metav1.ConditionTrue,
 					}},
 				}},
 			},
@@ -954,9 +1012,11 @@ func TestValidateHTTPRouteStatus_ContextErrorNotCached(t *testing.T) {
 							Conditions: []metav1.Condition{{
 								Type:   string(gatewayv1.RouteConditionAccepted),
 								Reason: string(gatewayv1.RouteReasonAccepted),
+								Status: metav1.ConditionTrue,
 							}, {
 								Type:   string(gatewayv1.RouteConditionResolvedRefs),
 								Reason: string(gatewayv1.RouteReasonResolvedRefs),
+								Status: metav1.ConditionTrue,
 							}},
 						}},
 					},
@@ -997,9 +1057,11 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:   string(gatewayv1.RouteConditionAccepted),
 						Reason: string(gatewayv1.RouteReasonAccepted),
+						Status: metav1.ConditionTrue,
 					}, {
 						Type:   string(gatewayv1.RouteConditionResolvedRefs),
 						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+						Status: metav1.ConditionTrue,
 					}},
 				}},
 			},
@@ -1023,26 +1085,35 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 	mockHTTP.AssertExpectations(t)
 }
 
+func TestValidateHTTPRouteStatus_EmptyParentsRecover(t *testing.T) {
+	checkHTTPRouteErrorExpiry(t, &gatewayv1.HTTPRoute{})
+}
+
 func TestValidateHTTPRouteStatus_UnresolvedRouteErrorExpires(t *testing.T) {
+	invalidRoute := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
+			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionFalse, Reason: "BackendNotFound",
+			}}}},
+		}},
+	}
+	checkHTTPRouteErrorExpiry(t, invalidRoute)
+}
+
+func checkHTTPRouteErrorExpiry(t *testing.T, invalidRoute *gatewayv1.HTTPRoute) {
+	t.Helper()
 	mockGW := &MockGatewayClient{}
 	mockGWV1 := &MockGatewayV1Client{}
 	mockHTTP := &MockHTTPRouteClient{}
 	mockGW.On("GatewayV1").Return(mockGWV1).Twice()
 	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
 
-	invalidRoute := &gatewayv1.HTTPRoute{
-		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
-			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
-				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: "BackendNotFound",
-			}}}},
-		}},
-	}
 	validRoute := &gatewayv1.HTTPRoute{
 		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
 			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
-				Type: string(gatewayv1.RouteConditionAccepted), Reason: string(gatewayv1.RouteReasonAccepted),
+				Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue, Reason: string(gatewayv1.RouteReasonAccepted),
 			}, {
-				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: string(gatewayv1.RouteReasonResolvedRefs),
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionTrue, Reason: string(gatewayv1.RouteReasonResolvedRefs),
 			}}}},
 		}},
 	}
@@ -1051,6 +1122,9 @@ func TestValidateHTTPRouteStatus_UnresolvedRouteErrorExpires(t *testing.T) {
 
 	s := &Server{gatewayClient: mockGW, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
 	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
+	entry, ok := s.httprouteCache.Load("unresolved-route")
+	require.True(t, ok, "pending status should use the error cache")
+	require.Error(t, entry.(httpRouteCacheEntry).err)
 	time.Sleep(5 * time.Millisecond)
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
 
