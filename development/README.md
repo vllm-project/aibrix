@@ -224,22 +224,5 @@ generation and verification targets and include the resulting generated files
 in the change. Do not hand-edit generated files unless the generator explicitly
 requires it.
 
-Use the toolchain declared in `go.mod` when building and running the pinned
-Kubernetes generators. Their dependencies may not compile with newer Go
-versions. The code-generation script does not require the checkout or worktree
-directory to be named `aibrix`.
-
-On macOS, if a generator fails with `missing LC_UUID load command`, rebuild
-that same generator version with the external linker. For the currently
-declared toolchain, run:
-
-```bash
-GOTOOLCHAIN=go1.22.6 GOFLAGS=-ldflags=-linkmode=external make generate
-```
-
-An existing generator binary is not rebuilt automatically. Use a fresh
-`LOCALBIN` directory or remove only the affected cached generator before
-retrying. The same environment settings apply to `make test` and `make verify`.
-
 See the [test guide](../test/README.md) for test setup and execution, and the
 [documentation guide](../docs/README.md) for translation and HTML checks.
