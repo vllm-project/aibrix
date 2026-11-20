@@ -105,7 +105,14 @@ class ProxyProcess:
         self.proc = subprocess.Popen(
             cmd,
             cwd=PKG_ROOT,
-            env={**os.environ, "PYTHONPATH": PKG_ROOT, "PYTHONUNBUFFERED": "1"},
+            env={
+                **os.environ,
+                "PYTHONPATH": PKG_ROOT,
+                "PYTHONUNBUFFERED": "1",
+                "VLLM_OMNI_SERVER_STORAGE__PATH": os.path.join(
+                    tmp_dir, "video-storage"
+                ),
+            },
             stdout=self._log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -688,3 +695,30 @@ class TestStreamingMultipartCrossProcess:
             timeout=30,
         )
         assert r.status_code == 200 and r.json()["sha256"] == sha
+
+
+class TestVideoSyncMultipartCrossProcess:
+    def test_persists_video_with_ordered_inputs(self, ready_proxy, tmp_path):
+        output_dir = tmp_path / "videos"
+        output = json.dumps({"url": str(output_dir)})
+        response = httpx.post(
+            f"{ready_proxy.url}/v1/videos/sync",
+            files=[
+                ("model", (None, "minimax-h3")),
+                ("input_references", ("first.png", b"first", "image/png")),
+                ("input_references", ("second.png", b"second", "image/png")),
+                ("output", (None, output)),
+            ],
+            timeout=30,
+        )
+        assert response.status_code == 200, response.text
+        (artifact,) = response.json()["output"]["artifacts"]
+        media = (output_dir / artifact).read_bytes()
+        assert media.startswith(b"\x00\x00\x00\x18ftypmp42")
+        payload = json.loads(media[12:])
+        assert payload["model"] == "minimax-h3"
+        assert [ref["filename"] for ref in payload["references"]] == [
+            "first.png",
+            "second.png",
+        ]
+        assert ready_proxy.metric("proxy_in_flight_requests") == 0

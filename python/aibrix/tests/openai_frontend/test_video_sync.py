@@ -16,6 +16,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import httpcore
 import httpx
@@ -36,6 +37,51 @@ JOB = {
     "stage_durations": {"diffusion": 1.1},
     "peak_memory_mb": 2000.0,
 }
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({}, "/tmp/storage"),
+        ({"VLLM_OMNI_STORAGE_PATH": "/tmp/legacy"}, "/tmp/legacy"),
+        ({"VLLM_OMNI_SERVER_STORAGE": '{"path":"/tmp/json"}'}, "/tmp/json"),
+        (
+            {
+                "VLLM_OMNI_STORAGE_PATH": "/tmp/legacy",
+                "VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/current",
+            },
+            "/tmp/current",
+        ),
+    ],
+)
+def test_video_storage_path_matches_engine_environment(monkeypatch, env, expected):
+    for key in (
+        "VLLM_OMNI_STORAGE_PATH",
+        "VLLM_OMNI_SERVER_STORAGE",
+        "VLLM_OMNI_SERVER_STORAGE__PATH",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert video_sync.video_storage_path() == Path(expected).resolve()
+
+
+@pytest.mark.asyncio
+async def test_video_storage_path_passes_absolute_path_to_engine(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VLLM_OMNI_SERVER_STORAGE__PATH", "/tmp/current")
+    engine_env = {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
+    engine = ProxyEngine(
+        ["unused"], spec=VLLM_OMNI_SPEC, engine_env=engine_env, fetch_media=False
+    )
+    try:
+        assert engine._video_storage_path == tmp_path / "videos"
+        assert engine._subprocess._env["VLLM_OMNI_SERVER_STORAGE__PATH"] == str(
+            tmp_path / "videos"
+        )
+        assert engine_env == {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
+    finally:
+        await engine.aclose()
 
 
 def make_request(messages):

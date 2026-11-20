@@ -204,6 +204,7 @@ class OutputWriter:
         sources: Optional[SourceIdentities] = None,
         *,
         processor_workdir: Optional[Path] = None,
+        media_types: Optional[dict[str, str]] = None,
     ) -> tuple[OutputResponse, int]:
         """Copy explicitly declared local media; HTTP multi-file outputs use ZIP.
 
@@ -236,7 +237,9 @@ class OutputWriter:
                     total += len(data)
                 for index, path in enumerate(dict.fromkeys(media_paths)):
                     source = Path(path)
-                    media_type = mimetypes.guess_type(source.name)[0] or ""
+                    media_type = (media_types or {}).get(path) or (
+                        mimetypes.guess_type(source.name)[0] or ""
+                    )
                     # Archives are allowed only when produced inside this request's
                     # processor workspace; never broaden engine output discovery.
                     archive_suffix = next(
@@ -294,6 +297,8 @@ class OutputWriter:
                     suffix = (
                         archive_suffix if processor_archive else source.suffix.lower()
                     )
+                    if not suffix and media_types and path in media_types:
+                        suffix = mimetypes.guess_extension(media_type) or ""
                     artifact_name = f"{Path(name).stem}-{index}{suffix}"
                     entries.append((artifact_name, reader, media_type))
                     total += info.st_size
