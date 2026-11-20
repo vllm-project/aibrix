@@ -19,12 +19,14 @@ import json
 import logging
 import os
 import uuid
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import quote
 
 import anyio
 import httpx
 
+from aibrix.openai_frontend.schemas.generation import VideoSyncResult
 from aibrix.openai_frontend.utils.utils import ServerError
 from aibrix.runtime.downloaders import await_thread_completion
 
@@ -34,6 +36,22 @@ VIDEO_SYNC_TIMEOUT_SECONDS = float(os.getenv("VLLM_OMNI_VIDEO_SYNC_TIMEOUT", "36
 VIDEO_JOB_ID_TIMEOUT_SECONDS = 10.0
 VIDEO_DELETE_TIMEOUT_SECONDS = 30.0
 VIDEO_POLL_INTERVAL_SECONDS = 0.5
+
+
+def video_storage_path(engine_env: Optional[dict[str, str]] = None) -> Path:
+    """Resolve the file backend settings inherited by the local Omni process."""
+    env = {key.upper(): value for key, value in os.environ.items()}
+    env.update({key.upper(): value for key, value in (engine_env or {}).items()})
+    storage = json.loads(env.get("VLLM_OMNI_SERVER_STORAGE", "{}"))
+    if not isinstance(storage, dict):
+        raise ValueError("VLLM_OMNI_SERVER_STORAGE must be a JSON object")
+    path = env.get(
+        "VLLM_OMNI_SERVER_STORAGE__PATH",
+        env.get("VLLM_OMNI_STORAGE_PATH", storage.get("path", "/tmp/storage")),
+    )
+    if not isinstance(path, str):
+        raise ValueError("vLLM-Omni storage path must be a string")
+    return Path(path).resolve()
 
 
 class VideoSyncJob:
@@ -47,6 +65,7 @@ class VideoSyncJob:
         self._create_scope = anyio.CancelScope()
         self._create_task: Optional[asyncio.Task[httpx.Response]] = None
         self._job: dict[str, Any] = {}
+        self._job_id: Optional[str] = None
         self._path: Optional[str] = None
 
     async def _create(self, *, query: str, **kwargs: Any) -> httpx.Response:
@@ -59,6 +78,7 @@ class VideoSyncJob:
                     job_id = self._job.get("id")
                     if not isinstance(job_id, str) or not job_id:
                         raise ServerError("Inner engine returned no video job ID")
+                    self._job_id = job_id
                     self._path = f"/v1/videos/{quote(job_id, safe='')}"
                     logger.info("Synchronous video uses internal job %s", job_id)
                 return response
@@ -76,7 +96,33 @@ class VideoSyncJob:
             pass
         raise ServerError("Inner engine returned invalid video job metadata")
 
-    async def run(self, *, query: str, **kwargs: Any) -> httpx.Response:
+    def local_output(self, storage_path: Path) -> VideoSyncResult:
+        video_id = self._job_id
+        if (
+            not isinstance(video_id, str)
+            or not video_id
+            or Path(video_id).name != video_id
+            or video_id in (".", "..")
+        ):
+            raise ServerError("Inner engine returned an invalid video storage key")
+        path = storage_path / video_id
+        try:
+            if not path.lstat().st_size:
+                raise ServerError("Inner engine returned an empty video")
+        except OSError as exc:
+            raise ServerError(
+                f"Inner engine video output is unavailable: {path}"
+            ) from exc
+        # Omni saves under the job ID; file_name is only the download label.
+        return VideoSyncResult(file_path=str(path))
+
+    async def run(
+        self,
+        *,
+        query: str,
+        return_metadata: Optional[Callable[[], bool]] = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
         self._create_task = asyncio.create_task(self._create(query=query, **kwargs))
         try:
             with anyio.fail_after(VIDEO_SYNC_TIMEOUT_SECONDS):
@@ -138,6 +184,9 @@ class VideoSyncJob:
                             )
                         finally:
                             await await_thread_completion(response.aclose())
+
+                if return_metadata is not None and return_metadata():
+                    return response
 
                 headers = {
                     "X-Request-Id": f"video_sync-{uuid.uuid4().hex}",

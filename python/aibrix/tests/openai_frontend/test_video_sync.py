@@ -16,6 +16,10 @@
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import httpcore
 import httpx
@@ -36,6 +40,82 @@ JOB = {
     "stage_durations": {"diffusion": 1.1},
     "peak_memory_mb": 2000.0,
 }
+
+
+@pytest.mark.parametrize(
+    "env, engine_env, expected",
+    [
+        ({}, {}, "/tmp/storage"),
+        ({"VLLM_OMNI_STORAGE_PATH": "/tmp/legacy"}, {}, "/tmp/legacy"),
+        (
+            {"VLLM_OMNI_SERVER_STORAGE": '{"path":"/tmp/json","file_ttl":null}'},
+            {},
+            "/tmp/json",
+        ),
+        (
+            {
+                "VLLM_OMNI_STORAGE_PATH": "/tmp/legacy",
+                "VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/current",
+            },
+            {},
+            "/tmp/current",
+        ),
+        (
+            {"VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/current"},
+            {"VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/engine"},
+            "/tmp/engine",
+        ),
+    ],
+)
+def test_video_storage_path_matches_engine_environment(
+    monkeypatch, env, engine_env, expected
+):
+    for key in (
+        "VLLM_OMNI_STORAGE_PATH",
+        "VLLM_OMNI_SERVER_STORAGE",
+        "VLLM_OMNI_SERVER_STORAGE__PATH",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert video_sync.video_storage_path(engine_env) == Path(expected).resolve()
+
+
+@pytest.mark.asyncio
+async def test_video_storage_path_survives_engine_directory_change(
+    monkeypatch, tmp_path
+):
+    frontend_dir = tmp_path / "frontend"
+    engine_dir = tmp_path / "engine"
+    frontend_dir.mkdir()
+    engine_dir.mkdir()
+    monkeypatch.chdir(frontend_dir)
+    engine_env = {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
+    engine = ProxyEngine(
+        ["unused"], spec=VLLM_OMNI_SPEC, engine_env=engine_env, fetch_media=False
+    )
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os; from pathlib import Path; "
+                "path = Path(os.environ['VLLM_OMNI_SERVER_STORAGE__PATH']); "
+                "path.mkdir(parents=True, exist_ok=True); "
+                "path.joinpath('video_gen_test').write_bytes(b'mp4')",
+            ],
+            cwd=engine_dir,
+            env={**os.environ, **(engine._subprocess._env or {})},
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+        assert engine._video_storage_path == frontend_dir / "videos"
+        assert (frontend_dir / "videos" / "video_gen_test").read_bytes() == b"mp4"
+        assert not (engine_dir / "videos").exists()
+        assert engine_env == {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
+    finally:
+        await engine.aclose()
 
 
 def make_request(messages):

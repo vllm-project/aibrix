@@ -81,7 +81,6 @@ from aibrix.openai_frontend.proxy.output.multipart_output import (
     MultipartOutputExtractor,
 )
 from aibrix.openai_frontend.proxy.output.output_writer import (
-    OUTPUT_CHUNK_SIZE_BYTES,
     OutputWriteError,
     OutputWriter,
     SourceIdentities,
@@ -107,7 +106,10 @@ from aibrix.openai_frontend.proxy.runtime.video_job import (
     VideoJobContext,
     VideoOutputJob,
 )
-from aibrix.openai_frontend.proxy.runtime.video_sync import VideoSyncJob
+from aibrix.openai_frontend.proxy.runtime.video_sync import (
+    VideoSyncJob,
+    video_storage_path,
+)
 from aibrix.openai_frontend.proxy.runtime.ws_bridge import (
     bridge_websocket,
     deny_websocket,
@@ -126,6 +128,7 @@ from aibrix.openai_frontend.schemas.generation import (
     VideoResponse,
     VideoStatus,
     VideoSyncOutputResponse,
+    VideoSyncResult,
     output_media_paths,
 )
 from aibrix.openai_frontend.schemas.openai import (
@@ -563,6 +566,15 @@ class ProxyEngine(LLMEngine):
         if not math.isfinite(video_output_timeout) or video_output_timeout <= 0:
             raise ValueError("video_output_timeout must be a finite positive number")
         self._spec = spec or EngineSpec(name="default")
+        self._video_storage_path = (
+            video_storage_path(engine_env) if self._spec.name == "vllm-omni" else None
+        )
+        if self._video_storage_path is not None:
+            # Keep the shared directory stable if the engine script changes cwd.
+            engine_env = {
+                **(engine_env or {}),
+                "VLLM_OMNI_SERVER_STORAGE__PATH": str(self._video_storage_path),
+            }
         self._processor_registry = processor_registry or ProcessorRegistry()
         self._enable_processors = enable_processors
         self._processor_executor = ProcessorExecutor(
@@ -1140,6 +1152,10 @@ class ProxyEngine(LLMEngine):
                     raw_resp = (
                         await video_job.run(
                             query=f"?{request.url.query}" if request.url.query else "",
+                            return_metadata=lambda: (
+                                form_fields is not None
+                                and form_fields.output_request() is not None
+                            ),
                             **kwargs,
                         )
                         if video_job is not None
@@ -1149,8 +1165,20 @@ class ProxyEngine(LLMEngine):
                     if form_fields is not None:
                         output = form_fields.output_request()
                         if output is not None:
-                            result = await self._persist_multipart_video(
-                                req_id, output, raw_resp, model=form_fields.model
+                            if video_job is None:
+                                raise ClientError(
+                                    "Synchronous video output requires the vllm-omni proxy spec"
+                                )
+                            assert self._video_storage_path is not None
+                            result = await self._persist_output(
+                                req_id,
+                                output,
+                                raw_resp,
+                                video_job.local_output(self._video_storage_path),
+                                envelope={
+                                    "id": f"video-{uuid.uuid4().hex}",
+                                    "model": form_fields.model,
+                                },
                             )
                 if scope.cancel_called or raw_resp is None:
                     raise ClientDisconnect()
@@ -1221,81 +1249,6 @@ class ProxyEngine(LLMEngine):
             ):
                 raise self._engine_lost_error(req_id, label) from None
             raise
-
-    async def _persist_multipart_video(
-        self,
-        req_id: str,
-        spec: OutputRequest,
-        raw_resp: httpx.Response,
-        *,
-        model: Optional[str],
-    ) -> JSONResponse:
-        """Own the response and temporary MP4 until persistence has settled."""
-        try:
-            media_type = raw_resp.headers.get("content-type", "").split(";")[0]
-            if media_type.strip().lower() != "video/mp4":
-                raise ServerError(
-                    "Video output persistence requires a video/mp4 engine response"
-                )
-            expected_length = raw_resp.headers.get("content-length")
-            if expected_length is not None:
-                try:
-                    expected_bytes = int(expected_length)
-                    if expected_bytes < 0:
-                        raise ValueError
-                except ValueError:
-                    raise ServerError("Invalid video response Content-Length") from None
-            else:
-                expected_bytes = None
-            # Only the generated MP4 is spooled for the existing output writer.
-            # Request uploads are streamed directly without temporary files.
-            # The shared writer owns its readers and waits for storage workers
-            # before cleaning the source on cancellation.
-            with tempfile.TemporaryDirectory(prefix="aibrix-video-sync-") as workdir:
-                source = Path(workdir) / "video.mp4"
-                total = 0
-                with source.open("wb") as target:
-                    async for chunk in raw_resp.aiter_bytes(
-                        chunk_size=OUTPUT_CHUNK_SIZE_BYTES
-                    ):
-                        await await_thread_completion(
-                            asyncio.to_thread(target.write, chunk)
-                        )
-                        total += len(chunk)
-                if not total:
-                    raise ServerError("Inner engine returned an empty video")
-                # Content-Length counts encoded transport bytes, including when
-                # aiter_bytes has decompressed the MP4 for storage.
-                if (
-                    expected_bytes is not None
-                    and raw_resp.num_bytes_downloaded != expected_bytes
-                ):
-                    raise ServerError("Inner engine returned an incomplete video")
-                receipt_id = f"video-{uuid.uuid4().hex}"
-                result = await self._write_output(
-                    req_id,
-                    spec,
-                    f"{receipt_id}.json",
-                    None,
-                    [str(source)],
-                    {},
-                )
-            receipt = VideoSyncOutputResponse(
-                id=receipt_id,
-                model=model,
-                created=int(time.time()),
-                output=result,
-            )
-            logger.info("[req-%s] saved synchronous video %s", req_id, receipt_id)
-            return JSONResponse(
-                receipt.model_dump(mode="json"), status_code=raw_resp.status_code
-            )
-        except (httpx.RequestError, httpx.DecodingError, OSError) as exc:
-            raise ServerError(
-                f"Failed to receive video output: {type(exc).__name__}: {exc}"
-            ) from exc
-        finally:
-            await await_thread_completion(raw_resp.aclose())
 
     async def forward_websocket(self, path: str, websocket: "WebSocket") -> None:
         """Bridge a client WebSocket to the engine's WebSocket (realtime).
@@ -2455,6 +2408,11 @@ class ProxyEngine(LLMEngine):
             )
         response_id = envelope.get("id") if isinstance(envelope, dict) else None
         name = f"{_safe_name(response_id) or req_id}.json"
+        writer_options: Dict[str, Any] = {}
+        if processor_dir is not None:
+            writer_options["processor_workdir"] = Path(processor_dir.name)
+        if isinstance(parsed, VideoSyncResult):
+            writer_options["media_types"] = {parsed.file_path: "video/mp4"}
         result = await self._write_output(
             req_id,
             spec,
@@ -2462,12 +2420,16 @@ class ProxyEngine(LLMEngine):
             content,
             media_paths,
             sources,
-            **(
-                {"processor_workdir": Path(processor_dir.name)}
-                if processor_dir is not None
-                else {}
-            ),
+            **writer_options,
         )
+        if isinstance(parsed, VideoSyncResult):
+            receipt = VideoSyncOutputResponse(
+                id=envelope["id"],
+                model=envelope.get("model"),
+                created=int(time.time()),
+                output=result,
+            )
+            return JSONResponse(receipt.model_dump(mode="json"), raw_resp.status_code)
         if result_schema is None:
             for key in payload:
                 envelope[key] = []
@@ -2519,6 +2481,7 @@ class ProxyEngine(LLMEngine):
         sources: Optional[SourceIdentities],
         *,
         processor_workdir: Optional[Path] = None,
+        media_types: Optional[Dict[str, str]] = None,
     ) -> OutputResponse:
         """Write the payload and its declared media, owning cleanup either way."""
         scheme = urlparse(spec.url).scheme.lower() or "file"
@@ -2526,6 +2489,11 @@ class ProxyEngine(LLMEngine):
         outcome = "error"
         try:
             if media_paths or sources:
+                writer_options: Dict[str, Any] = {}
+                if processor_workdir is not None:
+                    writer_options["processor_workdir"] = processor_workdir
+                if media_types is not None:
+                    writer_options["media_types"] = media_types
                 try:
                     result, output_bytes = await self._output_writer.write_bundle(
                         spec,
@@ -2533,11 +2501,7 @@ class ProxyEngine(LLMEngine):
                         name,
                         media_paths,
                         sources,
-                        **(
-                            {"processor_workdir": processor_workdir}
-                            if processor_workdir is not None
-                            else {}
-                        ),
+                        **writer_options,
                     )
                 finally:
                     if sources is not None:

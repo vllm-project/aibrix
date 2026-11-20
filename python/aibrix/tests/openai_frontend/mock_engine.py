@@ -27,16 +27,17 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 app = FastAPI()
 _stream_gates: dict[str, asyncio.Event] = {}
-_video_jobs: dict[str, bytes] = {}
+_video_jobs: dict[str, Path] = {}
 app.last_chat_request = None  # type: ignore[attr-defined]
 app.allowed_media_dir = None  # type: ignore[attr-defined]
 
@@ -216,12 +217,19 @@ async def video_sync(request: Request):
             "output": form.get("output"),
         }
     job_id = f"video_gen_{uuid4().hex}"
-    _video_jobs[job_id] = b"\x00\x00\x00\x18ftypmp42" + json.dumps(result).encode()
+    storage_path = Path(
+        os.environ.get("VLLM_OMNI_SERVER_STORAGE__PATH", "/tmp/storage")
+    )
+    storage_path.mkdir(parents=True, exist_ok=True)
+    path = storage_path / job_id
+    path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + json.dumps(result).encode())
+    _video_jobs[job_id] = path
     return JSONResponse(
         {
             "id": job_id,
             "status": "completed",
             "model": result["model"],
+            "file_name": f"{job_id}.mp4",
             "inference_time_s": 0.0,
         }
     )
@@ -231,13 +239,17 @@ async def video_sync(request: Request):
 async def video_content(job_id: str):
     if job_id not in _video_jobs:
         return JSONResponse({"detail": "unknown video"}, status_code=404)
-    return Response(_video_jobs[job_id], media_type="video/mp4")
+    return FileResponse(
+        _video_jobs[job_id], media_type="video/mp4", filename=f"{job_id}.mp4"
+    )
 
 
 @app.delete("/v1/videos/{job_id}")
 async def delete_video(job_id: str):
-    if _video_jobs.pop(job_id, None) is None:
+    path = _video_jobs.pop(job_id, None)
+    if path is None:
         return JSONResponse({"detail": "unknown video"}, status_code=404)
+    path.unlink(missing_ok=True)
     return JSONResponse({"deleted": True})
 
 

@@ -106,7 +106,14 @@ class ProxyProcess:
         self.proc = subprocess.Popen(
             cmd,
             cwd=PKG_ROOT,
-            env={**os.environ, "PYTHONPATH": PKG_ROOT, "PYTHONUNBUFFERED": "1"},
+            env={
+                **os.environ,
+                "PYTHONPATH": PKG_ROOT,
+                "PYTHONUNBUFFERED": "1",
+                "VLLM_OMNI_SERVER_STORAGE__PATH": os.path.join(
+                    tmp_dir, "video-storage"
+                ),
+            },
             stdout=self._log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

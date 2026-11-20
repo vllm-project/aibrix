@@ -121,6 +121,12 @@ class VideoSyncOutputResponse(BaseModel):
     output: OutputResponse
 
 
+class VideoSyncResult(BaseModel):
+    """Local video selected by the synchronous vLLM-Omni job adapter."""
+
+    file_path: str = Field(json_schema_extra={OUTPUT_MEDIA: "video"})
+
+
 class VideoResponse(SglangVideoResponseFields):
     model_config = ConfigDict(extra="allow")
 

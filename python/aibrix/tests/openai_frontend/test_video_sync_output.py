@@ -15,7 +15,6 @@
 """Persistence boundaries for streamed multipart synchronous video requests."""
 
 import asyncio
-import gzip
 import json
 import tempfile
 import time
@@ -31,8 +30,9 @@ from starlette.requests import Request
 from aibrix.openai_frontend.engine.proxy_engine import EngineState, ProxyEngine
 from aibrix.openai_frontend.frontend.fastapi_frontend import FastApiFrontend
 from aibrix.openai_frontend.proxy.output.output_writer import OutputWriter
+from aibrix.openai_frontend.proxy.runtime import video_sync
 from aibrix.openai_frontend.proxy.runtime.engine_spec import VLLM_OMNI_SPEC
-from aibrix.openai_frontend.utils.utils import ClientError
+from aibrix.openai_frontend.utils.utils import ClientError, ServerError
 from aibrix.storage.types import StorageType
 
 PATH = "/v1/videos/sync?flag=a%2Fb&flag=c"
@@ -42,21 +42,18 @@ VIDEO = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom\x00\xffvideo"
 @pytest_asyncio.fixture
 async def harness(monkeypatch, tmp_path):
     h = SimpleNamespace(
+        video_id="video_gen_1",
+        file_state="regular",
+        storage_type=StorageType.TOS,
+        calls=[],
         content=VIDEO,
         status=200,
-        response_headers={
-            "content-type": "video/mp4",
-            "content-length": str(len(VIDEO)),
-            "content-disposition": 'attachment; filename="../../engine.mp4"',
-        },
-        read_error=False,
         pause_receive=False,
         pause_upload=False,
         reject_upload=False,
         forwarded=[],
         upload_chunks=[],
         deleted=[],
-        streams=[],
         directories=[],
         objects={},
         forwarding=asyncio.Event(),
@@ -65,6 +62,9 @@ async def harness(monkeypatch, tmp_path):
         release_receive=asyncio.Event(),
         release_upload=asyncio.Event(),
     )
+    h.storage_path = tmp_path / "omni"
+    h.storage_path.mkdir()
+    h.source = h.storage_path / h.video_id
     directory_factory = tempfile.TemporaryDirectory
 
     def directory(*args, **kwargs):
@@ -80,6 +80,7 @@ async def harness(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tempfile, "TemporaryDirectory", directory)
     monkeypatch.setattr(tempfile, "TemporaryFile", no_upload_spooling)
+    monkeypatch.setattr(video_sync, "VIDEO_POLL_INTERVAL_SECONDS", 0)
 
     async def put_object(key, data, **kwargs):
         h.uploading.set()
@@ -91,35 +92,22 @@ async def harness(monkeypatch, tmp_path):
         return True
 
     store = SimpleNamespace(
-        get_type=lambda: StorageType.TOS,
+        get_type=lambda: h.storage_type,
         bucket_name="bucket",
         put_object=put_object,
     )
     h.engine = ProxyEngine(
         ["unused"],
         spec=VLLM_OMNI_SPEC,
+        engine_env={"VLLM_OMNI_SERVER_STORAGE__PATH": str(h.storage_path)},
         fetch_media=False,
         output_writer=OutputWriter(storage_factory=lambda: store),
     )
     h.engine._set_state(EngineState.READY)
 
-    class Body(httpx.AsyncByteStream):
-        closed = False
-
-        async def __aiter__(self):
-            yield h.content[:7]
-            h.receiving.set()
-            if h.pause_receive:
-                await h.release_receive.wait()
-            if h.read_error:
-                raise httpx.RemoteProtocolError("incomplete video response")
-            yield h.content[7:]
-
-        async def aclose(self):
-            self.closed = True
-
     class Transport(httpx.AsyncBaseTransport):
         async def handle_async_request(self, request):
+            h.calls.append((request.method, request.url.path))
             if request.method == "POST":
                 chunks = []
                 async for chunk in request.stream:
@@ -130,26 +118,49 @@ async def harness(monkeypatch, tmp_path):
                     (request.url.raw_path, dict(request.headers), b"".join(chunks))
                 )
                 if h.status == 200:
+                    h.video_id = (
+                        f"video_gen_{len(h.forwarded)}"
+                        if h.file_state != "unsafe"
+                        else "../outside"
+                    )
+                    h.source = h.storage_path / f"video_gen_{len(h.forwarded)}"
                     return httpx.Response(
                         200,
                         json={
-                            "id": f"video_gen_{len(h.forwarded)}",
-                            "status": "completed",
-                            "model": "engine-model",
-                            "inference_time_s": 1.25,
+                            "id": h.video_id,
+                            "status": "queued",
                         },
                     )
+                return httpx.Response(
+                    h.status,
+                    content=h.content,
+                    headers={"content-type": "application/json"},
+                )
             elif request.method == "DELETE":
                 h.deleted.append(request.url.path)
+                h.source.unlink(missing_ok=True)
                 return httpx.Response(200, json={"deleted": True})
             else:
-                assert (
-                    request.url.path
-                    == f"/v1/videos/video_gen_{len(h.forwarded)}/content"
+                assert not request.url.path.endswith("/content")
+                h.receiving.set()
+                if h.pause_receive:
+                    await h.release_receive.wait()
+                if h.file_state == "symlink":
+                    target = tmp_path / "outside.mp4"
+                    target.write_bytes(VIDEO)
+                    h.source.symlink_to(target)
+                elif h.file_state != "missing":
+                    h.source.write_bytes(b"" if h.file_state == "empty" else h.content)
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": h.video_id,
+                        "status": "completed",
+                        "model": "engine-model",
+                        "file_name": "download-label.mp4",
+                        "inference_time_s": 1.25,
+                    },
                 )
-            stream = Body()
-            h.streams.append(stream)
-            return httpx.Response(h.status, headers=h.response_headers, stream=stream)
 
     h.engine._subprocess._client = httpx.AsyncClient(
         transport=Transport(), base_url="http://inner"
@@ -205,25 +216,25 @@ async def harness(monkeypatch, tmp_path):
     assert not h.engine._in_flight
     assert not h.engine._request_done
     assert not h.engine._stream_closers
-    assert all(stream.closed for stream in h.streams)
     assert all(not path.exists() for path in h.directories)
     assert len(h.deleted) == (len(h.forwarded) if h.status == 200 else 0)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("destination", ["local", "tos"])
-@pytest.mark.parametrize("encoded", [False, True])
+@pytest.mark.parametrize("destination", ["local", "tos", "s3"])
 @pytest.mark.parametrize("chunk_size", [7, None])
 async def test_video_sync_persists_complete_mp4(
-    harness, tmp_path, destination, encoded, chunk_size
+    harness, tmp_path, destination, chunk_size
 ):
     h = harness
-    output = str(tmp_path / "out") if destination == "local" else "tos://bucket/run"
+    output = (
+        str(tmp_path / "out")
+        if destination == "local"
+        else f"{destination}://bucket/run"
+    )
+    if destination == "s3":
+        h.storage_type = StorageType.S3
     h.set_form(json.dumps({"url": output}))
-    if encoded:
-        h.content = gzip.compress(VIDEO)
-        h.response_headers["content-encoding"] = "gzip"
-        h.response_headers["content-length"] = str(len(h.content))
 
     async def chunks():
         for offset in range(0, len(h.body), chunk_size):
@@ -238,6 +249,7 @@ async def test_video_sync_persists_complete_mp4(
     assert set(receipt) == {"id", "model", "created", "output"}
     assert receipt["id"].startswith("video-")
     assert UUID(receipt["id"].removeprefix("video-")).version == 4
+    assert receipt["id"] != h.video_id
     assert receipt["model"] == "minimax-h3"
     assert started_at <= receipt["created"] <= int(time.time())
     assert receipt["output"]["url"] == output
@@ -253,7 +265,13 @@ async def test_video_sync_persists_complete_mp4(
     assert path == PATH.replace("/sync", "").encode() and body == h.body
     assert headers["content-type"] == h.headers["content-type"]
     assert headers["content-length"] == h.headers["content-length"]
-    assert h.directories and not h.engine._in_flight
+    assert not h.directories and not h.engine._in_flight
+    assert h.calls == [
+        ("POST", "/v1/videos"),
+        ("GET", "/v1/videos/video_gen_1"),
+        ("DELETE", "/v1/videos/video_gen_1"),
+    ]
+    assert not h.source.exists()
 
 
 @pytest.mark.asyncio
@@ -264,7 +282,7 @@ async def test_video_sync_waits_for_upload_and_uses_unique_names(harness):
     try:
         await asyncio.wait_for(h.uploading.wait(), 2)
         assert not task.done() and h.engine._in_flight
-        assert list(h.directories[0].glob("*.mp4"))
+        assert h.source.read_bytes() == VIDEO and not h.deleted
         h.release_upload.set()
         first = await asyncio.wait_for(task, 2)
         second = await h.client.post(PATH, content=h.body, headers=h.headers)
@@ -381,24 +399,14 @@ async def test_video_sync_last_output_field_wins(harness):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "failure", ["upstream", "type", "empty", "truncated", "read", "upload", "bucket"]
-)
+@pytest.mark.parametrize("failure", ["upstream", "empty", "upload", "bucket"])
 async def test_video_sync_failure_never_returns_a_receipt(harness, failure):
     h = harness
-    if failure in {"upstream", "type"}:
+    if failure == "upstream":
         h.content = b'{"detail":"generation failed"}'
-        h.response_headers["content-type"] = "application/json"
-        h.response_headers["content-length"] = str(len(h.content))
-        if failure == "upstream":
-            h.status = 422
+        h.status = 422
     elif failure == "empty":
         h.content = b""
-        h.response_headers["content-length"] = "0"
-    elif failure == "truncated":
-        h.response_headers["content-length"] = str(len(VIDEO) + 1)
-    elif failure == "read":
-        h.read_error = True
     elif failure == "upload":
         h.reject_upload = True
     else:
@@ -414,12 +422,12 @@ async def test_video_sync_failure_never_returns_a_receipt(harness, failure):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["receive", "upload"])
+@pytest.mark.parametrize("phase", ["generation", "upload"])
 async def test_video_sync_cancellation_cleans_only_after_work_settles(harness, phase):
     h = harness
-    h.pause_receive = phase == "receive"
+    h.pause_receive = phase == "generation"
     h.pause_upload = phase == "upload"
-    entered = h.receiving if phase == "receive" else h.uploading
+    entered = h.receiving if phase == "generation" else h.uploading
     task = asyncio.create_task(h.client.post(PATH, content=h.body, headers=h.headers))
     try:
         await asyncio.wait_for(entered.wait(), 2)
@@ -430,12 +438,13 @@ async def test_video_sync_cancellation_cleans_only_after_work_settles(harness, p
             task.cancel()
             await asyncio.sleep(0)
             assert not task.done() and h.engine._in_flight
-            assert list(h.directories[0].glob("*.mp4"))
+            assert h.source.exists() and not h.deleted
             h.release_upload.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
         assert not h.engine._in_flight
         assert all(not path.exists() for path in h.directories)
+        assert not h.source.exists()
     finally:
         h.release_receive.set()
         h.release_upload.set()
@@ -443,12 +452,12 @@ async def test_video_sync_cancellation_cleans_only_after_work_settles(harness, p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["receive", "upload"])
+@pytest.mark.parametrize("phase", ["generation", "upload"])
 async def test_video_sync_output_disconnect_cleans_internal_job(harness, phase):
     h = harness
-    h.pause_receive = phase == "receive"
+    h.pause_receive = phase == "generation"
     h.pause_upload = phase == "upload"
-    entered = h.receiving if phase == "receive" else h.uploading
+    entered = h.receiving if phase == "generation" else h.uploading
     messages = asyncio.Queue()
     messages.put_nowait({"type": "http.request", "body": h.body, "more_body": False})
     request = Request(
@@ -480,3 +489,77 @@ async def test_video_sync_output_disconnect_cleans_internal_job(harness, phase):
         h.release_receive.set()
         h.release_upload.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", ["success", "cancel", "disconnect", "shutdown", "upload_error"]
+)
+async def test_local_video_source_survives_until_upload_settles(harness, outcome):
+    h = harness
+    h.pause_upload = True
+    h.reject_upload = outcome == "upload_error"
+    messages = asyncio.Queue()
+    messages.put_nowait({"type": "http.request", "body": h.body, "more_body": False})
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/videos/sync",
+            "query_string": b"",
+            "headers": [
+                (key.encode(), value.encode()) for key, value in h.headers.items()
+            ],
+        },
+        messages.get,
+    )
+    task = asyncio.create_task(h.engine.forward_multipart(request.url.path, request))
+    stopper = None
+    try:
+        await asyncio.wait_for(h.uploading.wait(), 2)
+        assert h.source.read_bytes() == VIDEO and not h.deleted
+        assert not h.directories and not task.done()
+        if outcome == "cancel":
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+        elif outcome == "disconnect":
+            messages.put_nowait({"type": "http.disconnect"})
+        elif outcome == "shutdown":
+            stopper = asyncio.create_task(h.engine.aclose())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert h.source.exists() and not h.deleted and not task.done()
+        h.release_upload.set()
+        result = (
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+        )[0]
+        if outcome == "success":
+            assert result.status_code == 200
+        elif outcome == "cancel":
+            assert isinstance(result, asyncio.CancelledError)
+        elif outcome == "upload_error":
+            assert isinstance(result, ServerError)
+        else:
+            assert isinstance(result, ClientError)
+        if stopper is not None:
+            await asyncio.wait_for(stopper, 2)
+        assert h.deleted == ["/v1/videos/video_gen_1"]
+        assert not h.source.exists() and not h.engine._in_flight
+    finally:
+        h.release_upload.set()
+        await asyncio.gather(task, return_exceptions=True)
+        if stopper is not None:
+            await asyncio.gather(stopper, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_state", ["missing", "empty", "symlink", "unsafe"])
+async def test_local_video_invalid_source_never_returns_a_receipt(harness, file_state):
+    h = harness
+    h.file_state = file_state
+    response = await h.client.post(PATH, content=h.body, headers=h.headers)
+    assert response.status_code == 500, response.text
+    assert "output" not in response.json() and not h.objects
+    assert not h.directories
+    assert len(h.deleted) == 1
