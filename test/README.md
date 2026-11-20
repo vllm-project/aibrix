@@ -78,6 +78,36 @@ make test-race-condition
 go test ./pkg/controller/...
 ```
 
+### Real Envoy contracts
+
+The default Go test run skips real-Envoy checks. To execute them without allowing
+skipped tests to count as a pass, download and independently verify the official
+Linux Envoy 1.39.6 and 1.33.2 executables, then run:
+
+```bash
+AIBRIX_ENVOY_TEST_BINARY=/path/to/envoy-1.39.6 \
+AIBRIX_ENVOY_BASELINE_TEST_BINARY=/path/to/envoy-1.33.2 \
+  bash test/run-envoy-contract-tests.sh
+```
+
+This runs native Envoy processes with the current source's actual Gateway
+`Process` handler and a local mock upstream. It does not use a Kubernetes
+cluster, a released plugin image, or an Envoy Gateway-generated configuration.
+The runner requires both executables and rejects failed, missing or skipped
+contract tests. Each failure probe checks the actual Envoy admin version.
+
+The direct harness records a client-visible change between the previous default
+Envoy 1.33.2 and the target 1.39.6. Refused connections, pre-header resets and
+route timeouts return the same HTTP status (503, 503 and 504), but their local
+replies bypass response processing on 1.33.2 and reach it on 1.39.6. On 1.33.2
+they remain `text/plain`; on 1.39.6 the Gateway returns an `application/json`
+error envelope. The 503 envelope has type `overloaded_error` and code
+`service_unavailable`; the 504 envelope has type `api_error` and a null code.
+A backend HTTP 503 control becomes a JSON error on both versions. The probes
+assert the body, Content-Type, callbacks and request accounting returning to its
+baseline after first observing an increment. This is not a guarantee for every
+Gateway-managed processing mode or a test of the separate blacklist change.
+
 ### Integration Tests
 
 Integration tests use Ginkgo framework to test component interactions.

@@ -23,6 +23,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/yaml"
 )
 
 // Keep every deployed pin explicit. A missing pin must fail as well as a stale
@@ -33,6 +36,7 @@ var envoyMigrationPins = []struct {
 	envoy, gateway int
 }{
 	{"config/dependency/envoy-gateway/kustomization.yaml", 0, 2},
+	{"config/dependency/envoy-gateway/envoy_gateway_patch.yaml", 0, 1},
 	{"config/gateway/gateway.yaml", 1, 1},
 	{"config/overlays/release/envoy_proxy_patch.yaml", 1, 1},
 	{"config/overlays/vke/default/envoy_proxy_patch.yaml", 1, 1},
@@ -120,5 +124,45 @@ func TestEnvoyMigrationPinGuardRejectsDrift(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// ConfigMap data is a YAML string, so its replacement must retain an explicit
+// released shutdown image even for Gateways without an EnvoyProxy override.
+func TestEnvoyMigrationControllerConfig(t *testing.T) {
+	for _, tc := range []struct{ path, image string }{
+		{"config/dependency/envoy-gateway/envoy_gateway_patch.yaml", "envoyproxy/gateway:v1.9.4"},
+		{"config/overlays/vke/dependency/envoy_gateway_patch.yaml", "aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway:v1.9.4"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("../../..", tc.path))
+			require.NoError(t, err)
+			var cm struct {
+				Data map[string]string `json:"data"`
+			}
+			require.NoError(t, yaml.Unmarshal(raw, &cm))
+			require.Contains(t, cm.Data, "envoy-gateway.yaml")
+			var config struct {
+				Provider struct {
+					Type       string `json:"type"`
+					Kubernetes struct {
+						ShutdownManager struct {
+							Image string `json:"image"`
+						} `json:"shutdownManager"`
+					} `json:"kubernetes"`
+				} `json:"provider"`
+				Gateway struct {
+					ControllerName string `json:"controllerName"`
+				} `json:"gateway"`
+				ExtensionAPIs struct {
+					EnableEnvoyPatchPolicy bool `json:"enableEnvoyPatchPolicy"`
+				} `json:"extensionApis"`
+			}
+			require.NoError(t, yaml.Unmarshal([]byte(cm.Data["envoy-gateway.yaml"]), &config))
+			require.Equal(t, "Kubernetes", config.Provider.Type)
+			require.Equal(t, tc.image, config.Provider.Kubernetes.ShutdownManager.Image)
+			require.Equal(t, "gateway.envoyproxy.io/gatewayclass-controller", config.Gateway.ControllerName)
+			require.True(t, config.ExtensionAPIs.EnableEnvoyPatchPolicy)
+		})
 	}
 }

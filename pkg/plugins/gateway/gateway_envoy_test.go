@@ -163,20 +163,21 @@ func envoyChatRequest(t *testing.T, endpoint string, stream bool) *http.Request 
 }
 
 type envoyExchange struct {
-	code            int
-	parts           []string
-	contentType     string
-	contentLength   bool
-	sse             bool
-	headersSent     chan struct{}
-	headerOnce      sync.Once
-	bodySeen        chan struct{}
-	finishSSE       chan struct{}
-	immediate       atomic.Int64
-	requestHeaders  atomic.Int64
-	responseHeaders atomic.Int64
-	mu              sync.Mutex
-	callbacks       []string
+	onRequestBodyProcessed func()
+	code                   int
+	parts                  []string
+	contentType            string
+	contentLength          bool
+	sse                    bool
+	headersSent            chan struct{}
+	headerOnce             sync.Once
+	bodySeen               chan struct{}
+	finishSSE              chan struct{}
+	immediate              atomic.Int64
+	requestHeaders         atomic.Int64
+	responseHeaders        atomic.Int64
+	mu                     sync.Mutex
+	callbacks              []string
 }
 
 func newEnvoyExchange(code int, parts []string, typ string, length bool) *envoyExchange {
@@ -268,6 +269,11 @@ func (s *envoyObservedStream) Recv() (*extProcPb.ProcessingRequest, error) {
 	return req, err
 }
 func (s *envoyObservedStream) Send(resp *extProcPb.ProcessingResponse) error {
+	// Observe accounting after the real request-body handler has routed, before
+	// Envoy can forward the body and finish the request on a fast upstream.
+	if resp.GetRequestBody() != nil && s.exchange.onRequestBodyProcessed != nil {
+		s.exchange.onRequestBodyProcessed()
+	}
 	err := s.ExternalProcessor_ProcessServer.Send(resp)
 	if resp.GetImmediateResponse() != nil {
 		s.exchange.immediate.Add(1)

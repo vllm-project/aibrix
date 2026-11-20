@@ -8,6 +8,9 @@ data:
     apiVersion: gateway.envoyproxy.io/v1alpha1
     kind: EnvoyGateway
     provider:
+      kubernetes:
+        shutdownManager:
+          image: envoyproxy/gateway:v1.9.4
       type: Kubernetes
     gateway:
       controllerName: gateway.envoyproxy.io/gatewayclass-controller
