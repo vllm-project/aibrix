@@ -380,6 +380,13 @@ type podMetricTarget struct {
 func podMetricTargets(pod *Pod) []podMetricTarget {
 	bindings := utils.ModelClaimBindingsFromPod(pod.Pod)
 	if len(bindings) == 0 {
+		// An invalid or not-yet-routable ModelClaim annotation is not an
+		// ordinary serving Pod. Do not fall back to the unrelated Pod port.
+		for annotation := range pod.Annotations {
+			if strings.HasPrefix(annotation, constants.ModelClaimPodAnnotationPrefix) {
+				return nil
+			}
+		}
 		return []podMetricTarget{{port: getPodMetricPort(pod)}}
 	}
 	targets := make([]podMetricTarget, 0, len(bindings))
@@ -391,6 +398,37 @@ func podMetricTargets(pod *Pod) []podMetricTarget {
 	// Map iteration order must not influence scrape or test ordering.
 	sort.Slice(targets, func(i, j int) bool { return targets[i].model < targets[j].model })
 	return targets
+}
+
+
+// remapBoundModelMetrics assigns all model-scoped samples from one bound engine
+// to its ModelClaim name, independently of the model_name reported by the engine.
+ // Some engines omit model_name entirely, so nil label maps must be initialized.
+func remapBoundModelMetrics(result *metrics.EngineMetricsResult, model string) {
+	remapped := make(map[string]metrics.MetricValue, len(result.ModelMetrics))
+	for key, value := range result.ModelMetrics {
+		_, metricName := parseModelMetricKey(key)
+		if metricName == "" {
+			continue
+		}
+		switch typed := value.(type) {
+		case *metrics.SimpleMetricValue:
+			typed.Labels = boundModelMetricLabels(typed.Labels, model)
+		case *metrics.HistogramMetricValue:
+			typed.Labels = boundModelMetricLabels(typed.Labels, model)
+		}
+		remapped[model+"/"+metricName] = value
+	}
+	result.ModelMetrics = remapped
+}
+
+func boundModelMetricLabels(old map[string]string, model string) map[string]string {
+	labels := make(map[string]string, len(old)+1)
+	for key, value := range old {
+		labels[key] = value
+	}
+	labels["model_name"] = model
+	return labels
 }
 
 func (c *Store) worker(jobs <-chan *Pod) {
@@ -406,118 +444,92 @@ func (c *Store) worker(jobs <-chan *Pod) {
 					defer cancel()
 					podMetricPort := target.port
 
-			// Use centralized typed metrics fetcher for better engine abstraction and error handling
-			metricsToFetch := c.getAllAvailableMetrics()
-			endpoint := fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort)
-			engineType := metrics.GetEngineType(*pod.Pod)
-			identifier := pod.Name
-			result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
-			if err != nil {
-				metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
-				klog.V(4).InfoS("Failed to fetch typed metrics from engine pod",
-					"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
-				return
-			}
-			anySuccess = true
-			fetchedAt := time.Now()
-			if target.model != "" {
-				// The endpoint belongs to this exact ModelClaim binding even if
-				// its engine uses a different internal/HF model_name label.
-				remapped := make(map[string]metrics.MetricValue, len(result.ModelMetrics))
-				for key, value := range result.ModelMetrics {
-					_, metricName := parseModelMetricKey(key)
-					if metricName == "" {
-						continue
+					// Use centralized typed metrics fetcher for better engine abstraction and error handling
+					metricsToFetch := c.getAllAvailableMetrics()
+					endpoint := fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort)
+					engineType := metrics.GetEngineType(*pod.Pod)
+					identifier := pod.Name
+					result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
+					if err != nil {
+						metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
+						klog.V(4).InfoS("Failed to fetch typed metrics from engine pod",
+							"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
+						return
 					}
-					switch typed := value.(type) {
-					case *metrics.SimpleMetricValue:
-						if typed.Labels != nil {
-							labels := make(map[string]string, len(typed.Labels))
-							for k, v := range typed.Labels { labels[k] = v }
-							labels["model_name"] = target.model
-							typed.Labels = labels
+					anySuccess = true
+					fetchedAt := time.Now()
+					if target.model != "" {
+						remapBoundModelMetrics(result, target.model)
+					}
+
+					for metricName, metricValue := range result.Metrics {
+						sanitizeMetricValueLabels(pod, metricValue)
+						if shouldSkipMetric(pod.Pod, metricName) {
+							continue
 						}
-					case *metrics.HistogramMetricValue:
-						if typed.Labels != nil {
-							labels := make(map[string]string, len(typed.Labels))
-							for k, v := range typed.Labels { labels[k] = v }
-							labels["model_name"] = target.model
-							typed.Labels = labels
+						metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
+					}
+
+					for metricName, metricValue := range result.ModelMetrics {
+						sanitizeMetricValueLabels(pod, metricValue)
+						// Model names may contain "/" (HuggingFace-style ids), so this
+						// must split on the last "/" like parseModelMetricKey, not the
+						// first: strings.SplitN(metricName, "/", 2) previously cut a
+						// slash-bearing model name in half and left metric holding
+						// part of the model name instead (review on #2735).
+						model, metric := parseModelMetricKey(metricName)
+						if model == "" {
+							continue
+						}
+
+						model = resolveMetricModelName(pod, model)
+
+						if shouldSkipMetric(pod.Pod, metric) {
+							continue
+						}
+
+						c.updateThroughputToksPerS(pod, model, metric, metricValue)
+						c.updateRecentMean(pod, model, metric, metricValue)
+						metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
+
+						if metric == metrics.EngineSleepState && c.kvEventManager != nil {
+							// The prefix router and the KV-event subscription both key
+							// on the pod-metadata model name (constants.ModelNameFromMetadata),
+							// not the Prometheus-reported model_name label resolved
+							// above: those can differ (HF path vs model.aibrix.ai/name),
+							// and RemovePrefix silently no-ops on a (modelName, loraID)
+							// it never subscribed under (review on #2735).
+							podModelName := target.model
+							if podModelName == "" {
+								podModelName, _ = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+							}
+							if podModelName != "" {
+								podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+								c.kvEventManager.CheckSleepStateBackstop(ctx, podKey, podModelName, podLoraID(pod), metricValue.GetSimpleValue())
+							}
 						}
 					}
-					remapped[target.model+"/"+metricName] = value
-				}
-				result.ModelMetrics = remapped
-			}
+					// Update pod metrics using typed results
+					c.updatePodMetricsFromTypedResultAt(pod, result, fetchedAt)
 
-			for metricName, metricValue := range result.Metrics {
-				sanitizeMetricValueLabels(pod, metricValue)
-				if shouldSkipMetric(pod.Pod, metricName) {
-					continue
-				}
-				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
-			}
+					c.syncRunningRequestsGlobally(pod)
 
-			for metricName, metricValue := range result.ModelMetrics {
-				sanitizeMetricValueLabels(pod, metricValue)
-				// Model names may contain "/" (HuggingFace-style ids), so this
-				// must split on the last "/" like parseModelMetricKey, not the
-				// first: strings.SplitN(metricName, "/", 2) previously cut a
-				// slash-bearing model name in half and left metric holding
-				// part of the model name instead (review on #2735).
-				model, metric := parseModelMetricKey(metricName)
-				if model == "" {
-					continue
-				}
+					c.updateRealtimeRunningRequestsDrainRate1m(pod)
+					c.updateRealtimeOutputTokenRateEWMA(pod)
 
-				model = resolveMetricModelName(pod, model)
-
-				if shouldSkipMetric(pod.Pod, metric) {
-					continue
-				}
-
-				c.updateThroughputToksPerS(pod, model, metric, metricValue)
-				c.updateRecentMean(pod, model, metric, metricValue)
-				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
-
-				if metric == metrics.EngineSleepState && c.kvEventManager != nil {
-					// The prefix router and the KV-event subscription both key
-					// on the pod-metadata model name (constants.ModelNameFromMetadata),
-					// not the Prometheus-reported model_name label resolved
-					// above: those can differ (HF path vs model.aibrix.ai/name),
-					// and RemovePrefix silently no-ops on a (modelName, loraID)
-					// it never subscribed under (review on #2735).
-					podModelName := target.model
-					if podModelName == "" {
-						podModelName, _ = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+					// Handle Prometheus-based metrics separately (these require PromQL queries)
+					if c.prometheusApi != nil {
+						c.enqueuePromQL(pod)
+					} else {
+						klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
 					}
-					if podModelName != "" {
-						podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-						c.kvEventManager.CheckSleepStateBackstop(ctx, podKey, podModelName, podLoraID(pod), metricValue.GetSimpleValue())
-					}
-				}
-			}
-			// Update pod metrics using typed results
-			c.updatePodMetricsFromTypedResultAt(pod, result, fetchedAt)
 
-			c.syncRunningRequestsGlobally(pod)
-
-			c.updateRealtimeRunningRequestsDrainRate1m(pod)
-			c.updateRealtimeOutputTokenRateEWMA(pod)
-
-			// Handle Prometheus-based metrics separately (these require PromQL queries)
-			if c.prometheusApi != nil {
-				c.enqueuePromQL(pod)
-			} else {
-				klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
-			}
-
-			// Log successful processing
-			klog.V(5).InfoS("Successfully processed metrics for pod",
-				"pod", pod.Name,
-				"podMetrics", len(result.Metrics),
-				"modelMetrics", len(result.ModelMetrics),
-				"errors", len(result.Errors))
+					// Log successful processing
+					klog.V(5).InfoS("Successfully processed metrics for pod",
+						"pod", pod.Name,
+						"podMetrics", len(result.Metrics),
+						"modelMetrics", len(result.ModelMetrics),
+						"errors", len(result.Errors))
 				}()
 			}
 			if anySuccess {
