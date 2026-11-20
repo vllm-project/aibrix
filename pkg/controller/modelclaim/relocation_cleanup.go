@@ -92,15 +92,29 @@ func (r *ModelClaimReconciler) reconcileRelocationCleanup(
 	// Use the API server, including reservations written before an engine
 	// starts that may not yet be visible in the controller's informer.
 	claims, err := r.listClaimsForAccount(ctx, namespace)
-	ledgers := podLedgersFrom(claims, err, due, snapshots, nil)
+	if err != nil {
+		// Without an authoritative read, none of the due Pods has a
+		// confirmed orphan observation. Keep the normal retry interval.
+		for i := range due {
+			pod := &due[i]
+			checks.pods[client.ObjectKeyFromObject(pod)] = relocationObservation{
+				at: now, podUID: pod.UID, podIP: pod.Status.PodIP,
+			}
+		}
+		return
+	}
+	ledgers := podLedgersFrom(claims, nil, due, snapshots, nil)
 	for i := range due {
 		pod := &due[i]
 		key := client.ObjectKeyFromObject(pod)
 		previous := checks.pods[key]
 		current := relocationObservation{at: now, podUID: pod.UID, podIP: pod.Status.PodIP}
 		for _, model := range ledgers[pod.Name].unclaimed {
+			if model.ClaimRef == nil {
+				continue
+			}
 			owner := claimForRuntimeSnapshot(claims, model)
-			if owner == nil || !relocatedFrom(owner, pod.Name, model.ModelName, claims) {
+			if !relocatedFrom(owner, pod.Name, model.ModelName, claims) {
 				continue
 			}
 			engine := relocationEngine{claim: *model.ClaimRef, model: model.ModelName, port: model.Port}
@@ -120,7 +134,8 @@ func (r *ModelClaimReconciler) reconcileRelocationCleanup(
 // same-name instance recorded here, even if the runtime attributes it to a
 // different Claim UID.
 func relocatedFrom(owner *modelv1alpha1.ModelClaim, podName, modelName string, claims *modelv1alpha1.ModelClaimList) bool {
-	if !owner.DeletionTimestamp.IsZero() || servedModelName(owner) != modelName || len(owner.Status.Instances) == 0 {
+	if owner == nil || claims == nil || !owner.DeletionTimestamp.IsZero() ||
+		servedModelName(owner) != modelName || len(owner.Status.Instances) == 0 {
 		return false
 	}
 	for i := range claims.Items {
