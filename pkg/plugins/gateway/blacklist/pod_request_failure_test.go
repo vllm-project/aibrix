@@ -17,6 +17,7 @@ limitations under the License.
 package blacklist
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"sync"
@@ -316,17 +317,23 @@ func TestRecordResponse_IsIndependentOfTheProbeBreaker(t *testing.T) {
 	assert.Equal(t, 1, state.requestTrips)
 }
 
-func TestRecordResponse_ThresholdZeroTurnsTheSourceOff(t *testing.T) {
-	var b PodBlacklist
-	b.SetRequestFailureThreshold(0)
-	pod := blacklistTestPod("1")
-	assert.Zero(t, failTimes(&b, pod, 503, 100))
-	assert.True(t, b.Allow(pod))
-	assert.Zero(t, b.tracked.Load(), "off means off: no entry either")
+func TestRecordResponse_NonPositiveThresholdTurnsTheSourceOff(t *testing.T) {
+	// A negative value is not a valid setting, but SetRequestFailureThreshold takes any int,
+	// so it must read as off rather than as enabled.
+	for _, threshold := range []int{0, -1} {
+		t.Run(fmt.Sprintf("threshold=%d", threshold), func(t *testing.T) {
+			var b PodBlacklist
+			b.SetRequestFailureThreshold(threshold)
+			pod := blacklistTestPod("1")
+			assert.Zero(t, failTimes(&b, pod, 503, 100))
+			assert.True(t, b.Allow(pod))
+			assert.Zero(t, b.tracked.Load(), "off means off: no entry either")
 
-	// The other sources are unaffected.
-	tripBreaker(&b, pod)
-	assert.False(t, b.Allow(pod))
+			// The other sources are unaffected.
+			tripBreaker(&b, pod)
+			assert.False(t, b.Allow(pod))
+		})
+	}
 }
 
 func TestRecordResponse_DisabledAndNilAreNoOps(t *testing.T) {

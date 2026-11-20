@@ -326,7 +326,7 @@ type PodBlacklist struct {
 
 // SetRequestFailureThreshold sets how many upstream failures in a row block a pod on this
 // blacklist, in place of AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD, which every blacklist
-// reads otherwise. 0 turns the request-failure source off. It touches no process global, so
+// reads otherwise. 0 or less turns the request-failure source off. It touches no process global, so
 // tests that set it may run in parallel.
 func (b *PodBlacklist) SetRequestFailureThreshold(threshold int) {
 	b.requestFailureThresholdOverride.Store(&threshold)
@@ -931,7 +931,7 @@ func IsPodFailureStatus(status int) bool {
 // are left (see ExclusionOverCap). Nothing is probed on the request path.
 func (b *PodBlacklist) RecordResponse(pod *v1.Pod, status int) (blocked bool) {
 	threshold := b.requestThreshold()
-	if !Enabled || threshold == 0 || pod == nil {
+	if !Enabled || threshold <= 0 || pod == nil {
 		return false
 	}
 	failed := IsPodFailureStatus(status)
