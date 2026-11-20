@@ -512,6 +512,7 @@ func TestComputeDesiredReplicasNamesFailedMetrics(t *testing.T) {
 		strategy   autoscalingv1alpha1.ScalingStrategyType
 		failing    map[string]bool
 		wantFailed []string
+		wantErr    bool
 	}{
 		{name: "APA with a failed source", strategy: autoscalingv1alpha1.APA,
 			failing: map[string]bool{"queue_length": true}, wantFailed: []string{"queue_length"}},
@@ -519,6 +520,9 @@ func TestComputeDesiredReplicasNamesFailedMetrics(t *testing.T) {
 			failing: map[string]bool{"queue_length": true}, wantFailed: []string{"queue_length"}},
 		{name: "APA without a failure", strategy: autoscalingv1alpha1.APA},
 		{name: "KPA without a failure", strategy: autoscalingv1alpha1.KPA},
+		{name: "every source failing", strategy: autoscalingv1alpha1.KPA,
+			failing:    map[string]bool{"gpu_cache_usage_perc": true, "queue_length": true},
+			wantFailed: []string{"gpu_cache_usage_perc", "queue_length"}, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			pa := testPodAutoscaler(tt.strategy)
@@ -547,7 +551,11 @@ func TestComputeDesiredReplicasNamesFailedMetrics(t *testing.T) {
 				Timestamp:       time.Now(),
 			})
 
-			require.NoError(t, err)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
 			assert.Equal(t, tt.wantFailed, result.FailedMetrics)
 		})
 	}

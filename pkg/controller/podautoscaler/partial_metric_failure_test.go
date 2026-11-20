@@ -127,10 +127,10 @@ func TestComputeScaleDecisionHoldsScaleDownWhileAMetricFails(t *testing.T) {
 			wantReason: "kpa above target"},
 		{name: "hold still applies maxReplicas", hold: true, failed: []string{"queue_length"},
 			recommended: 2, current: 12, minReplicas: 1, wantDesired: 10,
-			wantReason: "current replicas above maximum"},
+			wantReason: "current replicas above maximum (queue_length could not be read)"},
 		{name: "hold still applies minReplicas", hold: true, failed: []string{"queue_length"},
 			recommended: 2, current: 4, minReplicas: 6, wantDesired: 6,
-			wantReason: "current replicas below minimum"},
+			wantReason: "current replicas below minimum (queue_length could not be read)"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
@@ -280,25 +280,45 @@ func TestReconcileHoldsScaleDownEndToEnd(t *testing.T) {
 }
 
 // TestReconcileAllMetricsFailingWithHold checks that with every source failing
-// the hold changes nothing: it is the existing failure path, reported once.
+// the hold changes nothing: it is the existing failure path, with
+// FailedComputeScale on every pass. The failed sources are still exported, so
+// an alert on the gauge also catches a total outage, and named once.
 func TestReconcileAllMetricsFailingWithHold(t *testing.T) {
 	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
 	pa.Annotations = map[string]string{types.HoldScaleDownOnMetricFailureLabel: "true"}
 	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
 	recorder := record.NewFakeRecorder(100)
 	h.reconciler.EventRecorder = recorder
+	mon := &fakeMonitor{}
+	h.reconciler.monitor = mon
 	h.reconciler.autoScaler = &fakeAutoScaler{
-		result: &ReplicaComputeResult{Valid: false},
+		result: &ReplicaComputeResult{Valid: false, FailedMetrics: []string{"cpu", "queue_length"}},
 		err:    fmt.Errorf("all 2 metric sources failed"),
 	}
 
-	if _, err := h.reconcile(); err == nil {
-		t.Fatal("Reconcile returned no error with every metric source failing")
+	for i := 0; i < 2; i++ {
+		if _, err := h.reconcile(); err == nil {
+			t.Fatal("Reconcile returned no error with every metric source failing")
+		}
 	}
 
 	requireCondition(t, h.latest(), ConditionScalingActive, metav1.ConditionFalse, ReasonFailedComputeScale)
-	events := drainEvents(recorder, ReasonFailedComputeScale, ReasonFailedGetMetrics, ReasonScaleDownHeld)
-	if len(events) != 1 || !strings.Contains(events[0], ReasonFailedComputeScale) {
-		t.Fatalf("want one %s event, got %v", ReasonFailedComputeScale, events)
+	if mon.failedSources != 2 || mon.scaleDownHeld {
+		t.Fatalf("exported %d failed sources, held %t; want 2, not held", mon.failedSources, mon.scaleDownHeld)
+	}
+	var computeFailures, named int
+	for _, event := range drainEvents(recorder, ReasonFailedComputeScale, ReasonFailedGetMetrics, ReasonScaleDownHeld) {
+		switch {
+		case strings.Contains(event, ReasonFailedComputeScale):
+			computeFailures++
+		case strings.Contains(event, ReasonFailedGetMetrics) && strings.Contains(event, "cpu, queue_length"):
+			named++
+		default:
+			t.Fatalf("unexpected event %q", event)
+		}
+	}
+	if computeFailures != 2 || named != 1 {
+		t.Fatalf("got %d %s and %d %s naming the sources; want 2 and 1",
+			computeFailures, ReasonFailedComputeScale, named, ReasonFailedGetMetrics)
 	}
 }

@@ -260,7 +260,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 	}
 
 	if !anyValid {
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("all %d metric sources failed for "+
+		return &ReplicaComputeResult{Valid: false, FailedMetrics: failedMetrics}, fmt.Errorf("all %d metric sources failed for "+
 			"PodAutoscaler %s/%s", len(metricsSources), pa.Namespace, pa.Name)
 	}
 

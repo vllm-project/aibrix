@@ -1442,14 +1442,19 @@ func TestFilterHPAObjectIgnoresUnmanagedHPA(t *testing.T) {
 	}
 }
 
-// fakeMonitor records which PodAutoscalers had their metric series removed.
+// fakeMonitor records which PodAutoscalers had their metric series removed,
+// and the last metric source health reported.
 type fakeMonitor struct {
-	forgotten []ktypes.NamespacedName
+	forgotten     []ktypes.NamespacedName
+	failedSources int
+	scaleDownHeld bool
 }
 
 func (f *fakeMonitor) RecordScaleAction(string, string, string, string, int32) {}
 
-func (f *fakeMonitor) RecordMetricSourceHealth(string, string, int, bool) {}
+func (f *fakeMonitor) RecordMetricSourceHealth(_, _ string, failedSources int, scaleDownHeld bool) {
+	f.failedSources, f.scaleDownHeld = failedSources, scaleDownHeld
+}
 
 func (f *fakeMonitor) ForgetScaleAction(namespace, name string) {
 	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})

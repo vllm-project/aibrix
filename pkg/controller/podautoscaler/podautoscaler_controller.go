@@ -369,6 +369,15 @@ func (r *PodAutoscalerReconciler) buildScalingTargetKey(pa *autoscalingv1alpha1.
 	return base
 }
 
+// withFailedMetrics appends the metric sources that could not be read to a
+// scaling reason, so a rescale made while they fail still names them.
+func withFailedMetrics(reason string, failedMetrics []string) string {
+	if len(failedMetrics) == 0 {
+		return reason
+	}
+	return fmt.Sprintf("%s (%s could not be read)", reason, strings.Join(failedMetrics, ", "))
+}
+
 // metricSourceHealth is what was last reported for a PodAutoscaler's metric
 // sources: which failed, and whether a scale-down was held because of them.
 type metricSourceHealth struct {
@@ -1071,6 +1080,10 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
 		setCondition(pa, ConditionScalingActive, metav1.ConditionFalse, ReasonFailedComputeScale, "unable to compute the desired replicas: %v", err)
 		r.EventRecorder.Event(pa, corev1.EventTypeWarning, ReasonFailedComputeScale, err.Error())
+		if scaleDecision != nil {
+			// Keep the failed-source gauge current when every source failed.
+			r.reportMetricSourceHealth(pa, scaleDecision)
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
@@ -1367,23 +1380,31 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	// Use autoscaler for metric-based scaling with provided selector
 	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scalingContext, scaleObj, currentReplicas)
 	if err != nil {
+		var failedMetrics []string
+		if replicaResult != nil {
+			failedMetrics = replicaResult.FailedMetrics
+		}
 		if currentReplicas > maxReplicas {
 			return &ScaleDecision{
 				DesiredReplicas: maxReplicas,
 				ShouldScale:     true,
-				Reason:          "current replicas above maximum",
+				Reason:          withFailedMetrics("current replicas above maximum", failedMetrics),
 				Algorithm:       "boundary-check",
+				FailedMetrics:   failedMetrics,
 			}, nil
 		}
 		if currentReplicas < minReplicas {
 			return &ScaleDecision{
 				DesiredReplicas: minReplicas,
 				ShouldScale:     true,
-				Reason:          "current replicas below minimum",
+				Reason:          withFailedMetrics("current replicas below minimum", failedMetrics),
 				Algorithm:       "boundary-check",
+				FailedMetrics:   failedMetrics,
 			}, nil
 		}
-		return nil, fmt.Errorf("failed to compute metric-based replicas: %w", err)
+		// The decision carries only the failed metric sources, so the caller
+		// can still report them when every source failed.
+		return &ScaleDecision{FailedMetrics: failedMetrics}, fmt.Errorf("failed to compute metric-based replicas: %w", err)
 	}
 
 	metricDesiredReplicas := replicaResult.DesiredReplicas
@@ -1429,9 +1450,9 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	if shouldScale {
 		if scaleDownHeld && desiredReplicas > currentReplicas {
 			// The hold kept the replicas, so only the bounds can move them.
-			reason = "current replicas below minimum"
+			reason = withFailedMetrics("current replicas below minimum", replicaResult.FailedMetrics)
 		} else if scaleDownHeld {
-			reason = "current replicas above maximum"
+			reason = withFailedMetrics("current replicas above maximum", replicaResult.FailedMetrics)
 		} else if desiredReplicas > currentReplicas {
 			reason = fmt.Sprintf("%s above target", metricName)
 		} else {
