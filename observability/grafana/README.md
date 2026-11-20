@@ -105,6 +105,73 @@ is unsupported; tests that initialize collectors directly must use an isolated
 registry or wait for the previous collector to unregister before registering
 another store in the same registry.
 
+## Query Cross-Gateway Running-Request Estimates
+
+`realtime_num_requests_running` estimates in-flight requests for an inference
+pod by adding the reporting gateway's local count to recent counts available
+from other gateways. The value is a pod total across all models and adapters.
+`model` comes from the pod's `model.aibrix.ai/name` label, falling back to the
+same annotation or an empty value.
+
+Unlike the local counts in `gateway_pod_outstanding_requests`, these estimates
+overlap across reporting gateways and can differ with snapshot freshness.
+Do not sum them across gateway replicas: doing so can double-count requests.
+Select a reporting gateway with `gateway_pod` when inspecting an estimate.
+Use this gauge to inspect the cross-gateway load estimate available to a
+particular gateway, including its remote-freshness fallbacks. To count locally
+tracked unfinished requests across gateways, sum
+`gateway_pod_outstanding_requests` instead.
+
+This gauge follows the shared gateway metric label schema: on the raw plugin
+`/metrics` endpoint, `namespace` and `pod` identify the inference pod, and
+`gateway_pod` identifies the reporting gateway. It retains this schema rather
+than adopting the separate labels of `gateway_pod_outstanding_requests`;
+aligning those schemas requires a separate compatibility decision.
+
+With the shipped ServiceMonitor and effective `honor_labels: false`, the
+gateway's `namespace` and `pod` scrape target labels collide with the inference
+pod labels. Prometheus stores the inference pod identity as
+`exported_namespace` and `exported_pod`. Each collision is resolved independently.
+With effective `honor_labels: true`, the sample's `namespace` and `pod` labels
+remain the inference pod identity. For example, when both collisions occur
+under the default scrape policy:
+
+```promql
+realtime_num_requests_running{exported_namespace="inference", exported_pod="model-0", gateway_pod="gateway-0"}
+```
+
+The collector waits until its active remote-count source is initialized:
+the snapshot must be published or, when the remote reader is enabled, the
+pod must have been read at least once. Once remote counts have been read,
+expired contributions are excluded at scrape time; the gauge can therefore
+report only the local count under the same metric name. An initialized source
+with no remote requests still produces a sample, including a zero total.
+
+The gateway exports this gauge through a pod collector. At scrape
+time, its running-request calculation adds the local atomic counter to fresh
+remote contributions for ready, non-quarantined pods currently in the cache.
+Pods without an IP or with Ready other than true, terminating pods, and
+draining pods are omitted, matching the sync path's eligibility checks.
+Quarantined pods are also omitted until the quarantine ends. Omission does
+not mean zero load.
+Removed pods and old model label combinations stop appearing on the next
+scrape after the cache processes their removal or update.
+A pod update removes and re-adds the cache entry, so a concurrent scrape can
+temporarily omit the pod. Subsequent scrapes use the replacement's labels and
+do not need another metric sync once the remote source is initialized.
+A removed pod stops contributing even if some of its requests remain unfinished;
+this drop does not mean those requests completed.
+
+Collection performs only in-memory reads and does not depend on successful
+engine metrics fetches or metric-record timestamps. Remote freshness uses the
+active reader's age limit or the snapshot's per-contribution age limit; there
+is no additional age limit on the combined estimate. When remote data expires,
+the local count remains visible, including zero. Routing cache update and
+freshness policies are unchanged.
+Label values are cached per pod object and rebuilt when a pod update replaces
+it. Each scrape still visits the cached pods, so collection work grows with
+the pod count and repeats for each reporting gateway.
+
 ## ModelClaim Runtime Dashboard
 
 ### Required metrics
