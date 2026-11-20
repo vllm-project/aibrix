@@ -192,16 +192,25 @@ func (st *processState) stopDecodeWatchdog() {
 // this PD request has stopped talking. It aborts the decode leg, fails the
 // client and returns the error that ends the ext_proc stream.
 //
-// What the client can still be told depends on whether the decode pod's
-// response headers already went downstream, not on the phase:
+// What the client can still be told depends on whether its response has
+// started, and the gateway cannot read that off the decode pod's headers: the
+// headers reaching this stream does not mean they reached the client. Envoy
+// holds the response at its headers until the first body chunk has been
+// processed (v1.39 does; v1.33 released them as soon as ext_proc acknowledged
+// them). So the first-response phase, which ends with the first chunk, is the
+// one where the client may not have a status line yet, whatever the headers did:
 //
-//   - Nothing sent yet (first response, before the headers): the gateway
-//     answers the client the same way a prefill fail-fast does - an
-//     ImmediateResponse with 504 and the usual OpenAI-shaped body, then a gRPC
-//     error close. See failStreamOnPrefillFailure for why both are sent.
-//   - Headers sent (first response after the headers, or stream idle): an
-//     ImmediateResponse cannot replace a response whose status line is already
-//     on its way. The stream is closed with codes.DeadlineExceeded instead:
+//   - First response (no body chunk yet, headers or not): the gateway answers
+//     the client the same way a prefill fail-fast does - an ImmediateResponse
+//     with 504 and the usual OpenAI-shaped body, then a gRPC error close. See
+//     failStreamOnPrefillFailure for why both are sent. When Envoy still holds
+//     the headers the client gets that 504. When it already released them,
+//     Envoy cannot replace a status line that is on its way and resets the
+//     stream instead: the client sees a truncated response and a broken
+//     connection. Without the ImmediateResponse, a gRPC error close alone would
+//     reach a client whose headers are still held as an empty 500.
+//   - Stream idle (a chunk went through, so the response has started): there
+//     is nothing left to send. The stream is closed with codes.DeadlineExceeded:
 //     with failure_mode_allow: false, which is what the Envoy configuration in
 //     this repo uses, a failed ext_proc stream makes Envoy reset the downstream
 //     and the upstream connection. The client sees a truncated response and a
@@ -243,30 +252,32 @@ func (s *Server) handleDecodeWatchdog(srv extProcPb.ExternalProcessor_ProcessSer
 	// stream ends.
 	pd.AbortDecodeLegOnWatchdog(decodeAbortClient, leg, st.requestID, st.model, trigger)
 
-	if !headersSent {
+	if phase == decodeWatchdogPhaseFirstResponse {
 		// What the missing message was: a first token on a streaming request,
 		// the finished answer on a non-streaming one. The phase label stays
 		// first_response either way, and the log line already carries "stream".
 		what := "did not start responding within "
-		if !st.stream {
+		closeErr := status.Errorf(codes.DeadlineExceeded, "pd decode leg sent nothing within %s", timeout)
+		switch {
+		case !st.stream:
 			what = "did not finish responding within "
+		case headersSent:
+			// The decode pod's headers arrived, its first token did not.
+			what = "sent response headers but no body within "
+			closeErr = status.Errorf(codes.DeadlineExceeded, "pd decode leg sent headers but no body within %s", timeout)
 		}
 		resp := buildErrorResponse(envoyTypePb.StatusCode_GatewayTimeout,
 			"decode pod "+decodePod+" "+what+timeout.String(),
 			"", "",
 			HeaderErrorPDDecode, "true",
 			HeaderRequestID, st.requestID)
-		return s.failStreamWithResponse(srv, st, resp, envoyTypePb.StatusCode_GatewayTimeout, decodeWatchdogStatus,
-			status.Errorf(codes.DeadlineExceeded, "pd decode leg sent nothing within %s", timeout))
+		return s.failStreamWithResponse(srv, st, resp, envoyTypePb.StatusCode_GatewayTimeout, decodeWatchdogStatus, closeErr)
 	}
 
-	// The response is already on its way to the client, so there is nothing to
-	// send - only the same terminal bookkeeping every failed stream does, and
-	// the close that resets both connections.
+	// A chunk went through, so the response is already on its way to the client
+	// and there is nothing to send - only the same terminal bookkeeping every
+	// failed stream does, and the close that resets both connections.
 	s.emitStreamFailureCounters(st, envoyTypePb.StatusCode_GatewayTimeout, decodeWatchdogStatus)
 	s.finishRequestCount(st)
-	if phase == decodeWatchdogPhaseFirstResponse {
-		return status.Errorf(codes.DeadlineExceeded, "pd decode leg sent headers but no body within %s", timeout)
-	}
 	return status.Errorf(codes.DeadlineExceeded, "pd decode leg stopped sending for %s", timeout)
 }
