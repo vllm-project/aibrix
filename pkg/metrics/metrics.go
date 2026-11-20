@@ -97,6 +97,29 @@ const (
 	// RealtimeOutputTokenRateEWMA is the smoothed rate, in tokens/sec, at which a pod completes
 	// output tokens (pod-scoped, gateway-tracked). It is the capacity signal of the load-balance router.
 	RealtimeOutputTokenRateEWMA = "realtime_output_token_rate_ewma"
+	// RealtimeOutputTokensPerRequestSecondEWMA is the smoothed rate, in output tokens per second
+	// of one request's time on the pod, at which a pod decodes (pod-scoped, gateway-tracked):
+	// completed output tokens divided by the time those requests spent on the pod. Unlike
+	// RealtimeOutputTokenRateEWMA it does not grow with the share of traffic a pod receives, and it
+	// falls when requests queue on a saturated pod (#3450). No router reads it yet. It is exported
+	// as gateway_pod_output_tokens_per_request_second.
+	// The time is the whole request, from routing to the end of the response, so it includes
+	// prompt processing. Under prefill/decode disaggregation a request is counted on its decode
+	// pod, with the prefill done elsewhere included in the time; prefill pods get no samples.
+	// It is one value per pod, so a pod that serves several models mixes them.
+	// The value is only updated by a rate window with enough completed requests
+	// (AIBRIX_OUTPUT_RATE_MIN_SAMPLES), so it can be arbitrarily old on an idle or low-traffic
+	// pod. A reader must check the age of the record.
+	RealtimeOutputTokensPerRequestSecondEWMA = "realtime_output_tokens_per_request_second_ewma"
+	// RealtimeRequestsWithoutOutputTokensFraction1m is the share of a pod's requests that finished
+	// in the last ~minute without output tokens: aborted, timed out, failed, or completed without
+	// usage, which includes streaming requests sent without stream_options.include_usage
+	// (pod-scoped, gateway-tracked). It is not a failure rate. Those requests are in neither
+	// term of RealtimeOutputTokensPerRequestSecondEWMA.
+	// It is only updated by a rate window in which a request finished, so on an idle pod it keeps
+	// its last value: check the age of the record. Exported as
+	// gateway_pod_requests_without_output_tokens_fraction, with its age.
+	RealtimeRequestsWithoutOutputTokensFraction1m = "realtime_requests_without_output_tokens_fraction_1m"
 
 	// ModelReplicas tracks ready engine pods backing a model (1 per routable pod).
 	ModelReplicas = "model_replicas"

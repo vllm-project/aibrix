@@ -264,7 +264,101 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 	return delta / elapsed
 }
 
-// The ~1-minute window shared by calculateRate1m and calculateMean1m.
+// outputRateCounters are the gateway-tracked completion counters of one pod that the per-request
+// output-token rate is derived from.
+type outputRateCounters struct {
+	tokens      float64 // completedOutputTokens
+	busySeconds float64 // completedOutputBusyNanos
+	requests    float64 // completedOutputRequests
+	finished    float64 // completedRequests
+}
+
+// outputRateSnapshot is the counters at one instant. A pod has one history of these, so the
+// values of a snapshot always belong to the same instant.
+type outputRateSnapshot struct {
+	counters outputRateCounters
+	at       time.Time
+}
+
+// pruneOutputRateHistory is cleanupOldSnapshots for a completion-counter history, in place:
+// snapshots older than window1mHistoryMaxAge go, then all but the newest window1mHistoryMaxCount.
+func pruneOutputRateHistory(history []outputRateSnapshot, now time.Time) []outputRateSnapshot {
+	cutoff := now.Add(-window1mHistoryMaxAge)
+	kept := history[:0]
+	for _, s := range history {
+		if s.at.After(cutoff) {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) > window1mHistoryMaxCount {
+		kept = append(kept[:0], kept[len(kept)-window1mHistoryMaxCount:]...)
+	}
+	return kept
+}
+
+// outputRateBaseIndex1m is baseSnapshot1m for a completion-counter history: the index of the
+// snapshot closest to one minute ago, the newest one excluded. history must hold at least 2
+// snapshots. The two are kept apart because a shared generic helper slowed calculateRate1m;
+// TestOutputRateBaseMatchesBaseSnapshot1m holds them to the same choice.
+func outputRateBaseIndex1m(history []outputRateSnapshot, now time.Time) int {
+	target := now.Add(-window1mTarget)
+	base := 0
+	for i := 1; i < len(history)-1; i++ {
+		if absDuration(history[i].at.Sub(target)) < absDuration(history[base].at.Sub(target)) {
+			base = i
+		}
+	}
+	return base
+}
+
+// outputRateDeltas1m returns how much the pod's completion counters grew over the same
+// approximate 1-minute window as calculateRate1m. ok is false when there is not enough history
+// yet.
+//
+// The counters are snapshotted together and every delta is taken against the same baseline
+// snapshot, so values derived from several of them (a ratio, a count that gates it) describe one
+// window. Independent calculateRate1m histories could each admit their throttled snapshot on a
+// different refresh tick.
+func (c *Store) outputRateDeltas1m(pod *Pod, cur outputRateCounters) (delta outputRateCounters, ok bool) {
+	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	now := time.Now()
+
+	rateCalculator.mu.Lock()
+	defer rateCalculator.mu.Unlock()
+
+	history := rateCalculator.outputRate[key]
+	if len(history) == 0 || now.Sub(history[len(history)-1].at) >= window1mSnapshotInterval {
+		// The history only changes when a snapshot is admitted, so that is the only time it is
+		// pruned and stored. Between two snapshots (at most window1mSnapshotInterval) nothing can
+		// age out of a 3-minute history that matters to a 1-minute baseline.
+		history = pruneOutputRateHistory(append(history, outputRateSnapshot{counters: cur, at: now}), now)
+		if rateCalculator.outputRate == nil {
+			rateCalculator.outputRate = make(map[string][]outputRateSnapshot)
+		}
+		rateCalculator.outputRate[key] = history
+	}
+
+	if len(history) < 2 {
+		return delta, false
+	}
+	base := history[outputRateBaseIndex1m(history, now)]
+	if now.Sub(base.at).Seconds() < window1mMinElapsed {
+		return delta, false
+	}
+	delta = outputRateCounters{
+		tokens:      cur.tokens - base.counters.tokens,
+		busySeconds: cur.busySeconds - base.counters.busySeconds,
+		requests:    cur.requests - base.counters.requests,
+		finished:    cur.finished - base.counters.finished,
+	}
+	if delta.tokens < 0 || delta.busySeconds < 0 || delta.requests < 0 || delta.finished < 0 {
+		// Counters never decrease; treat it as a reset of all of them and use the current values.
+		delta = cur
+	}
+	return delta, true
+}
+
+// The ~1-minute window shared by calculateRate1m, outputRateDeltas1m and calculateMean1m.
 const (
 	window1mSnapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
 	window1mTarget           = 1 * time.Minute // desired look-back window; load-balance's capacity warm-up default (loadBalanceCapacityWarmupDefault) matches it

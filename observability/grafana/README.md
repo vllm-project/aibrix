@@ -96,6 +96,38 @@ For multiple clusters, also retain your cluster label.
 A persistent nonzero value reflects the gateway's local accounting state; it
 does not prove that the engine is still executing requests.
 
+## Query Gateway Per-Pod Output Rate
+
+The same endpoint exports, per target pod and with the same labels, what each
+gateway measured from the requests it routed:
+
+| Metric | Meaning |
+|---|---|
+| `gateway_pod_output_tokens_per_request_second` | Output tokens per second of one request's time on the pod, smoothed over ~1-minute windows. |
+| `gateway_pod_output_rate_age_seconds` | Seconds since that value was last updated. |
+| `gateway_pod_requests_without_output_tokens_fraction` | Share of the pod's requests that finished without output tokens in the last window in which any finished. |
+| `gateway_pod_requests_without_output_tokens_fraction_age_seconds` | Seconds since that value was last updated. |
+
+No router reads these values. Read them with their age:
+
+- **They keep their last value.** The rate is only updated by a window in which
+  `AIBRIX_OUTPUT_RATE_MIN_SAMPLES` (default 8) requests with output tokens
+  completed, and the fraction only by a window in which a request finished. An
+  idle or low-traffic pod reports an old value until it is deleted.
+- **The fraction is not a failure rate.** A streaming request sent without
+  `stream_options.include_usage` reports no output tokens, so it counts here and
+  not in the rate.
+- **The rate covers the whole request**, including queueing and prompt
+  processing, so pods serving different request mixes read differently on the
+  same hardware.
+- **One value per pod.** On a pod that serves several models it covers all of them.
+
+```promql
+# Per-request output rate per pod, only where it was updated in the last 2 minutes
+gateway_pod_output_tokens_per_request_second
+  and on (gateway_pod, target_namespace, target_pod) gateway_pod_output_rate_age_seconds < 120
+```
+
 Gateway cache initialization through `InitWithOptions` is guarded by
 `sync.Once` and supports one store per process. The collector retains that
 store until it is unregistered after `stopCh` closes. Registration failures are
