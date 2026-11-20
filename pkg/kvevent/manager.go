@@ -67,6 +67,14 @@ func NewManager(podProvider PodProvider, syncProvider SyncIndexProvider) *Manage
 
 	// Check configuration
 	enabled := validateConfiguration()
+	if enabled {
+		// The aibrix_kvcache_zmq_* metrics exist only with KV event sync on.
+		// They are registered here, before any pod event can create a ZMQ client,
+		// because a client binds to them when it is created. InitializeMetrics
+		// logs a registration failure; the clients then use no-op metrics and
+		// sync carries on.
+		_ = kvcache.InitializeMetrics()
+	}
 
 	return &Manager{
 		podProvider:  podProvider,
