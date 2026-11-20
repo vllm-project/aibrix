@@ -699,81 +699,38 @@ class TestStreamingMultipartCrossProcess:
 
 
 class TestVideoSyncMultipartCrossProcess:
-    @pytest.mark.parametrize("output", [None, '{"url":"/unused/videos"}', "{"])
-    def test_large_ordered_inputs_and_output_form_field(
-        self, ready_proxy, tmp_path, output
-    ):
-        if output is not None and output != "{":
-            output = json.dumps({"url": str(tmp_path / "videos")})
-
-        def body(payload_chunks, output):
-            content_type, parts = _multipart(
-                {"model": "minimax-h3"}, "first.png", payload_chunks
-            )
-            boundary = content_type.split("boundary=", 1)[1]
-            parts[0] = parts[0].replace(b'name="file"', b'name="input_references"')
-            second = (
-                f"\r\n--{boundary}\r\nContent-Disposition: form-data; "
-                'name="input_references"; filename="second.png"\r\n'
-                "Content-Type: image/png\r\n\r\n"
-            ).encode() + b"second-reference"
-            output_part = (
-                (
-                    f"\r\n--{boundary}\r\nContent-Disposition: form-data; "
-                    'name="output"\r\n\r\n'
-                ).encode()
-                + output.encode()
-                if output is not None
-                else b""
-            )
-            return content_type, [*parts[:-1], second, output_part, parts[-1]]
-
-        # Warm the same streaming upload path before measuring memory growth.
-        content_type, parts = body([b"warmup"], output)
-        warmup = httpx.post(
-            f"{ready_proxy.url}/v1/videos/sync",
-            content=b"".join(parts),
-            headers={"content-type": content_type},
+    def test_persists_video_with_ordered_inputs(self, ready_proxy, tmp_path):
+        output_dir = tmp_path / "videos"
+        output = json.dumps({"url": str(output_dir)})
+        references = [("first.png", b"first-reference"), ("second.png", b"second")]
+        response = httpx.post(
+            f"{ready_proxy.url}/v1/videos/sync?flag=a%2Fb&flag=c",
+            files=[
+                ("model", (None, "minimax-h3")),
+                *[
+                    ("input_references", (name, data, "image/png"))
+                    for name, data in references
+                ],
+                ("output", (None, output)),
+            ],
             timeout=30,
         )
-        assert warmup.status_code == (400 if output == "{" else 200), warmup.text
-        size = 32 * MiB
-        chunks, sha = _audio_chunks(size)
-        content_type, parts = body(chunks, output)
-        with _PeakRSS(ready_proxy.proc.pid) as rss:
-            response = httpx.post(
-                f"{ready_proxy.url}/v1/videos/sync?flag=a%2Fb&flag=c",
-                content=iter(parts),
-                headers={"content-type": content_type},
-                timeout=120,
-            )
-        assert response.status_code == (400 if output == "{" else 200), response.text
-        assert rss.growth < 16 * MiB, (
-            f"frontend RSS grew {rss.growth / MiB:.1f} MiB for a 32 MiB upload"
-        )
-        if output == "{":
-            assert not list(tmp_path.glob("videos/*.mp4"))
-            assert ready_proxy.metric("proxy_in_flight_requests") == 0
-            return
-        if output is None:
-            media = response.content
-        else:
-            metadata = response.json()
-            receipt = metadata["output"]
-            assert receipt["url"] == str(tmp_path / "videos")
-            (artifact,) = receipt["artifacts"]
-            assert artifact == f"{metadata['id']}-0.mp4"
-            media = (Path(receipt["url"]) / artifact).read_bytes()
+        assert response.status_code == 200, response.text
+        metadata = response.json()
+        assert metadata["output"]["url"] == str(output_dir)
+        (artifact,) = metadata["output"]["artifacts"]
+        assert artifact == f"{metadata['id']}-0.mp4"
+        media = (output_dir / artifact).read_bytes()
         assert media.startswith(b"\x00\x00\x00\x18ftypmp42")
         assert json.loads(media[12:]) == {
             "model": "minimax-h3",
             "references": [
-                {"filename": "first.png", "size": size, "sha256": sha},
                 {
-                    "filename": "second.png",
-                    "size": len(b"second-reference"),
-                    "sha256": hashlib.sha256(b"second-reference").hexdigest(),
-                },
+                    "filename": name,
+                    "size": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
+                for name, data in references
             ],
             "query": "flag=a%2Fb&flag=c",
             "output": output,

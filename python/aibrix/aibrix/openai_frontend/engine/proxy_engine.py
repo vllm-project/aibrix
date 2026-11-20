@@ -127,7 +127,6 @@ from aibrix.openai_frontend.schemas.generation import (
     VideoGenerationRequest,
     VideoResponse,
     VideoStatus,
-    VideoSyncOutputResponse,
     VideoSyncResult,
     output_media_paths,
 )
@@ -2423,13 +2422,21 @@ class ProxyEngine(LLMEngine):
             **writer_options,
         )
         if isinstance(parsed, VideoSyncResult):
-            receipt = VideoSyncOutputResponse(
-                id=envelope["id"],
-                model=envelope.get("model"),
-                created=int(time.time()),
-                output=result,
+            # Sync IDs identify saved artifacts; the internal job is deleted
+            # after upload rather than exposed for subsequent retrieval.
+            receipt = VideoResponse.model_validate(
+                {
+                    "id": envelope["id"],
+                    "status": VideoStatus.COMPLETED.value,
+                    "model": envelope.get("model"),
+                    "created_at": int(time.time()),
+                    "output": result,
+                }
             )
-            return JSONResponse(receipt.model_dump(mode="json"), raw_resp.status_code)
+            return JSONResponse(
+                receipt.model_dump(mode="json", exclude_unset=True),
+                raw_resp.status_code,
+            )
         if result_schema is None:
             for key in payload:
                 envelope[key] = []

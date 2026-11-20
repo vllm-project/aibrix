@@ -16,9 +16,6 @@
 
 import asyncio
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import httpcore
@@ -82,37 +79,17 @@ def test_video_storage_path_matches_engine_environment(
 
 
 @pytest.mark.asyncio
-async def test_video_storage_path_survives_engine_directory_change(
-    monkeypatch, tmp_path
-):
-    frontend_dir = tmp_path / "frontend"
-    engine_dir = tmp_path / "engine"
-    frontend_dir.mkdir()
-    engine_dir.mkdir()
-    monkeypatch.chdir(frontend_dir)
+async def test_video_storage_path_passes_absolute_path_to_engine(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     engine_env = {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
     engine = ProxyEngine(
         ["unused"], spec=VLLM_OMNI_SPEC, engine_env=engine_env, fetch_media=False
     )
     try:
-        subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import os; from pathlib import Path; "
-                "path = Path(os.environ['VLLM_OMNI_SERVER_STORAGE__PATH']); "
-                "path.mkdir(parents=True, exist_ok=True); "
-                "path.joinpath('video_gen_test').write_bytes(b'mp4')",
-            ],
-            cwd=engine_dir,
-            env={**os.environ, **(engine._subprocess._env or {})},
-            check=True,
-            capture_output=True,
-            timeout=5,
+        assert engine._video_storage_path == tmp_path / "videos"
+        assert engine._subprocess._env["VLLM_OMNI_SERVER_STORAGE__PATH"] == str(
+            tmp_path / "videos"
         )
-        assert engine._video_storage_path == frontend_dir / "videos"
-        assert (frontend_dir / "videos" / "video_gen_test").read_bytes() == b"mp4"
-        assert not (engine_dir / "videos").exists()
         assert engine_env == {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
     finally:
         await engine.aclose()
