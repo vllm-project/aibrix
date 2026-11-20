@@ -506,6 +506,9 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
 				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
 			}
+			if err := initPodGatewayMetricsCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod gateway metrics collector")
+			}
 			if err := initPodOutputRateCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
 				klog.ErrorS(err, "Failed to register pod output rate collector")
 			}

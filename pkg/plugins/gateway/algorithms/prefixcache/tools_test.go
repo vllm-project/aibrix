@@ -86,17 +86,117 @@ func TestBuildTokenizeInputFromChatRequestTools(t *testing.T) {
 	var chatReq types.ChatCompletionRequest
 	require.NoError(t, json.Unmarshal(body, &chatReq))
 
+	rawMsgs := rawChatMessages(body)
+	assert.Equal(t, `[{"role":"user","content":"hi"}]`, string(rawMsgs))
+
 	tools := rawChatTools(body)
 	// The raw bytes are kept, including fields the OpenAI types do not model.
 	assert.Equal(t, `[{"type":"function","function":{"name":"f","x-extra":1}}]`, string(tools))
 
-	input, err := buildTokenizeInputFromChatRequest(&chatReq, tools)
+	input, err := buildTokenizeInputFromChatRequest(&chatReq, rawMsgs, tools)
 	require.NoError(t, err)
+	assert.Equal(t, rawMsgs, input.Messages)
 	assert.Equal(t, tools, input.Tools)
 
-	input, err = buildTokenizeInputFromChatRequest(&chatReq, nil)
+	// Fallback to chatReq.Messages when rawMsgs is nil
+	input, err = buildTokenizeInputFromChatRequest(&chatReq, nil, tools)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(rawMsgs), string(input.Messages))
+	assert.Equal(t, tools, input.Tools)
+
+	input, err = buildTokenizeInputFromChatRequest(&chatReq, rawMsgs, nil)
 	require.NoError(t, err)
 	assert.Nil(t, input.Tools)
+}
+
+func TestBuildTokenizeInputFromChatRequest_Validation(t *testing.T) {
+	t.Run("empty messages", func(t *testing.T) {
+		var chatReq types.ChatCompletionRequest
+		_, err := buildTokenizeInputFromChatRequest(&chatReq, nil, nil)
+		require.ErrorContains(t, err, "no messages in chat completion request")
+	})
+
+	t.Run("missing role", func(t *testing.T) {
+		body := []byte(`{"messages":[{"content":"hi"}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		_, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.ErrorContains(t, err, "message at index 0 has no role")
+	})
+
+	t.Run("content null without tool calls", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		_, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.ErrorContains(t, err, "message at index 1 has nil content")
+	})
+
+	t.Run("content null with empty tool_calls array", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[]}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		_, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.ErrorContains(t, err, "message at index 1 has nil content")
+	})
+
+	t.Run("content null with empty function_call object", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"function_call":{}}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		_, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.ErrorContains(t, err, "message at index 1 has nil content")
+	})
+
+	t.Run("content omitted without tool calls", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant"}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		_, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.ErrorContains(t, err, "message at index 1 has nil content")
+	})
+
+	t.Run("valid with tool_calls and null content", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f"}}]}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		input, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.NoError(t, err)
+		assert.NotEmpty(t, input.Messages)
+	})
+
+	t.Run("valid with function_call and null content", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		input, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.NoError(t, err)
+		assert.NotEmpty(t, input.Messages)
+	})
+
+	t.Run("valid with tool_calls and omitted content", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"f"}}]}]}`)
+		var chatReq types.ChatCompletionRequest
+		require.NoError(t, json.Unmarshal(body, &chatReq))
+		input, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatMessages(body), nil)
+		require.NoError(t, err)
+		assert.NotEmpty(t, input.Messages)
+	})
+}
+
+func TestRawChatMessages(t *testing.T) {
+	cases := map[string]string{
+		"absent":  `{"tools":[]}`,
+		"null":    `{"messages":null}`,
+		"object":  `{"messages":{}}`,
+		"invalid": `{"messages":`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Nil(t, rawChatMessages([]byte(body)))
+		})
+	}
+	assert.Equal(t, `[]`, string(rawChatMessages([]byte(`{"messages": [] }`))))
 }
 
 func TestRawChatTools(t *testing.T) {

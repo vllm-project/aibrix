@@ -1227,6 +1227,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 }
 
 // StartHTTPServer starts the gateway's HTTP server with metrics and API handlers.
+// Both /v1/models and /v1/models/ use the same handler without redirects.
 // In local/standalone mode, Envoy routes /v1/models here since there is no metadata service.
 // In standard K8s deployment, Envoy routes /v1/models to the metadata service instead,
 // so the /v1/models handler here is never reached — no conflict.
@@ -1246,6 +1247,7 @@ func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Serv
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/v1/models", handler)
+	mux.HandleFunc("/v1/models/{$}", handler)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

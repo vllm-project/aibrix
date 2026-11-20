@@ -16,6 +16,7 @@ limitations under the License.
 package cache
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +31,10 @@ type Pod struct {
 	Models       *utils.Registry[string]             // Model/adapter names that the pod is running
 	Metrics      utils.SyncMap[string, MetricRecord] // Pod metrics (metric_name -> record)
 	ModelMetrics utils.SyncMap[string, MetricRecord] // Pod-model metrics (model_name/metric_name -> record)
+
+	// Shared gateway labels are immutable for this Pod object and rebuilt on update.
+	gatewayMetricLabelsOnce sync.Once
+	gatewayMetricLabels     []string
 
 	// Realtime statstistic
 	runningRequests        int32 // Realtime running requests counter.

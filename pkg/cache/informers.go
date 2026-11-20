@@ -497,6 +497,7 @@ func (c *Store) addPodLocked(pod *v1.Pod) (metaPod *Pod, flakyReAdd bool) {
 	metaPod, loaded := c.metaPods.LoadOrStore(key, c.bufferPod)
 	if !loaded {
 		c.bufferPod = nil
+		metaPod.gatewayMetricLabelValues()
 	} else {
 		// An entry already existed, so this buffer wasn't consumed and will
 		// be reused for an unrelated pod on some future call -- clear any

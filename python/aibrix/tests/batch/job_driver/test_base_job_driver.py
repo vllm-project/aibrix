@@ -14,13 +14,15 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast
 from unittest.mock import patch
 
 import pytest
 
 from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.client.engine import DispatchStatsSnapshot
+from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.job_driver import (
     BaseJobDriver,
     ExternalRuntime,
@@ -46,7 +48,7 @@ from aibrix.batch.job_entity import batch_job as batch_job_module
 from aibrix.batch.state import JobMetaInfo
 from aibrix.batch.worker import SingleJobRunner
 from aibrix.context.infra import InfrastructureContext
-from aibrix.metadata.core.metrics import Emitter, metrics_names
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 
 def _make_job(
@@ -339,6 +341,37 @@ def test_make_failure_error_prefers_explicit_job_context_for_normalization_log()
     assert kwargs["job_id"] == "job-explicit"
 
 
+def test_emit_finalization_phase_metric_uses_driver_boundary(monkeypatch):
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_timer(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
+    job = _make_job()
+    driver = _make_driver(job)
+    finalizing_at = datetime(2024, 1, 1, 0, 0, 0)
+    finalization_done_at = finalizing_at + timedelta(seconds=7)
+
+    driver._emit_finalization_phase_metric(
+        job,
+        finalization_started_at=finalizing_at,
+        finalization_ended_at=finalization_done_at,
+    )
+
+    assert len(metric_calls) == 1
+    name, value, tags = metric_calls[0]
+    assert (
+        name == f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms"
+    )
+    assert value == 7000.0
+    assert tags["phase"] == "finalization"
+    assert tags["phase_order"] == "060"
+    assert tags["event"] == "Batch job latency telemetry"
+    assert tags["log_map"] == "phase_duration_ms"
+    assert tags["log_key"] == "finalization"
+
+
 class _DeadlineStopRuntime:
     provisions = True
 
@@ -448,6 +481,177 @@ def test_emit_request_completion_metrics_counts_finished_requests(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_sync_completed_request_tasks_aggregates_failure_metrics(monkeypatch):
+    job = _make_job()
+    driver = _make_driver(job)
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_counter(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    async def _persist_worker_status(current_job):
+        return current_job
+
+    monkeypatch.setattr(Emitter, "counter", _record_counter)
+    monkeypatch.setattr(driver, "_persist_worker_status", _persist_worker_status)
+
+    http_500_tags = driver._request_failure_metric_tags(
+        InferenceError(
+            InferenceErrorCode.HTTP_ERROR,
+            "backend rejected request",
+            status_code=500,
+        )
+    )
+    transport_tags = driver._request_failure_metric_tags(
+        InferenceError(
+            InferenceErrorCode.TRANSPORT_ERROR,
+            "connection reset",
+        )
+    )
+
+    synced, completed = await driver._sync_completed_request_tasks(
+        job,
+        [
+            (1, True, http_500_tags),
+            (2, True, http_500_tags),
+            (3, True, transport_tags),
+            (4, False, None),
+            (5, True, None),
+        ],
+    )
+
+    assert synced is job
+    assert completed == 5
+    assert metric_calls == [
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+            1,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "result": "success",
+            },
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+            4,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "result": "fail",
+            },
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_FAILURE,
+            2,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "error_code": "http_error",
+                "status_code": "500",
+            },
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_FAILURE,
+            1,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "error_code": "transport_error",
+                "status_code": "none",
+            },
+        ),
+    ]
+
+
+def test_emit_dispatch_telemetry_emits_overview_gauges(monkeypatch):
+    job = _make_job()
+    driver = _make_driver(job)
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_gauge(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    monkeypatch.setattr(Emitter, "gauge", _record_gauge)
+
+    driver._emit_dispatch_telemetry(
+        job.job_id,
+        DispatchStatsSnapshot(
+            started=4,
+            completed=3,
+            failed=1,
+            inflight=2,
+            limit=8,
+            max_inflight=5,
+            window_started=4,
+            window_completed=3,
+            window_failed=1,
+            avg_latency_seconds=0.4,
+            p90_latency_seconds=0.8,
+            avg_queue_wait_seconds=0.11,
+            p90_queue_wait_seconds=0.33,
+            avg_qps_wait_seconds=0.01,
+            p90_qps_wait_seconds=0.02,
+            avg_send_latency_seconds=0.04,
+            p90_send_latency_seconds=0.05,
+        ),
+        1.0,
+        final=False,
+    )
+
+    metric_map = {name: (value, tags) for name, value, tags in metric_calls}
+
+    inflight_value, inflight_tags = metric_map[
+        "metadata.batch.dispatch.telemetry.inflight"
+    ]
+    assert inflight_value == 2.0
+    assert inflight_tags["job_id"] == job.job_id
+    assert inflight_tags["event"] == "Batch dispatch telemetry summary"
+    assert inflight_tags["log_context"] == "job_id"
+    assert inflight_tags["log_field"] == "inflight"
+
+    queue_value, queue_tags = metric_map[
+        "metadata.batch.dispatch.telemetry.p90_queue_wait_seconds"
+    ]
+    assert queue_value == 0.33
+    assert queue_tags["job_id"] == job.job_id
+    assert queue_tags["log_field"] == "p90_queue_wait_seconds"
+
+    summary_value, summary_tags = metric_map[
+        "metadata.batch.dispatch.telemetry.summary"
+    ]
+    assert summary_value == 1.0
+    assert summary_tags["job_id"] == job.job_id
+    assert summary_tags["event"] == "Batch dispatch telemetry summary"
+    assert summary_tags["log_context"] == "job_id"
+    assert summary_tags["final"] == "false"
+    assert T("flush", "true").value == summary_tags["flush"]
+
+
+def test_dispatch_telemetry_enabled_uses_env_switch(monkeypatch):
+    monkeypatch.setattr(base_module.envs, "BATCH_DISPATCH_TELEMETRY_ENABLED", False)
+    assert base_module._dispatch_telemetry_enabled() is False
+
+    monkeypatch.setattr(base_module.envs, "BATCH_DISPATCH_TELEMETRY_ENABLED", True)
+    assert base_module._dispatch_telemetry_enabled() is True
+
+    monkeypatch.setattr(
+        base_module.envs,
+        "BATCH_DISPATCH_TELEMETRY_INTERVAL_SECONDS",
+        12.5,
+    )
+    assert base_module._telemetry_interval_seconds() == 12.5
+
+
 def test_request_usage_metrics_emit_when_request_finishes(monkeypatch):
     job = _make_job()
     driver = _make_driver(job)
@@ -517,12 +721,30 @@ async def test_validate_job_records_request_count_after_success(monkeypatch):
     job = _make_job()
     driver = _make_driver(job)
     _patch_validation(monkeypatch, total=3)
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_timer(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
 
     await driver.validate_job(job)
 
     validated = await driver._progress_manager.get_job(job.job_id)
     assert validated is not None
     assert validated.status.request_counts.total == 3
+    assert len(metric_calls) == 1
+    name, value, tags = metric_calls[0]
+    assert (
+        name == f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms"
+    )
+    assert value >= 0
+    assert tags["job_id"] == job.job_id
+    assert tags["phase"] == "validation"
+    assert tags["phase_order"] == "020"
+    assert tags["event"] == "Batch job latency telemetry"
+    assert tags["log_map"] == "phase_duration_ms"
+    assert tags["log_key"] == "validation"
 
 
 @pytest.mark.asyncio

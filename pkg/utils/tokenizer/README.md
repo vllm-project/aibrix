@@ -161,10 +161,10 @@ if extended, ok := tok.(interface {
     
     chatInput := tokenizer.TokenizeInput{
         Type: tokenizer.ChatInput,
-        Messages: []tokenizer.ChatMessage{
-            {Role: "system", Content: json.RawMessage(`"You are a helpful assistant."`)},
-            {Role: "user", Content: json.RawMessage(`"What is the weather today?"`)},
-        },
+        Messages: json.RawMessage(`[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What is the weather today?"}
+        ]`),
         AddGenerationPrompt: true,
     }
     
@@ -313,10 +313,11 @@ interface {
 type TokenizeInput struct {
     Type                TokenizeInputType     // "completion" or "chat"
     Text                string                // For completion input
-    Messages            []ChatMessage         // For chat input
+    Messages            json.RawMessage       // For chat input
     AddSpecialTokens    bool                 // Add special tokens
     ReturnTokenStrings  bool                 // Return token strings
     AddGenerationPrompt bool                 // For chat only
+    Tools               json.RawMessage       // For chat input (optional)
 }
 ```
 
