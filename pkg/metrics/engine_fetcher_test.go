@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1188,5 +1190,366 @@ sglang:token_usage{model_name="m",dp_rank="1"} 0.1
 			mergeSGLangDPSeries(families)
 			assert.ElementsMatch(t, original, families["sglang:token_usage"].Metric)
 		}
+	}
+}
+
+// SGLang renamed its prefill preallocation queue gauge at v0.5.12: the
+// collector swapped num_prefill_prealloc_queue_reqs for
+// num_prefill_bootstrap_queue_reqs in the same slot, fed by the same QueueCount
+// field, while leaving num_prefill_inflight_queue_reqs and
+// num_decode_prealloc_queue_reqs untouched. Deployments before that tag still
+// expose the old name, and AIBrix's own container build uses a v0.5.5.post3
+// base, so the prefill queue mapping has to resolve under either name. When it
+// does not, the PD request-rate score counts the prefill backlog as zero.
+const mockSglangPrefillQueueRenamed = `# HELP sglang:num_prefill_bootstrap_queue_reqs Number of requests in the prefill bootstrap queue.
+# TYPE sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf"} 7.0
+`
+
+const mockSglangPrefillQueueLegacy = `# HELP sglang:num_prefill_prealloc_queue_reqs Number of requests in the prefill preallocation queue.
+# TYPE sglang:num_prefill_prealloc_queue_reqs gauge
+sglang:num_prefill_prealloc_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf"} 7.0
+`
+
+func TestEngineMetricsFetcher_PrefillQueueResolvesUnderBothSglangNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		exposure string
+	}{
+		{name: "RenamedAtV0512", exposure: mockSglangPrefillQueueRenamed},
+		{name: "LegacyBeforeV0512", exposure: mockSglangPrefillQueueLegacy},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupMockServer(tt.exposure, 200, 0)
+			defer server.Close()
+
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+
+			result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Empty(t, result.Errors)
+
+			key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
+			value, ok := result.ModelMetrics[key]
+			require.True(t, ok, "prefill queue did not resolve for %s", tt.name)
+			assert.Equal(t, 7.0, value.GetSimpleValue())
+		})
+	}
+}
+
+// The renamed gauge keeps the priority="" total plus per-priority breakdown
+// shape it had under its old name: both are written through
+// _log_gauge_queue_count. The breakdown is listed last so a read that folds
+// instances without the priority filter lands on high=3 instead of the total.
+const mockSglangPrefillQueueRenamedPriorities = `# HELP sglang:num_prefill_bootstrap_queue_reqs Number of requests in the prefill bootstrap queue.
+# TYPE sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority=""} 7.0
+sglang:num_prefill_bootstrap_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority="high"} 3.0
+`
+
+func TestEngineMetricsFetcher_PrefillQueueRenamedKeepsPriorityTotal(t *testing.T) {
+	server := setupMockServer(mockSglangPrefillQueueRenamedPriorities, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Empty(t, result.Errors)
+
+	key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
+	value, ok := result.ModelMetrics[key]
+	require.True(t, ok, "prefill queue did not resolve")
+	assert.Equal(t, 7.0, value.GetSimpleValue(), "priority total must win over per-priority breakdowns")
+}
+
+// Both names in one exposition: the mapped name is the preferred one, so its
+// value is the one read even when the alias is also present.
+const mockSglangPrefillQueueBothNames = `# HELP sglang:num_prefill_bootstrap_queue_reqs Number of requests in the prefill bootstrap queue.
+# TYPE sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf"} 5.0
+# HELP sglang:num_prefill_prealloc_queue_reqs Number of requests in the prefill preallocation queue.
+# TYPE sglang:num_prefill_prealloc_queue_reqs gauge
+sglang:num_prefill_prealloc_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf"} 9.0
+`
+
+// The legacy name carries the same priority="" total plus per-priority breakdown
+// shape as the renamed one. Only the renamed name is exercised by the fixture
+// above, so without this the legacy entry in sglangPriorityQueueGauges could be
+// removed without failing a test.
+const mockSglangPrefillQueueLegacyPriorities = `# HELP sglang:num_prefill_prealloc_queue_reqs Number of requests in the prefill preallocation queue.
+# TYPE sglang:num_prefill_prealloc_queue_reqs gauge
+sglang:num_prefill_prealloc_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority=""} 7.0
+sglang:num_prefill_prealloc_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority="high"} 3.0
+`
+
+// A pod where only one of two served models reports the gauge: name resolution is
+// per exposition, so the other model is simply absent rather than resolved twice.
+const mockSglangPrefillQueueOneModel = `# HELP sglang:num_prefill_bootstrap_queue_reqs Number of requests in the prefill bootstrap queue.
+# TYPE sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs{model_name="model-a"} 4.0
+`
+
+func TestResolveRawMetricName(t *testing.T) {
+	metric := Metric{
+		EngineMetricsNameMapping: map[string]string{"sglang": "sglang:new"},
+		EngineMetricsNameAliases: map[string][]string{"sglang": {"sglang:old"}},
+	}
+	fams := func(names ...string) map[string]*dto.MetricFamily {
+		out := make(map[string]*dto.MetricFamily, len(names))
+		for _, name := range names {
+			out[name] = &dto.MetricFamily{}
+		}
+		return out
+	}
+
+	tests := []struct {
+		name        string
+		engineType  string
+		families    map[string]*dto.MetricFamily
+		wantName    string
+		wantMapped  bool
+		wantPresent bool
+	}{
+		{
+			name:        "MappedNameWins",
+			engineType:  "sglang",
+			families:    fams("sglang:new", "sglang:old"),
+			wantName:    "sglang:new",
+			wantMapped:  true,
+			wantPresent: true,
+		},
+		{
+			name:        "AliasUsedWhenMappedNameAbsent",
+			engineType:  "sglang",
+			families:    fams("sglang:old"),
+			wantName:    "sglang:old",
+			wantMapped:  true,
+			wantPresent: true,
+		},
+		{
+			name:        "AbsentReportsMappedName",
+			engineType:  "sglang",
+			families:    fams("sglang:other"),
+			wantName:    "sglang:new",
+			wantMapped:  true,
+			wantPresent: false,
+		},
+		{
+			name:        "NoMappingForEngine",
+			engineType:  "vllm",
+			families:    fams("sglang:new"),
+			wantName:    "",
+			wantMapped:  false,
+			wantPresent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name, mapped, present := resolveRawMetricName(metric, tt.engineType, tt.families)
+			assert.Equal(t, tt.wantName, name)
+			assert.Equal(t, tt.wantMapped, mapped)
+			assert.Equal(t, tt.wantPresent, present)
+		})
+	}
+}
+
+func TestMetricRawMetricNamesForEngine(t *testing.T) {
+	t.Run("NoMapping", func(t *testing.T) {
+		metric := Metric{EngineMetricsNameMapping: map[string]string{"sglang": "sglang:x"}}
+		names, ok := metric.RawMetricNamesForEngine("vllm")
+		assert.False(t, ok)
+		assert.Nil(t, names)
+	})
+
+	t.Run("MappedWithoutAliases", func(t *testing.T) {
+		metric := Metric{EngineMetricsNameMapping: map[string]string{"vllm": "vllm:x"}}
+		names, ok := metric.RawMetricNamesForEngine("vllm")
+		assert.True(t, ok)
+		assert.Equal(t, []string{"vllm:x"}, names)
+	})
+
+	t.Run("MappedWithAliasesKeepsOrder", func(t *testing.T) {
+		metric := Metric{
+			EngineMetricsNameMapping: map[string]string{"sglang": "sglang:new"},
+			EngineMetricsNameAliases: map[string][]string{"sglang": {"sglang:old", "sglang:older"}},
+		}
+		names, ok := metric.RawMetricNamesForEngine("sglang")
+		assert.True(t, ok)
+		assert.Equal(t, []string{"sglang:new", "sglang:old", "sglang:older"}, names)
+	})
+}
+
+func TestEngineMetricsFetcher_FetchTypedMetricPrefillQueueUnderBothSglangNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		exposure string
+	}{
+		{name: "RenamedAtV0512", exposure: mockSglangPrefillQueueRenamed},
+		{name: "LegacyBeforeV0512", exposure: mockSglangPrefillQueueLegacy},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupMockServer(tt.exposure, 200, 0)
+			defer server.Close()
+
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+
+			value, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "sglang", "test-pod", NumPrefillPreallocQueueReqs)
+			require.NoError(t, err)
+			assert.Equal(t, 7.0, value.GetSimpleValue())
+		})
+	}
+}
+
+func TestEngineMetricsFetcher_PrefillQueuePrefersMappedNameWhenBothPresent(t *testing.T) {
+	server := setupMockServer(mockSglangPrefillQueueBothNames, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	t.Run("FetchTypedMetric", func(t *testing.T) {
+		fetcher := NewEngineMetricsFetcher()
+
+		value, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "sglang", "test-pod", NumPrefillPreallocQueueReqs)
+		require.NoError(t, err)
+		assert.Equal(t, 5.0, value.GetSimpleValue(), "the mapped name must win when the exposition carries both")
+	})
+
+	t.Run("FetchAllTypedMetrics", func(t *testing.T) {
+		fetcher := NewEngineMetricsFetcher()
+
+		result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Empty(t, result.Errors)
+
+		key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
+		value, ok := result.ModelMetrics[key]
+		require.True(t, ok, "prefill queue did not resolve")
+		assert.Equal(t, 5.0, value.GetSimpleValue(), "the mapped name must win when the exposition carries both")
+	})
+}
+
+func TestEngineMetricsFetcher_PrefillQueueLegacyKeepsPriorityTotal(t *testing.T) {
+	server := setupMockServer(mockSglangPrefillQueueLegacyPriorities, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Empty(t, result.Errors)
+
+	key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
+	value, ok := result.ModelMetrics[key]
+	require.True(t, ok, "prefill queue did not resolve under the legacy name")
+	assert.Equal(t, 7.0, value.GetSimpleValue(), "priority total must win over per-priority breakdowns")
+}
+
+func TestEngineMetricsFetcher_PrefillQueueAbsentReportsMappedName(t *testing.T) {
+	// A non-PD SGLang exposes neither name. The error has to name the mapped
+	// metric, which is what an operator greps for, not the legacy alias.
+	server := setupMockServer(mockSglangMetrics, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	t.Run("FetchAllTypedMetrics", func(t *testing.T) {
+		fetcher := NewEngineMetricsFetcher()
+
+		result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Errors, 1)
+		assert.Contains(t, result.Errors[0].Error(), "sglang:num_prefill_bootstrap_queue_reqs")
+	})
+
+	t.Run("FetchTypedMetric", func(t *testing.T) {
+		config := DefaultEngineMetricsFetcherConfig()
+		config.MaxRetries = 0
+		fetcher := NewEngineMetricsFetcherWithConfig(config)
+
+		_, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "sglang", "test-pod", NumPrefillPreallocQueueReqs)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sglang:num_prefill_bootstrap_queue_reqs")
+	})
+}
+
+func TestEngineMetricsFetcher_PrefillQueueResolvedPerExposition(t *testing.T) {
+	server := setupMockServer(mockSglangPrefillQueueOneModel, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Empty(t, result.Errors)
+
+	value, ok := result.ModelMetrics["model-a/"+NumPrefillPreallocQueueReqs]
+	require.True(t, ok, "the model that reports the gauge must resolve")
+	assert.Equal(t, 4.0, value.GetSimpleValue())
+	_, ok = result.ModelMetrics["model-b/"+NumPrefillPreallocQueueReqs]
+	assert.False(t, ok, "a model that does not report the gauge must not get a value")
+}
+
+// Real expositions, captured from two SGLang releases serving Qwen/Qwen3-0.6B on
+// one RTX 4090 with a unified server. They sit in testdata rather than in inline
+// consts because the question is whether the fetcher resolves against what an
+// engine actually serves, and the two expositions differ in exactly the way the
+// alias exists for: 0.5.5.post3 exposes the prealloc name only (36 families, none
+// carrying the bootstrap name), 0.5.13 exposes the bootstrap name only (62
+// families, none carrying the prealloc name). 0.5.13 also needs --enable-metrics;
+// without it /metrics is a 404.
+func TestEngineMetricsFetcher_RealSglangExpositionsResolvePrefillQueue(t *testing.T) {
+	cases := []struct {
+		release string
+		fixture string
+		present string
+		absent  string
+	}{
+		{"v0.5.5.post3", "testdata/sglang-0.5.5.post3-unified.prom",
+			"sglang:num_prefill_prealloc_queue_reqs", "sglang:num_prefill_bootstrap_queue_reqs"},
+		{"v0.5.13", "testdata/sglang-0.5.13-unified.prom",
+			"sglang:num_prefill_bootstrap_queue_reqs", "sglang:num_prefill_prealloc_queue_reqs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.release, func(t *testing.T) {
+			body, err := os.ReadFile(tc.fixture)
+			require.NoError(t, err)
+			require.Contains(t, string(body), "# HELP "+tc.present+" ")
+			require.NotContains(t, string(body), tc.absent,
+				"fixture no longer shows the %s exposition", tc.release)
+
+			server := setupMockServer(string(body), 200, 0)
+			defer server.Close()
+
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+
+			result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Empty(t, result.Errors)
+
+			key := "Qwen/Qwen3-0.6B/" + NumPrefillPreallocQueueReqs
+			value, ok := result.ModelMetrics[key]
+			require.True(t, ok, "prefill queue did not resolve from a real %s exposition", tc.release)
+			assert.Equal(t, 0.0, value.GetSimpleValue(),
+				"the prefill queue gauge was idle, so the resolved value must be zero")
+		})
 	}
 }

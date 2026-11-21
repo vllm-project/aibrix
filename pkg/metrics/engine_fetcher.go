@@ -109,8 +109,8 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		return nil, fmt.Errorf("metric %s is not a raw pod metric, use FetchAllTypedMetrics for complex queries", metricName)
 	}
 
-	// Get raw metric name for this engine
-	rawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]
+	// A metric with no mapping for this engine cannot be read from its exposition.
+	primaryRawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]
 	if !exists {
 		return nil, fmt.Errorf("metric %s not supported for engine type %s", metricName, engineType)
 	}
@@ -137,11 +137,20 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 			continue
 		}
 
-		// Parse the specific metric we need
-		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
-		if err != nil {
+		// Resolve the name by presence, then parse once. Parsing each candidate in
+		// turn would also fall through to a different family when the preferred one
+		// is present but fails to parse.
+		rawMetricName, _, present := resolveRawMetricName(metricDef, engineType, allMetrics)
+		if !present {
+			klog.V(4).InfoS("Raw metric missing from engine endpoint",
+				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "rawMetric", rawMetricName)
+			continue
+		}
+
+		metricValue, parseErr := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
+		if parseErr != nil {
 			klog.V(4).InfoS("Failed to parse metric from engine endpoint",
-				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", err)
+				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", parseErr)
 			continue
 		}
 
@@ -150,8 +159,8 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		return metricValue, nil
 	}
 
-	return nil, fmt.Errorf("failed to fetch typed metric %s from engine endpoint %s after %d attempts",
-		metricName, identifier, ef.config.MaxRetries+1)
+	return nil, fmt.Errorf("failed to fetch typed metric %s (raw metric %s) from engine endpoint %s after %d attempts",
+		metricName, primaryRawMetricName, identifier, ef.config.MaxRetries+1)
 }
 
 // FetchRawMetric fetches a metric by its raw Prometheus name from an explicit metrics URL,
@@ -263,27 +272,41 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			continue
 		}
 
-		// Get raw metric name for this engine
-		rawMetricName, exists := metricDef.EngineMetricsNameMapping[result.EngineType]
-		if !exists {
+		// Resolve the raw name once against this exposition, then parse it. The
+		// resolution is per exposition rather than per model, so a pod that exposes
+		// the family for only some of its models resolves the same way for all.
+		rawMetricName, mapped, present := resolveRawMetricName(metricDef, result.EngineType, allMetrics)
+		if !mapped {
 			klog.V(5).InfoS("Metric not supported for engine type", "metric", metricName, "engine", result.EngineType)
 			continue
 		}
 
+		// Report an absent family against the mapped name, which is the one an
+		// operator would search for, rather than against the last alias tried.
+		absentErr := fmt.Errorf("raw metric %s not found", rawMetricName)
+
 		// Store in appropriate scope
 		if metricDef.MetricScope == PodMetricScope {
-			metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
+			if !present {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, absentErr, identifier))
+				continue
+			}
+			metricValue, parseErr := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
+			if parseErr != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, parseErr, identifier))
 				continue
 			}
 			result.Metrics[metricName] = metricValue
 		} else if metricDef.MetricScope == PodModelMetricScope {
 			// Parse one value per model_name so models on a multi-model pod don't share a
 			// single instance taken from metricFamily.Metric[0].
-			modelMetrics, err := ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
+			if !present {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, absentErr, identifier))
+				continue
+			}
+			modelMetrics, parseErr := ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef)
+			if parseErr != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, parseErr, identifier))
 				continue
 			}
 			for modelName, value := range modelMetrics {
@@ -342,7 +365,14 @@ func rawFamiliesToParse(metricNames []string, engineType string) map[string]stru
 		if !exists || metricDef.MetricSource != PodRawMetrics {
 			continue
 		}
-		if rawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]; exists {
+		// Keep every name the resolver may try, not only the primary mapping.
+		// A family that exists only under an alias would otherwise be dropped
+		// from the scrape before resolveRawMetricName can fall back to it.
+		rawMetricNames, mapped := metricDef.RawMetricNamesForEngine(engineType)
+		if !mapped {
+			continue
+		}
+		for _, rawMetricName := range rawMetricNames {
 			families[rawMetricName] = struct{}{}
 		}
 	}
@@ -354,12 +384,37 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 	var availableMetrics []string
 	for metricName, metricDef := range Metrics {
 		if metricDef.MetricSource == PodRawMetrics {
-			if _, exists := metricDef.EngineMetricsNameMapping[engineType]; exists {
+			if _, exists := metricDef.RawMetricNamesForEngine(engineType); exists {
 				availableMetrics = append(availableMetrics, metricName)
 			}
 		}
 	}
 	return availableMetrics
+}
+
+// resolveRawMetricName picks the raw metric name to read for engineType out of one
+// exposition, preferring the mapped name and falling back to the aliases in order.
+// The second result is false when the metric has no mapping for that engine, which
+// is distinct from the third being false: mapped, but present under neither name.
+// In that last case the returned name is still the mapped one, so the caller's
+// error names the metric an operator would search for instead of the last alias
+// tried. Resolving by presence before parsing keeps a family that is present but
+// fails to parse from silently falling through to a different family.
+func resolveRawMetricName(metric Metric, engineType string, fams map[string]*dto.MetricFamily) (string, bool, bool) {
+	// RawMetricNamesForEngine is the one place that knows the order in which the
+	// names for an engine are tried, so a caller that keeps only the families it
+	// plans to read (as the gateway cache scrape does) can derive the same set
+	// from it instead of re-reading the alias map and dropping aliases by accident.
+	names, mapped := metric.RawMetricNamesForEngine(engineType)
+	if !mapped {
+		return "", false, false
+	}
+	for _, name := range names {
+		if _, present := fams[name]; present {
+			return name, true, true
+		}
+	}
+	return names[0], true, false
 }
 
 // parseMetricFromFamily parses the first instance of a metric family. It is used for
@@ -407,13 +462,16 @@ func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName 
 // sglangPriorityQueueGauges are the SGLang queue gauges written as a priority="" total
 // followed by per-priority breakdowns. In SGLang's request counters and latency histograms
 // priority="" instead means "no priority set", so only these families are filtered. They are
-// the gauges mapped in metrics.go that SGLang v0.5.21 writes through _log_gauge_queue_count;
-// num_retracted_reqs is written without a priority label, and num_prefill_prealloc_queue_reqs
-// is not emitted by v0.5.21.
+// the gauges mapped in metrics.go that SGLang writes through _log_gauge_queue_count;
+// num_retracted_reqs is written without a priority label. The prefill queue appears under
+// both of its names: num_prefill_prealloc_queue_reqs through v0.5.11, and
+// num_prefill_bootstrap_queue_reqs from v0.5.12 on, written the same way in both.
 var sglangPriorityQueueGauges = map[string]bool{
-	"sglang:num_running_reqs":               true,
-	"sglang:num_queue_reqs":                 true,
-	"sglang:num_decode_prealloc_queue_reqs": true,
+	"sglang:num_running_reqs":                 true,
+	"sglang:num_queue_reqs":                   true,
+	"sglang:num_decode_prealloc_queue_reqs":   true,
+	"sglang:num_prefill_bootstrap_queue_reqs": true,
+	"sglang:num_prefill_prealloc_queue_reqs":  true,
 }
 
 // filterPriorityMetricInstances prefers SGLang's priority="" queue totals over per-priority

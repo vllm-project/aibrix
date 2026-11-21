@@ -17,10 +17,13 @@ limitations under the License.
 package metrics
 
 import (
+	"os"
+	"sort"
 	"testing"
 
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMetricType(t *testing.T) {
@@ -200,4 +203,32 @@ func TestHistogramPercentileWithoutObservations(t *testing.T) {
 	p50, err := noCount.GetPercentile(50)
 	assert.NoError(t, err)
 	assert.Equal(t, 0.3, p50)
+}
+
+// A scrape that keeps only the families it plans to read must keep a family that
+// exists under an alias, or the alias the name resolver depends on is gone before
+// resolution runs. This is the contract a family keep-set has to be built from.
+func TestRawMetricFamiliesForEngineKeepsAliases(t *testing.T) {
+	const legacy = "sglang:num_prefill_prealloc_queue_reqs"
+
+	sglang := RawMetricFamiliesForEngine("sglang")
+	assert.Contains(t, sglang, "sglang:num_prefill_bootstrap_queue_reqs")
+	assert.Contains(t, sglang, legacy)
+
+	// Sorted and deduplicated, so a keep-set built from it is stable.
+	assert.True(t, sort.StringsAreSorted(sglang), "family list must be sorted")
+	for i := 1; i < len(sglang); i++ {
+		assert.NotEqual(t, sglang[i-1], sglang[i], "family list must not repeat a name")
+	}
+
+	// The name this list keeps for old engines is the family a real pre-rename
+	// exposition serves, so keeping it preserves the metric end to end.
+	body, err := os.ReadFile("testdata/sglang-0.5.5.post3-unified.prom")
+	require.NoError(t, err)
+	assert.Contains(t, string(body), legacy+"{")
+
+	// Another engine's list must not carry these names.
+	for _, name := range RawMetricFamiliesForEngine("vllm") {
+		assert.NotContains(t, name, "sglang:", "vllm keep-set must not include sglang families")
+	}
 }
