@@ -31,9 +31,11 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -785,6 +787,155 @@ func TestOnPodFlakyReAdd_DoesNotShortenExistingExclusion(t *testing.T) {
 	state.mu.Unlock()
 	assert.Equal(t, longOpenUntil, afterOpenUntil, "a shorter proactive window must not shorten an existing, longer exclusion")
 	assert.Equal(t, 1, afterTripCount, "an already-tripped pod's trip count must be untouched by a flaky-re-add signal")
+}
+
+// blacklistTestPodWithUID is blacklistTestPod for one instance of the pod: a pod deleted and
+// recreated under the same name (a StatefulSet replica, say) comes back with a new UID.
+func blacklistTestPodWithUID(name, uid string) *v1.Pod {
+	pod := blacklistTestPod(name)
+	pod.UID = k8stypes.UID(uid)
+	return pod
+}
+
+// A verdict belongs to the pod instance it was observed on. A pod recreated under the same
+// name is not excluded by the old pod's quarantine.
+func TestPodBlacklist_RecreatedPodDoesNotInheritTheBlock(t *testing.T) {
+	var b PodBlacklist
+	oldPod := blacklistTestPodWithUID("1", "uid-old")
+	failDead(&b, oldPod, podProbeFailureIterations)
+	require.True(t, b.IsQuarantined(oldPod))
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	assert.True(t, b.Allow(newPod))
+	assert.False(t, b.IsBlacklisted(newPod))
+	assert.False(t, b.IsQuarantined(newPod), "the cache must scrape the new pod")
+	assert.Empty(t, b.BlacklistReason(newPod))
+	assert.Equal(t, []*v1.Pod{newPod}, b.FilterBlacklisted([]*v1.Pod{newPod}))
+	assert.False(t, b.Allow(oldPod), "the old pod is still blocked")
+}
+
+// Nor does it inherit the old pod's probe counts.
+func TestRecordProbeResult_RecreatedPodStartsTheCountsOver(t *testing.T) {
+	var b PodBlacklist
+	failDead(&b, blacklistTestPodWithUID("1", "uid-old"), podProbeFailureIterations-1)
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	assert.False(t, b.RecordProbeResult(newPod, ProbeDead, probeFailure), "one dead sweep of the new pod is not enough")
+	assert.False(t, b.IsQuarantined(newPod))
+}
+
+// Or the old pod's trip count: its first block gets the first backoff.
+func TestRecordProbeResult_RecreatedPodStartsTheBackoffOver(t *testing.T) {
+	var b PodBlacklist
+	oldPod := blacklistTestPodWithUID("1", "uid-old")
+	tripBreaker(&b, oldPod)
+	lapseBlock(t, &b, oldPod)
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	tripBreaker(&b, newPod)
+
+	state := failureStateFor(t, &b, newPod)
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	assert.Equal(t, 1, state.tripCount)
+}
+
+// The first write for the new pod starts the entry over, so the old pod's exclusion stops
+// counting toward excluded. That is not a recovery: the old pod did not get better.
+func TestPodBlacklist_ExcludedCountFollowsARecreation(t *testing.T) {
+	captured := captureMetrics(t)
+	var b PodBlacklist
+	oldPod := blacklistTestPodWithUID("1", "uid-old")
+	b.SetLoadExcluded(oldPod, true)
+	failDead(&b, oldPod, podProbeFailureIterations)
+	state := failureStateFor(t, &b, oldPod)
+	state.mu.Lock()
+	state.probeFailures, state.probeDeadSweeps, state.probeHealthySweeps = 1, 1, 1
+	state.requestBlockedUntil, state.requestBlockReason = time.Now().Add(time.Minute), "x"
+	state.requestFailures, state.requestTrips, state.requestSuccesses = 1, 1, 1
+	state.lastRequestFailure, state.requestTripEnd = time.Now(), time.Now().Add(time.Minute)
+	state.mu.Unlock()
+	require.Equal(t, int64(1), b.excluded.Load())
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	assert.False(t, b.SetLoadExcluded(newPod, false), "the new pod was never load-excluded")
+	assert.Zero(t, b.excluded.Load())
+	assert.Equal(t, recountExcluded(&b), b.excluded.Load())
+	assert.Equal(t, int64(1), b.tracked.Load())
+	assert.Zero(t, captured.count(metrics.GatewayPodBlacklistRecoveriesTotal, nil))
+	state.mu.RLock()
+	assert.Equal(t, circuitClosed, state.state)
+	assert.Zero(t, state.tripCount)
+	assert.Zero(t, state.openUntil)
+	assert.Empty(t, state.openReason)
+	assert.False(t, state.loadExcluded)
+	assert.Zero(t, state.probeFailures)
+	assert.Zero(t, state.probeDeadSweeps)
+	assert.Zero(t, state.probeHealthySweeps)
+	assert.Zero(t, state.quarantinedUntil)
+	assert.Zero(t, state.requestBlockedUntil)
+	assert.Empty(t, state.requestBlockReason)
+	assert.Zero(t, state.requestFailures)
+	assert.Zero(t, state.requestTrips)
+	assert.Zero(t, state.requestSuccesses)
+	assert.Zero(t, state.lastRequestFailure)
+	assert.Zero(t, state.requestTripEnd)
+	state.mu.RUnlock()
+
+	loadOutlier := map[string]string{"reason": excludeLoadOutlier}
+	before := captured.count(metrics.GatewayPodBlacklistExclusionsTotal, loadOutlier)
+	assert.True(t, b.SetLoadExcluded(newPod, true))
+	assert.Equal(t, before+1, captured.count(metrics.GatewayPodBlacklistExclusionsTotal, loadOutlier),
+		"the new pod's own exclusion is counted")
+	assert.Equal(t, int64(1), b.excluded.Load())
+}
+
+// A healthy probe of the new pod also starts the entry over.
+func TestRecordProbeResult_HealthyRecreatedPodClearsTheOldExclusion(t *testing.T) {
+	var b PodBlacklist
+	oldPod := blacklistTestPodWithUID("1", "uid-old")
+	failDead(&b, oldPod, podProbeFailureIterations)
+	require.Equal(t, int64(1), b.excluded.Load())
+
+	b.RecordProbeResult(blacklistTestPodWithUID("1", "uid-new"), ProbeHealthy, "")
+
+	assert.Zero(t, b.excluded.Load())
+	assert.Equal(t, recountExcluded(&b), b.excluded.Load())
+}
+
+// A load verdict or flaky re-add for the new pod excludes it for its own reason, not under
+// the old pod's quarantine.
+func TestPodBlacklist_RecreatedPodIsExcludedForItsOwnReason(t *testing.T) {
+	for name, write := range map[string]func(*PodBlacklist, *v1.Pod){
+		"load outlier": func(b *PodBlacklist, pod *v1.Pod) { b.SetLoadExcluded(pod, true) },
+		"flaky re-add": func(b *PodBlacklist, pod *v1.Pod) { b.OnPodFlakyReAdd(pod) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var b PodBlacklist
+			failDead(&b, blacklistTestPodWithUID("1", "uid-old"), podProbeFailureIterations)
+			newPod := blacklistTestPodWithUID("1", "uid-new")
+
+			write(&b, newPod)
+
+			assert.True(t, b.IsBlacklisted(newPod))
+			assert.False(t, b.IsQuarantined(newPod))
+			assert.NotContains(t, b.BlacklistReason(newPod), "dead")
+			assert.Equal(t, int64(1), b.excluded.Load())
+		})
+	}
+}
+
+// The informer re-delivers the same pod object after a watch gap, with the same UID: that is
+// the same pod, and it keeps its quarantine.
+func TestOnPodFlakyReAdd_SameUIDKeepsTheQuarantine(t *testing.T) {
+	var b PodBlacklist
+	pod := blacklistTestPodWithUID("1", "uid-a")
+	failDead(&b, pod, podProbeFailureIterations)
+
+	b.OnPodFlakyReAdd(blacklistTestPodWithUID("1", "uid-a"))
+
+	assert.True(t, b.IsQuarantined(pod))
+	assert.Contains(t, b.BlacklistReason(pod), "dead")
 }
 
 func TestPodBlacklist_SweepStale_RemovesOnlyOldEntries(t *testing.T) {
