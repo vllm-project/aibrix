@@ -120,7 +120,7 @@ gateway:
     tolerations: []
     container:
       envoy:
-        image: envoyproxy/envoy:v1.39.6
+        image: envoyproxy/envoy:v1.33.2
         resources:
           requests:
             cpu: "1"
@@ -129,7 +129,7 @@ gateway:
             cpu: "1"
             memory: 1Gi
       shutdownManager:
-        image: envoyproxy/gateway:v1.9.4
+        image: envoyproxy/gateway:v1.2.8
         resources:
           requests:
             cpu: 10m

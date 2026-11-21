@@ -43,8 +43,6 @@ var envoyMigrationPins = []struct {
 	{"config/overlays/vke/dependency/envoy_gateway_patch.yaml", 0, 1},
 	{"config/overlays/vke/dependency/kustomization.yaml", 0, 1},
 	{"dist/chart/values.yaml", 1, 1},
-	{"dist/chart/stable.yaml", 1, 1},
-	{"dist/chart/vke.yaml", 1, 1},
 	{"deployment/standalone/docker-compose.yml", 1, 0},
 	{"hack/release/sync-dependency-images.sh", 2, 2},
 }
@@ -124,6 +122,40 @@ func TestEnvoyMigrationPinGuardRejectsDrift(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// dist/chart/stable.yaml and dist/chart/vke.yaml pair released AIBrix images
+// (v0.8.0) with a released proxy pair. They must not take the new proxy pins
+// until a release ships plugin and controller images qualified behind the new
+// proxy: the released v0.8.0 plugin behind Envoy v1.39.6 returns local-reply
+// JSON with an empty Content-Type (recorded in the PR's validation update,
+// pull request issuecomment-7048011229); current source sets the header in
+// normalizeErrorHeaderMutation, introduced by 302db06e (#3382) after v0.8.0,
+// but the released v0.8.0 images predate that commit.
+func TestReleasedValuesKeepReleasedProxyPins(t *testing.T) {
+	for _, tc := range []struct {
+		path, envoyPin, gatewayPin string
+	}{
+		{"dist/chart/stable.yaml", "envoyproxy/envoy:v1.33.2", "envoyproxy/gateway:v1.2.8"},
+		{"dist/chart/vke.yaml", "aibrix/envoy:v1.33.2", "aibrix/gateway:v1.2.8"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("../../..", tc.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, pin := range []string{tc.envoyPin, tc.gatewayPin} {
+				if !strings.Contains(string(raw), pin) {
+					t.Fatalf("%s: released pin %q not found", tc.path, pin)
+				}
+			}
+			for _, newPin := range []string{"envoy:v1.39.6", "gateway:v1.9.4"} {
+				if strings.Contains(string(raw), newPin) {
+					t.Fatalf("%s: released values must not take the new proxy pin %q", tc.path, newPin)
+				}
+			}
+		})
 	}
 }
 
