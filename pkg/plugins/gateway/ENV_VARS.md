@@ -215,8 +215,11 @@ Off by default. When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` 
 pods to K pods before the load-imbalance gate and the router run. The gate and every strategy then
 read running counts, from Redis when it is configured, for those K pods only, which bounds the
 per-request routing work by K instead of the number of ready pods (RFC #3188). When the
-[pod blacklist](blacklist/README.md) is on, it filters those K pods after they are picked, not the
-ready pods before, so it adds K lookups per request however many pods are tracked.
+[pod blacklist](blacklist/README.md) is on and has active exclusions, it first drops excluded pods
+from the bounded scout before ranking (cap-aware; up to 4K lookups plus any prefix-finder pods, or
+the ready pods when 2×4K ≥ N), then filters the K candidates afterwards (with full-fleet reselects
+counted by `gateway_pod_blacklist_reselect_total`), so per-request lookups stay O(K) however many
+pods are tracked and zero when nothing is excluded.
 
 The K pods are chosen by the strategies themselves, from a scout: 4K ready pods drawn at random
 (the whole fleet when that would cover half of it or more), plus up to K pods a strategy finds

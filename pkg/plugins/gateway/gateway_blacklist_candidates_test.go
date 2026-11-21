@@ -369,30 +369,6 @@ func Test_selectTargetPod_CandidateStageRerunIsCountedOnce(t *testing.T) {
 	assert.Equal(t, float64(requests), candidateSelectionsFor(t, "m")-before)
 }
 
-// captureBlacklistMetricCounts records counts emitted to metricName, keyed by the reason label.
-func captureBlacklistMetricCounts(t *testing.T, metricName string) *fallbackCounts {
-	t.Helper()
-	c := &fallbackCounts{counts: map[string]int{}}
-	prev := metrics.IncrementCounterMetricFnForTest
-	metrics.IncrementCounterMetricFnForTest = func(name, help string, value float64, names []string, values ...string) {
-		if prev != nil {
-			prev(name, help, value, names, values...)
-		}
-		if name != metricName {
-			return
-		}
-		for i, n := range names {
-			if n == "reason" {
-				c.mu.Lock()
-				c.counts[values[i]]++
-				c.mu.Unlock()
-			}
-		}
-	}
-	t.Cleanup(func() { metrics.IncrementCounterMetricFnForTest = prev })
-	return c
-}
-
 // newLoadedCandidateBlacklistFleet builds a fleet where healthy pods carry active load
 // (running requests 1..16, KV cache 10%..69%) and blacklisted pods have drained to 0 load,
 // matching their real state shortly after circuit-breaking (#3541).

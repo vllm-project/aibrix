@@ -319,10 +319,19 @@ type fallbackCounts struct {
 
 func captureFallbackCounts(t *testing.T) *fallbackCounts {
 	t.Helper()
+	return captureBlacklistMetricCounts(t, metrics.GatewayPodBlacklistFallbackTotal)
+}
+
+// captureBlacklistMetricCounts records counts emitted to metricName, keyed by the reason label.
+func captureBlacklistMetricCounts(t *testing.T, metricName string) *fallbackCounts {
+	t.Helper()
 	c := &fallbackCounts{counts: map[string]int{}}
 	prev := metrics.IncrementCounterMetricFnForTest
 	metrics.IncrementCounterMetricFnForTest = func(name, help string, value float64, names []string, values ...string) {
-		if name != metrics.GatewayPodBlacklistFallbackTotal {
+		if prev != nil {
+			prev(name, help, value, names, values...)
+		}
+		if name != metricName {
 			return
 		}
 		for i, n := range names {
