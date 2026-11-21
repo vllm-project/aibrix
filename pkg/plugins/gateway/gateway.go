@@ -112,7 +112,7 @@ type Server struct {
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
 	// podBlacklist is the per-pod exclusion list (probe sweep, load-outlier flag,
-	// flaky re-add) that selectTargetPod consults before routing (see the blacklist package). Its
+	// flaky re-add, upstream failure statuses) that selectTargetPod consults before routing (see the blacklist package). Its
 	// zero value is ready to use.
 	podBlacklist blacklist.PodBlacklist
 	// allBlacklistedLog throttles the "every ready pod is blacklisted" line per model.
@@ -751,6 +751,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		// already being served on.
 		st.routerCtx.MarkDecodeResponded()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
+		s.recordPodResponse(st)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
 			s.finishRequestCount(st)
@@ -1140,6 +1141,36 @@ func (s *Server) encodeMedia(routeCtx *types.RoutingContext, encoders []*v1.Pod)
 	s.encodeExecutor.EncodeMedia(routeCtx, encoders, target, routeCtx.RoutingOverrides().PD.PrefillRequestTimeout)
 }
 
+// httpRouteStatusError checks both conditions on the same parent. Each parent
+// reports independently and status.parents can be empty before reconciliation.
+func httpRouteStatusError(namespace, name string, parents []gatewayv1.RouteParentStatus) error {
+	var reasons []string
+	for _, parent := range parents {
+		var accepted, resolved bool
+		for _, condition := range parent.Conditions {
+			switch gatewayv1.RouteConditionType(condition.Type) {
+			case gatewayv1.RouteConditionAccepted:
+				accepted = condition.Status == metav1.ConditionTrue
+				if !accepted {
+					reasons = append(reasons, "route is not accepted: "+condition.Reason)
+				}
+			case gatewayv1.RouteConditionResolvedRefs:
+				resolved = condition.Status == metav1.ConditionTrue
+				if !resolved {
+					reasons = append(reasons, "route's object references are not resolved: "+condition.Reason)
+				}
+			}
+		}
+		if accepted && resolved {
+			return nil
+		}
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "does not have valid status: no parent reports both Accepted=True and ResolvedRefs=True")
+	}
+	return fmt.Errorf("httproute: %s/%s, %s", namespace, name, strings.Join(reasons, ", "))
+}
+
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
 // Successful results are cached with a TTL (default 30s, configurable via
 // AIBRIX_HTTPROUTE_CACHE_TTL). Transient errors use a short TTL so route
@@ -1185,27 +1216,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			return nil, err
 		}
 
-		errMsg := []string{}
-		for _, status := range httproute.Status.Parents {
-			if len(status.Conditions) == 0 {
-				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name))
-				break
-			}
-			for _, condition := range status.Conditions {
-				if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
-					condition.Reason != string(gatewayv1.RouteReasonAccepted) {
-					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason))
-				} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
-					condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
-					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason))
-				}
-			}
-		}
-
-		var result error
-		if len(errMsg) > 0 {
-			result = errors.New(strings.Join(errMsg, ", "))
-		}
+		result := httpRouteStatusError(defaultAIBrixNamespace, name, httproute.Status.Parents)
 		ttl := s.httprouteCacheTTL
 		if result != nil {
 			ttl = s.httprouteErrorTTL

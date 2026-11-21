@@ -93,6 +93,10 @@ type Store struct {
 
 	disableModelClaimBindings bool // Whether to ignore ModelClaim Pod annotations
 
+	// outputRateMinSamples overrides AIBRIX_OUTPUT_RATE_MIN_SAMPLES for this store when set
+	// (see minOutputRateSamples).
+	outputRateMinSamples *int
+
 	// Metrics related fields
 	subscribers          []metrics.MetricSubscriber    // List of metric subscribers
 	metrics              map[string]any                // Generic metric storage
@@ -196,8 +200,8 @@ type Store struct {
 	snapshotClock func() time.Time
 	// remoteRunningReader, when set, is where GetPodsRunningRequestsApprox and
 	// syncRunningRequestsGlobally take the other gateways' counts from instead of
-	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup,
-	// and only when AIBRIX_REMOTE_RUNNING_READER_ENABLED is true (#3442).
+	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup
+	// when Redis is configured and AIBRIX_REMOTE_RUNNING_READER_ENABLED is enabled (default true, #3442).
 	remoteRunningReader atomic.Pointer[remoteRunningReader]
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
@@ -504,6 +508,9 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			}
 			if err := initPodGatewayMetricsCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
 				klog.ErrorS(err, "Failed to register pod gateway metrics collector")
+			}
+			if err := initPodOutputRateCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod output rate collector")
 			}
 		}
 		initMetricsCache(store, stopCh)

@@ -19,6 +19,7 @@ package least
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"sort"
 	"sync"
@@ -259,6 +260,32 @@ func TestApplyRampAdjustment_NegativeElapsedClampsToZero(t *testing.T) {
 	adjusted := applyRampAdjustment(fake, t0.Add(-5*time.Second), pods, counts)
 
 	assert.Equal(t, 32, adjusted[po2PodKey("podA")])
+}
+
+func TestApplyRampAdjustment_SaturatesLargeCounts(t *testing.T) {
+	withRamp(t, 300*time.Second)
+	for _, tt := range []struct {
+		name         string
+		rampingCount int
+		warmFloor    int
+		want         int
+	}{
+		{"sum below limit", math.MaxInt - 33, 32, math.MaxInt - 1},
+		{"count at limit", math.MaxInt, 32, math.MaxInt},
+		{"warm floor at limit", 1, math.MaxInt, math.MaxInt},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pods, counts, t0, readySince := rampTestFixture()
+			counts[po2PodKey("podA")] = tt.rampingCount
+			counts[po2PodKey("podB")] = tt.warmFloor
+			counts[po2PodKey("podC")] = tt.warmFloor
+			fake := &po2FakeCache{ReadySince: readySince}
+
+			adjusted := applyRampAdjustment(fake, t0, pods, counts)
+
+			require.Equal(t, tt.want, adjusted[po2PodKey("podA")])
+		})
+	}
 }
 
 // applyRampAdjustment's LatestPodReadySince short-circuit must actually skip the per-pod

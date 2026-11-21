@@ -41,6 +41,17 @@ type Pod struct {
 	completedRequests      int64 // Monotonically increasing count of finished requests (gateway-tracked).
 	completedOutputTokens  int64 // Monotonically increasing count of output tokens of finished requests (gateway-tracked; 0 added when usage is unavailable).
 	pendingLoadUtilization atomic_ext.Float64
+
+	// completedOutputBusyNanos is the monotonically increasing sum of the time, from addPodStats
+	// to donePodStats, that finished requests with known output tokens spent on this pod. It covers
+	// the same requests as completedOutputTokens' non-zero additions, so their ratio is a per-request
+	// decode rate (see RealtimeOutputTokensPerRequestSecondEWMA).
+	completedOutputBusyNanos int64
+	// completedOutputRequests counts the finished requests behind the two counters above: those
+	// with known output tokens. A rate window updates the estimate only if it holds at least
+	// minOutputRateSamples of them (see updateRealtimeOutputTokensPerRequestSecondEWMA).
+	completedOutputRequests int64
+
 	// statsGeneration identifies this cache object's request-tracking counters.
 	// Copied on a same-IP resume (see addPodLocked) so in-flight Add/Done can
 	// follow the live object across a flap; incremented on a fresh add so a

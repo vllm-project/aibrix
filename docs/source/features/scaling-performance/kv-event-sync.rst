@@ -339,7 +339,7 @@ Best Practices
 2. **Monitoring**:
    
    - Enable prefix cache metrics for visibility
-   - Monitor ZMQ connection status in logs
+   - Watch the gateway's ``aibrix_kvcache_zmq_*`` metrics, labeled by ``pod_key``, such as ``aibrix_kvcache_zmq_connection_status`` and ``aibrix_kvcache_zmq_replay_failures_total``
    - Track prefix cache hit rates in Grafana
 
 3. **Resource Planning**:

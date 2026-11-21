@@ -35,14 +35,15 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// The remote running reader (#3442, PR (a)) reads the other gateways' running counts from the
+// The remote running reader (#3442) reads the other gateways' running counts from the
 // aibrix:rrq:* hashes the request path already keeps live, instead of from the gateway snapshot.
-// It is off by default. While it is off nothing here runs: the snapshot sync is the only source
-// of GetPodsRunningRequestsApprox's and the realtime_num_requests_running gauge's remote counts.
+// It is enabled by default when Redis is configured. Set AIBRIX_REMOTE_RUNNING_READER_ENABLED=false
+// (or 0/off/no/disabled) to disable it and keep the snapshot sync as the sole source of
+// GetPodsRunningRequestsApprox's and the realtime_num_requests_running gauge's remote counts.
 const (
 	remoteRunningReaderEnabledEnv     = "AIBRIX_REMOTE_RUNNING_READER_ENABLED"
 	remoteRunningReaderIntervalEnv    = "AIBRIX_REMOTE_RUNNING_READER_INTERVAL"
-	defaultRemoteRunningReaderEnabled = false
+	defaultRemoteRunningReaderEnabled = true
 	// defaultRemoteRunningReaderInterval is the middle of the 500 ms-2 s range that cost the
 	// same in the candidate simulation of #3442.
 	defaultRemoteRunningReaderInterval = time.Second
@@ -137,7 +138,7 @@ func initRemoteRunningReader(store *Store, stopCh <-chan struct{}) {
 	r := newRemoteRunningReader(store, interval)
 	r.startupJitter = time.Duration(rand.Int64N(int64(interval)))
 	store.remoteRunningReader.Store(r)
-	klog.InfoS("Initializing remote running reader (experimental)", "interval", interval, "maxAge", r.maxAge)
+	klog.InfoS("Initializing remote running reader", "interval", interval, "maxAge", r.maxAge)
 	go r.run(stopCh)
 }
 
