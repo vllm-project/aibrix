@@ -408,6 +408,19 @@ func TestSweepLoadOutliers_RecreatedPodIsScoredAndTheOldExclusionCleared(t *test
 	assert.Empty(t, recovered, "the old pod did not recover")
 }
 
+// A one-replica StatefulSet. The sweep does not score too few pods, but it
+// still gives each one a verdict, which adopts the recreated pod's entry.
+func TestSweepLoadOutliers_RecreatedSingleReplicaIsAdopted(t *testing.T) {
+	var b PodBlacklist
+	failDead(&b, blacklistTestPodWithUID("1", "uid-old"), podProbeFailureIterations)
+	require.Equal(t, int64(1), b.excluded.Load())
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	b.sweepLoadOutliers(fakePods{"test-model": {newPod}}, loadTable{"test-model/1": 0}.depth, nil)
+
+	assert.Zero(t, b.excluded.Load())
+}
+
 // The same when the pod's last model leaves the cache: the sweep no longer lists it anywhere.
 func TestSweepLoadOutliers_PodOfARemovedModelIsLifted(t *testing.T) {
 	var b PodBlacklist

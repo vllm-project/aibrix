@@ -280,8 +280,13 @@ func (state *podFailureState) excludingLocked() bool {
 // adoptLocked starts state over for pod when state was observed on another pod of the same
 // name, so a recreated pod inherits no block, probe or request-failure counts, or backoff
 // from the one it replaced. It is not a recovery: the old pod did not get better. Every
-// writer given the pod calls it first, and ends with syncCountLocked, which takes a
-// cleared exclusion off the count.
+// writer given the pod calls it before it writes, and ends with syncCountLocked, which
+// takes a cleared exclusion off the count. A successful response for an entry with no
+// request state writes nothing, so it does not adopt the entry.
+//
+// A UID mismatch is resolved last writer wins: a write for the old pod that lands after
+// the new pod's (such as a response to a request routed to it before it was replaced)
+// takes the entry back, and the new pod starts over again at its next write.
 //
 // mu, counted, removed and lastUpdated are kept. Caller must hold state.mu for writing.
 func (state *podFailureState) adoptLocked(pod *v1.Pod) {
