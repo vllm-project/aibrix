@@ -41,6 +41,8 @@ of them must terminate successfully for that node Job to succeed. ``status``
 remains an aggregate observation of the generated Jobs rather than a separate
 per-container execution API.
 
+.. _model-warmup-targeting:
+
 Targeting and execution
 -----------------------
 
@@ -187,6 +189,138 @@ container downloads the model into a separate node-local cache. Restrict the
 selector to the intended nodes; two nodes are sufficient for a smoke test.
 They prepare caches only and do not start an inference server. See the sample
 directory README for apply commands and prerequisites.
+
+.. _model-warmup-model-cache:
+
+Prepare model caches for ModelClaim
+-----------------------------------
+
+Use ``aibrix_download --prepare-cache`` in a custom action to prepare files
+for an unchanged :ref:`ModelClaim <modelclaim>`. Download metadata is a general
+capability of the existing downloader, not a separate Warmup service. With
+``AIBRIX_MODEL_CACHE_METADATA_DIR`` configured, ordinary successful AIBrix
+downloads also register their results while still returning the original path.
+Metadata publication is best-effort for ordinary downloads; explicit cache
+preparation requires it to succeed.
+
+The runtime reads this shared metadata, checks registered files locally, and
+reports URL hints through its existing ``cached_artifacts`` snapshot field.
+The controller can then prefer a cached warm Pod among candidates that satisfy
+its existing capacity and pool constraints. ModelWarmup success alone does not
+mean a model is ready to serve, and metadata does not replace the loader's
+remote freshness checks.
+
+Connect an existing warm pool
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use preparation and runtime images that include this capability. Keep the
+pool's existing cache settings, mounts, credentials, and endpoint configuration.
+The only new environment variable needed to enable registration and discovery
+is ``AIBRIX_MODEL_CACHE_METADATA_DIR``. Point it at a writable directory shared
+by the preparation Job and the runtime on the same node.
+
+For the existing HF warm-pool sample, reuse its ``hf-cache`` volume and add:
+
+.. code-block:: yaml
+
+   - name: AIBRIX_MODEL_CACHE_METADATA_DIR
+     value: /root/.cache/huggingface/.aibrix/download-metadata
+
+This path uses the sample's existing node directory
+``/var/cache/aibrix/huggingface``. Do not add or override ``HF_HUB_CACHE`` or
+``DOWNLOADER_LOCAL_DIR``, or add unused backend volumes, merely to enable
+metadata. If the pool already has nondefault cache settings, make the Job use
+those settings and the same underlying files. Apply environment changes through
+the pool's normal rollout procedure; running Pods do not pick them up
+without replacement.
+
+Reuse the namespace/node authorization described in :ref:`model-warmup-targeting`.
+Prepare on the authorized worker nodes that host eligible warm Pods. Nodes in
+the same resource pool do not automatically share files. A container-local
+cache must be made accessible to both Pods before cross-Pod reuse can work;
+sharing metadata alone does not share model weights.
+
+Run preparation and verify discovery
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The following example uses the existing HF cache mount. Build and distribute
+the referenced preparation image from a source version containing this feature,
+and use a matching runtime version in the warm pool:
+
+.. literalinclude:: ../../../../samples/modelwarmup/model-cache.yaml
+   :language: yaml
+   :linenos:
+
+Apply the sample and wait for its finite preparation Job to complete:
+
+.. code-block:: bash
+
+   kubectl apply -f samples/modelwarmup/model-cache.yaml
+   kubectl -n default wait --for=condition=Complete \
+     modelwarmup/prepare-qwen-cache --timeout=30m
+
+Discovery is asynchronous and normally refreshes every 10 seconds. Before
+expecting cache-aware placement, read the runtime snapshot and check that
+``cached_artifacts`` contains the exact model URL used by the Claim:
+
+.. code-block:: bash
+
+   kubectl -n default exec deployment/warm-runtime-pool -- python3 -c \
+     'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8080/v1/runtime/snapshot").read().decode())'
+
+Once the URL is reported, apply the original Claim without adding a Warmup
+reference, local path, or revision field:
+
+.. code-block:: bash
+
+   kubectl apply -f samples/modelclaim/modelclaims.yaml
+   kubectl -n default get modelclaims -w
+
+The preparation sample covers ``Qwen/Qwen3-0.6B``. The two-model Claim sample
+also requests ``Qwen/Qwen2.5-0.5B-Instruct``; prepare that model separately if
+you want both models cached ahead of demand. Otherwise it follows the normal
+on-demand loading path. A cache hint never bypasses insufficient GPU capacity.
+
+Other sources and behavior
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The same command supports all existing downloader backends. Keep the matching
+cache and metadata directories available to both preparation and consumption:
+
+.. code-block:: bash
+
+   aibrix_download --prepare-cache --model-uri huggingface://Qwen/Qwen3-0.6B
+   aibrix_download --prepare-cache --model-uri s3://my-bucket/releases/model-a
+   aibrix_download --prepare-cache --model-uri tos://my-bucket/releases/model-b
+   aibrix_download --prepare-cache --model-uri gcs://my-bucket/releases/model-c
+
+HF also accepts ``hf://`` and bare repository IDs; GCS also accepts ``gs://``.
+HF preparation uses the existing Hub client in native cache mode. S3, TOS, and
+GCS retain their existing downloader destinations and ETag/size checks, so their
+normal source credentials and metadata requests remain necessary. This feature
+does not promise offline loading. ``--local-dir`` overrides only the producer's
+root; it must agree with the runtime's existing effective cache location.
+
+``--prepare-cache`` requires an unfiltered source and a configured metadata
+directory. Ordinary downloads with suffix filters remain supported, but their
+records are not advertised as complete caches. No user-supplied commit SHA is
+required. Nondefault HF revisions can be recorded, but only a snapshot selected
+by the local ``refs/main`` is advertised as a default repo hint. Cache hints do
+not freeze upstream references or provide exact-version scheduling.
+
+Metadata describes the current download's files using cache-relative paths and
+file fingerprints. It does not infer a model family or prove engine compatibility
+or cryptographic integrity. Missing or changed registered files withdraw new
+hints; ordinary loading keeps its existing behavior. Metadata is not a weight
+copy, and deleting a Claim or Warmup does not delete the shared files.
+
+If no new hint appears, check the Job result and runtime logs, the effective
+metadata directory and cache mounts in both Pods, file permissions, and matching
+source settings. A disabled metadata variable preserves historical download
+behavior. Runtime discovery reads registered results rather than inventorying
+unregistered HF caches; legacy served markers remain compatible. HF downloads
+performed directly inside an engine do not pass through the AIBrix registration
+hook.
 
 Security and cache durability
 -----------------------------
