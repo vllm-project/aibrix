@@ -344,11 +344,15 @@ var webhookRegistrations = []webhookRegistration{
 // for any other group is skipped rather than failing manager startup.
 func setupWebhooks(mgr ctrl.Manager) error {
 	for _, w := range webhookRegistrations {
-		if _, _, err := mgr.GetScheme().ObjectKinds(w.obj); runtime.IsNotRegisteredError(err) {
+		_, _, err := mgr.GetScheme().ObjectKinds(w.obj)
+		if runtime.IsNotRegisteredError(err) {
 			setupLog.Info("skipping webhook: none of the controllers for its API group is enabled", "webhook", w.name)
 			continue
 		}
-		if err := w.setup(mgr); err != nil {
+		if err == nil {
+			err = w.setup(mgr)
+		}
+		if err != nil {
 			setupLog.Error(err, "unable to setup webhook", "webhook", w.name)
 			return err
 		}

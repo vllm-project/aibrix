@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/features"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -125,13 +126,7 @@ func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
 			testScheme := runtime.NewScheme()
 			require.NoError(t, clientgoscheme.AddToScheme(testScheme))
 			require.NoError(t, RegisterSchemas(testScheme))
-			// Registering webhooks makes no API calls, so the manager never contacts this host.
-			mgr, err := ctrl.NewManager(&rest.Config{Host: "https://127.0.0.1:1"}, ctrl.Options{
-				Scheme:                 testScheme,
-				Metrics:                metricsserver.Options{BindAddress: "0"},
-				HealthProbeBindAddress: "0",
-			})
-			require.NoError(t, err)
+			mgr := newWebhookTestManager(t, testScheme)
 
 			require.NoError(t, setupWebhooks(mgr))
 
@@ -148,4 +143,35 @@ func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSetupWebhooksReturnsOtherSchemeErrors(t *testing.T) {
+	previous := webhookRegistrations
+	t.Cleanup(func() { webhookRegistrations = previous })
+	setupCalled := false
+	webhookRegistrations = []webhookRegistration{{
+		name: "MissingKind",
+		// An unstructured object without a kind fails ObjectKinds with a missing-kind error,
+		// not a not-registered one, so it must not be skipped.
+		obj:   &unstructured.Unstructured{},
+		setup: func(ctrl.Manager) error { setupCalled = true; return nil },
+	}}
+
+	err := setupWebhooks(newWebhookTestManager(t, runtime.NewScheme()))
+
+	require.True(t, runtime.IsMissingKind(err), "expected a missing-kind error, got %v", err)
+	require.False(t, setupCalled)
+}
+
+// newWebhookTestManager returns a manager that is never started. Registering webhooks makes no
+// API calls, so it never contacts the configured host.
+func newWebhookTestManager(t *testing.T, scheme *runtime.Scheme) ctrl.Manager {
+	t.Helper()
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "https://127.0.0.1:1"}, ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+	})
+	require.NoError(t, err)
+	return mgr
 }
