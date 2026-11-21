@@ -36,6 +36,14 @@ between callers in this mode.
 
 ---
 
+## Gateway-Tracked Pod Metrics (`pkg/cache/cache_metrics.go`)
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_OUTPUT_RATE_MIN_SAMPLES` | int | `8` | Requests with known output tokens that must complete on a pod within one ~1-minute rate window before that window updates the pod's per-request output-token rate (`gateway_pod_output_tokens_per_request_second`). A window with fewer keeps the previous value, so a pod that completes fewer requests than this per minute keeps an old estimate; `gateway_pod_output_rate_age_seconds` shows its age. No router reads the rate, so this does not affect routing. `0` lets a window with one completed request update it. Negative or unparseable values fall back to the default. Environment-only. | [../../cache/cache_metrics.go](../../cache/cache_metrics.go) |
+
+---
+
 ## Response Processing
 
 | Variable | Type | Default | Description | Source |

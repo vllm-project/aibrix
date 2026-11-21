@@ -46,7 +46,7 @@ In most Kubernetes setups, ``LoadBalancer`` is supported by default. Capture the
 Verify the route
 ^^^^^^^^^^^^^^^^
 
-Verify that the ``HTTPRoute`` status is ``Accepted`` before sending traffic:
+Before sending traffic through a model's ``HTTPRoute``, check that one entry in ``status.parents`` reports both ``Accepted=True`` and ``ResolvedRefs=True``. While a new route is pending, the gateway plugin returns HTTP 503 for inference requests with no routing strategy selected.
 
 .. code-block:: bash
 

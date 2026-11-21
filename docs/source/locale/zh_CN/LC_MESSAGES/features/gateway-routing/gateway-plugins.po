@@ -108,9 +108,14 @@ msgstr "验证路由"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:49
 msgid ""
-"Verify that the ``HTTPRoute`` status is ``Accepted`` before sending "
-"traffic:"
-msgstr "发送流量前确认 ``HTTPRoute`` 状态为 ``Accepted`` ："
+"Before sending traffic through a model's ``HTTPRoute``, check that one "
+"entry in ``status.parents`` reports both ``Accepted=True`` and "
+"``ResolvedRefs=True``. While a new route is pending, the gateway plugin "
+"returns HTTP 503 for inference requests with no routing strategy selected."
+msgstr ""
+"通过模型的 ``HTTPRoute`` 发送流量前，请确认 ``status.parents`` 中有一项同时报告 "
+"``Accepted=True`` 和 ``ResolvedRefs=True``。新路由尚未就绪时，网关插件会对未选用"
+"路由策略的推理请求返回 HTTP 503。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:121
 msgid "Send a request"
