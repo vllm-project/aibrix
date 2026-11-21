@@ -30,8 +30,8 @@ import (
 
 // The Videos create/status rewriting is only safe if ext_proc holds the whole
 // response before any of it reaches the client, and that mode is decided by
-// configuration, not by the plugin: Envoy Gateway v1.2.8 never sets ext_proc's
-// allow_mode_override, so a per-request ModeOverride is ignored. These tests read
+// configuration, not by the plugin: AIBrix leaves ext_proc's
+// allow_mode_override disabled, so a per-request ModeOverride is ignored. These tests read
 // the deployed manifest, so the code and the configuration it depends on cannot
 // drift apart silently.
 const gatewayPluginManifestPath = "../../../config/gateway/gateway-plugin/gateway-plugin.yaml"
@@ -65,10 +65,10 @@ type manifestExtensionPolicy struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		TargetRef struct {
+		TargetRefs []struct {
 			Kind string `json:"kind"`
 			Name string `json:"name"`
-		} `json:"targetRef"`
+		} `json:"targetRefs"`
 		ExtProc []struct {
 			ProcessingMode struct {
 				Request *struct {
@@ -84,7 +84,7 @@ type manifestExtensionPolicy struct {
 
 type gatewayPluginManifest struct {
 	routes   map[string]manifestHTTPRoute
-	policies map[string]manifestExtensionPolicy // keyed by the route their targetRef names
+	policies map[string]manifestExtensionPolicy // keyed by each route in targetRefs
 	// docs holds every document as free-form YAML, so a test can look for fields
 	// the typed structs above deliberately do not know about.
 	docs []map[string]interface{}
@@ -120,7 +120,12 @@ func loadGatewayPluginManifest(t *testing.T) gatewayPluginManifest {
 		case "EnvoyExtensionPolicy":
 			var policy manifestExtensionPolicy
 			require.NoError(t, yaml.Unmarshal([]byte(doc), &policy))
-			parsed.policies[policy.Spec.TargetRef.Name] = policy
+			require.NotEmpty(t, policy.Spec.TargetRefs, "policy %q must use targetRefs", policy.Metadata.Name)
+			for _, target := range policy.Spec.TargetRefs {
+				_, duplicate := parsed.policies[target.Name]
+				require.False(t, duplicate, "multiple policies target route %q", target.Name)
+				parsed.policies[target.Name] = policy
+			}
 		}
 	}
 	require.NotEmpty(t, parsed.routes)
@@ -323,19 +328,17 @@ func TestGatewayPluginManifest_SharedRouteServesChatCompletionsBatch(t *testing.
 	assert.True(t, covered, "no PathPrefix match on the reserved router covers %s", PathChatCompletionsBatch)
 }
 
-// TestGatewayPluginManifest_NoUnsupportedModeOverrideField guards against the
-// tempting one-line fix: EnvoyExtensionPolicy in Envoy Gateway v1.2.8 has no
-// allowModeOverride field, so setting it would be dropped by the API server and
-// the buffering would silently depend on a per-request override Envoy ignores.
-// The walk is over parsed documents rather than the file's text, because the
-// manifest's comments name the field precisely to say it is unsupported.
-func TestGatewayPluginManifest_NoUnsupportedModeOverrideField(t *testing.T) {
+// TestGatewayPluginManifest_ModeOverrideRemainsDisabled guards the buffering
+// contract. Envoy Gateway now supports allowModeOverride, but enabling it is a
+// separate behavior change: these manifests must continue to use route-specific
+// processing modes rather than request-level overrides.
+func TestGatewayPluginManifest_ModeOverrideRemainsDisabled(t *testing.T) {
 	manifest := loadGatewayPluginManifest(t)
 	require.NotEmpty(t, manifest.docs)
 
 	for _, doc := range manifest.docs {
 		assert.Empty(t, findModeOverrideFields(doc, ""),
-			"the manifest must not configure a mode-override field: Envoy Gateway v1.2.8 has none")
+			"mode override is intentionally disabled; route-specific modes protect video response buffering")
 	}
 }
 
@@ -369,7 +372,9 @@ func TestGatewayPluginManifest_EveryPolicyTargetsAnExistingRoute(t *testing.T) {
 	manifest := loadGatewayPluginManifest(t)
 
 	for target, policy := range manifest.policies {
-		assert.Equal(t, "HTTPRoute", policy.Spec.TargetRef.Kind)
+		for _, ref := range policy.Spec.TargetRefs {
+			assert.Equal(t, "HTTPRoute", ref.Kind)
+		}
 		routeName := strings.TrimPrefix(target, kustomizeNamePrefix)
 		assert.Contains(t, manifest.routes, routeName,
 			"policy %q targets a route that is not in this manifest", policy.Metadata.Name)

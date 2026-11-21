@@ -523,19 +523,17 @@ msgstr ""
 "Buffered 不仅服务于改写，也让创建保证真正成立：ext_proc 在缓冲正文处理完之前把响应停在响应头阶段，因此后端 ``201`` "
 "不能在任务被持久登记之前到达客户端——这样登记失败时仍能返回 ``503``。"
 
-#: ../../source/features/gateway-routing/omni-video.rst:282
+#: ../aibrix-3507/docs/source/features/gateway-routing/omni-video.rst:287
 msgid ""
-"The mode has to come from that route's configuration. The pinned Envoy "
-"Gateway (v1.2.8) has no ``allowModeOverride`` field on "
-"``EnvoyExtensionPolicy`` and never sets ext_proc's "
-"``allow_mode_override``, so a per-request ``ModeOverride`` from the "
-"gateway plugin would be silently ignored; do not add such a field on that"
-" version."
+"The mode comes from that route's configuration. Although Envoy Gateway "
+"v1.9.4 supports ``allowModeOverride`` on ``EnvoyExtensionPolicy``, AIBrix "
+"intentionally leaves it disabled. A per-request ``ModeOverride`` from the "
+"gateway plugin is therefore ignored; enabling it would be a separate "
+"behavior change that must preserve the Videos buffering guarantee."
 msgstr ""
-"该模式必须来自那条路由的配置。当前固定的 Envoy Gateway（v1.2.8）在 ``EnvoyExtensionPolicy`` 上没有 "
-"``allowModeOverride`` 字段，也从不设置 ext_proc 的 "
-"``allow_mode_override``，因此网关插件发出的按请求 ``ModeOverride`` "
-"会被静默忽略；不要在该版本上添加此字段。"
+"该模式来自那条路由的配置。虽然 Envoy Gateway v1.9.4 支持在 ``EnvoyExtensionPolicy`` 上设置 "
+"``allowModeOverride``，但 AIBrix 有意保持其禁用。因此，网关插件发出的按请求 ``ModeOverride`` "
+"仍会被忽略；启用该字段属于单独的行为变更，必须保持 Videos 响应缓冲的保证。"
 
 #: ../../source/features/gateway-routing/omni-video.rst:284
 msgid ""
@@ -621,4 +619,3 @@ msgstr ":doc:`../../production/gateway`"
 #: ../../source/features/gateway-routing/omni-video.rst:308
 msgid "Redis configuration required for cross-replica video job lookup."
 msgstr "跨副本查找视频任务所需的 Redis 配置。"
-

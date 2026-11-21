@@ -346,9 +346,8 @@ func TestHandleVideoJobSubResourceHeaders_ContentPathStaysStreaming(t *testing.T
 // TestHandleVideoJobSubResourceHeaders_SendsNoModeOverride: the response body
 // mode comes from the route's EnvoyExtensionPolicy (see
 // TestGatewayPluginManifest_VideoJSONResponsesAreBuffered), not from the plugin.
-// Envoy Gateway v1.2.8 leaves ext_proc's allow_mode_override off, so an override
-// sent here would be ignored - and asserting one would only look like buffering
-// was arranged when nothing had been.
+// AIBrix leaves ext_proc's allow_mode_override disabled, so an override sent
+// here would be ignored and would only look as if buffering had been arranged.
 func TestHandleVideoJobSubResourceHeaders_SendsNoModeOverride(t *testing.T) {
 	s, mockCache, registry := newTestVideoJobServer(t)
 	ctx := context.Background()

@@ -43,13 +43,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Opt in with AIBRIX_ENVOY_TEST_IMAGE=envoyproxy/envoy:v1.33.2. Only the Envoy
+// Opt in with AIBRIX_ENVOY_TEST_IMAGE=envoyproxy/envoy:v1.39.6. Only the Envoy
 // process runs in Docker; upstream HTTP and the real Gateway Process run here.
 // Host networking connects the three loopback listeners; no Kubernetes is used.
+// Alternatively set AIBRIX_ENVOY_TEST_BINARY to a local Envoy executable.
+// The caller is responsible for checking its version and provenance.
 func TestEnvoyStreamedUpstreamErrors(t *testing.T) {
 	image := os.Getenv("AIBRIX_ENVOY_TEST_IMAGE")
-	if image == "" {
-		t.Skip("set AIBRIX_ENVOY_TEST_IMAGE to run against real Envoy")
+	if image == "" && os.Getenv("AIBRIX_ENVOY_TEST_BINARY") == "" {
+		t.Skip("set AIBRIX_ENVOY_TEST_IMAGE or AIBRIX_ENVOY_TEST_BINARY to run against real Envoy")
 	}
 	processor := &envoyObservedProcessor{}
 	upstream := httptest.NewServer(http.HandlerFunc(processor.serveUpstream))
@@ -66,7 +68,7 @@ func TestEnvoyStreamedUpstreamErrors(t *testing.T) {
 	extProcPb.RegisterExternalProcessorServer(grpcServer, processor)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
-	endpoint := startTestEnvoy(t, image, listener.Addr().(*net.TCPAddr).Port, upstream.Listener.Addr().(*net.TCPAddr).Port)
+	endpoint := startTestEnvoy(t, image, listener.Addr().(*net.TCPAddr).Port, upstream.Listener.Addr().(*net.TCPAddr).Port, "")
 	client := &http.Client{Timeout: 8 * time.Second, Transport: &http.Transport{Proxy: nil}}
 	t.Cleanup(client.CloseIdleConnections)
 	const nested = `{"error":{"message":"invalid parameter","type":"invalid_request_error","param":"top_p","code":400}}`
@@ -161,18 +163,21 @@ func envoyChatRequest(t *testing.T, endpoint string, stream bool) *http.Request 
 }
 
 type envoyExchange struct {
-	code          int
-	parts         []string
-	contentType   string
-	contentLength bool
-	sse           bool
-	headersSent   chan struct{}
-	headerOnce    sync.Once
-	bodySeen      chan struct{}
-	finishSSE     chan struct{}
-	immediate     atomic.Int64
-	mu            sync.Mutex
-	callbacks     []string
+	onRequestBodyProcessed func()
+	code                   int
+	parts                  []string
+	contentType            string
+	contentLength          bool
+	sse                    bool
+	headersSent            chan struct{}
+	headerOnce             sync.Once
+	bodySeen               chan struct{}
+	finishSSE              chan struct{}
+	immediate              atomic.Int64
+	requestHeaders         atomic.Int64
+	responseHeaders        atomic.Int64
+	mu                     sync.Mutex
+	callbacks              []string
 }
 
 func newEnvoyExchange(code int, parts []string, typ string, length bool) *envoyExchange {
@@ -246,6 +251,12 @@ type envoyObservedStream struct {
 
 func (s *envoyObservedStream) Recv() (*extProcPb.ProcessingRequest, error) {
 	req, err := s.ExternalProcessor_ProcessServer.Recv()
+	if err == nil && req.GetRequestHeaders() != nil {
+		s.exchange.requestHeaders.Add(1)
+	}
+	if err == nil && req.GetResponseHeaders() != nil {
+		s.exchange.responseHeaders.Add(1)
+	}
 	if err == nil && req.GetResponseBody() != nil {
 		b := req.GetResponseBody()
 		s.exchange.mu.Lock()
@@ -258,6 +269,11 @@ func (s *envoyObservedStream) Recv() (*extProcPb.ProcessingRequest, error) {
 	return req, err
 }
 func (s *envoyObservedStream) Send(resp *extProcPb.ProcessingResponse) error {
+	// Observe accounting after the real request-body handler has routed, before
+	// Envoy can forward the body and finish the request on a fast upstream.
+	if resp.GetRequestBody() != nil && s.exchange.onRequestBodyProcessed != nil {
+		s.exchange.onRequestBodyProcessed()
+	}
 	err := s.ExternalProcessor_ProcessServer.Send(resp)
 	if resp.GetImmediateResponse() != nil {
 		s.exchange.immediate.Add(1)
@@ -288,7 +304,7 @@ func reserveEnvoyPort(t *testing.T) int {
 	require.NoError(t, l.Close())
 	return port
 }
-func startTestEnvoy(t *testing.T, image string, extProcPort, upstreamPort int) string {
+func startTestEnvoy(t *testing.T, image string, extProcPort, upstreamPort int, expectedVersion string) string {
 	t.Helper()
 	port, admin := reserveEnvoyPort(t), reserveEnvoyPort(t)
 	config := fmt.Sprintf(`admin:
@@ -356,20 +372,43 @@ static_resources:
 `, admin, port, extProcPort, upstreamPort)
 	path := filepath.Join(t.TempDir(), "envoy.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(config), 0600))
+	t.Logf("Envoy probe configuration:\n%s", config)
 	// The container reads this non-secret configuration as a different UID.
 	require.NoError(t, os.Chmod(path, 0644))
-	name := fmt.Sprintf("aibrix-envoy-3372-%d", port)
-	output, err := envoyDockerCommand("run", "--detach", "--network=host", "--name", name,
-		"--mount", "type=bind,src="+path+",dst=/tmp/envoy.yaml,readonly", image,
-		"-c", "/tmp/envoy.yaml", "--concurrency", "1", "--log-level", "warning").CombinedOutput()
-	require.NoError(t, err, "docker run: %s", output)
-	t.Cleanup(func() {
-		if t.Failed() {
-			logs, _ := envoyDockerCommand("logs", name).CombinedOutput()
-			t.Logf("Envoy logs: %s", logs)
+	if binary := os.Getenv("AIBRIX_ENVOY_TEST_BINARY"); binary != "" {
+		logPath := filepath.Join(t.TempDir(), "envoy.log")
+		logFile, err := os.Create(logPath)
+		require.NoError(t, err)
+		cmd := exec.Command(binary, "-c", path, "--concurrency", "1", "--log-level", "warning")
+		cmd.Stdout, cmd.Stderr = logFile, logFile
+		err = cmd.Start()
+		if err != nil {
+			_ = logFile.Close()
 		}
-		_ = envoyDockerCommand("rm", "--force", name).Run()
-	})
+		require.NoError(t, err, "start local Envoy")
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			_ = logFile.Close()
+			if t.Failed() {
+				logs, _ := os.ReadFile(logPath)
+				t.Logf("Envoy logs: %s", logs)
+			}
+		})
+	} else {
+		name := fmt.Sprintf("aibrix-envoy-3372-%d", port)
+		output, err := envoyDockerCommand("run", "--detach", "--network=host", "--name", name,
+			"--mount", "type=bind,src="+path+",dst=/tmp/envoy.yaml,readonly", image,
+			"-c", "/tmp/envoy.yaml", "--concurrency", "1", "--log-level", "warning").CombinedOutput()
+		require.NoError(t, err, "docker run: %s", output)
+		t.Cleanup(func() {
+			if t.Failed() {
+				logs, _ := envoyDockerCommand("logs", name).CombinedOutput()
+				t.Logf("Envoy logs: %s", logs)
+			}
+			_ = envoyDockerCommand("rm", "--force", name).Run()
+		})
+	}
 	readyClient := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}}
 	defer readyClient.CloseIdleConnections()
 	require.Eventually(t, func() bool {
@@ -380,5 +419,26 @@ static_resources:
 		defer func() { _ = r.Body.Close() }()
 		return r.StatusCode == http.StatusOK
 	}, 20*time.Second, 100*time.Millisecond, "Envoy did not become ready")
+	for _, adminPath := range []string{"server_info", "runtime"} {
+		r, err := readyClient.Get(fmt.Sprintf("http://127.0.0.1:%d/%s", admin, adminPath))
+		require.NoError(t, err)
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, r.Body.Close())
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		if adminPath == "server_info" {
+			var info struct {
+				Version string `json:"version"`
+				State   string `json:"state"`
+			}
+			require.NoError(t, json.Unmarshal(body, &info))
+			t.Logf("Envoy version=%s state=%s", info.Version, info.State)
+			if expectedVersion != "" {
+				require.Contains(t, info.Version, "/"+expectedVersion+"/", "this probe asserts version-specific local-reply behavior")
+			}
+		} else {
+			t.Logf("Envoy admin runtime: %s", body)
+		}
+	}
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }

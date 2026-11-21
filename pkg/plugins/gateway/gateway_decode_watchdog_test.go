@@ -316,9 +316,12 @@ func TestDecodeWatchdogFirstResponseDisarmedByFirstChunk(t *testing.T) {
 // shape of a decode pod that wedges before its first token: Starlette sends the
 // response headers of a StreamingResponse before it starts iterating the
 // generator, so the headers arrive and then nothing does. The headers must not
-// disarm the first-response deadline. And since they already went to the
-// client, the kill cannot be a 504: the stream is cut instead, the way a
-// stream-idle kill is.
+// disarm the first-response deadline. And they do not prove the client has a
+// status line: Envoy holds the response headers until the first body chunk has
+// been processed, so the kill is still a 504 ImmediateResponse. A gRPC close
+// alone would reach that client as an empty 500. Where Envoy has already
+// released the headers it resets the stream instead, the way a stream-idle
+// kill does.
 func TestDecodeWatchdogFirstResponseFiresAfterHeadersWithoutBody(t *testing.T) {
 	counters := captureCounters(t)
 	recorder, decodeAddr := newWatchdogAbortRecorder(t)
@@ -360,12 +363,24 @@ func TestDecodeWatchdogFirstResponseFiresAfterHeadersWithoutBody(t *testing.T) {
 	assert.Equal(t, codes.DeadlineExceeded, grpcStatus.Code())
 	assert.Contains(t, grpcStatus.Message(), "sent headers but no body within")
 
-	// The only response is the one to the headers: nothing is synthesised on
-	// top of a status line the client already has.
+	// The acknowledgement of the headers, then the 504: the headers do not prove
+	// the client has a status line, so the client is answered the same way as
+	// when nothing arrived at all.
 	sent := srv.sentResponses()
-	require.Len(t, sent, 1)
-	assert.Nil(t, sent[0].GetImmediateResponse(),
-		"a response whose headers went out must not be replaced by an ImmediateResponse")
+	require.Len(t, sent, 2)
+	assert.Nil(t, sent[0].GetImmediateResponse(), "the first response acknowledges the headers")
+	immediate := sent[1].GetImmediateResponse()
+	require.NotNil(t, immediate, "the kill must be an ImmediateResponse, not an empty 500 from the bare gRPC close")
+	assert.Equal(t, envoyTypePb.StatusCode_GatewayTimeout, immediate.GetStatus().GetCode())
+	assert.Contains(t, immediate.GetBody(), "decode-1")
+	assert.Contains(t, immediate.GetBody(), "sent response headers but no body within")
+
+	headers := map[string]string{}
+	for _, h := range immediate.GetHeaders().GetSetHeaders() {
+		headers[h.GetHeader().GetKey()] = string(h.GetHeader().GetRawValue())
+	}
+	assert.Equal(t, "true", headers[HeaderErrorPDDecode])
+	assert.Equal(t, st.requestID, headers[HeaderRequestID])
 
 	body := recorder.wait(t, 5*time.Second)
 	assert.Equal(t, watchdogTestRID, gjson.Get(body, "rid").String())
