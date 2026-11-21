@@ -18,6 +18,7 @@ package scheduling
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -41,11 +42,22 @@ func (r binPackScheduler) SelectPod(ctx context.Context, model string, readyPods
 	selectedPod := v1.Pod{}
 	podRemainCapMin := math.MaxInt
 
+	var lastErr error
 	for _, pod := range readyPods {
 		models, err := r.cache.ListModelsByPod(pod.Name, pod.Namespace)
 		if err != nil {
-			return nil, err
+			// A pod missing from the cache (e.g. deleted between candidate listing
+			// and selection) cannot be scored, so pass over it instead of failing
+			// the whole selection, mirroring leastThroughput (#3299) and
+			// leastLatency (#3405). Log at V(4) like the leastLatency skip path so
+			// the skipped pod remains diagnosable from controller logs.
+			klog.V(4).InfoS("passing over pod whose model list is unavailable", "pod", klog.KObj(&pod), "err", err)
+			lastErr = err
+			continue
 		}
+		// podCap is a placeholder (see the review discussion on #3469): treating
+		// it as a hard admission limit is a behaviour change for binPack users
+		// and is kept explicit here until a real capacity source replaces it.
 		podCap := 10 // todo: replace mock data
 		if len(models) >= podCap {
 			continue
@@ -55,6 +67,15 @@ func (r binPackScheduler) SelectPod(ctx context.Context, model string, readyPods
 			selectedPod = pod
 			podRemainCapMin = podCap - len(models)
 		}
+	}
+	if podRemainCapMin == math.MaxInt {
+		if lastErr != nil {
+			return nil, fmt.Errorf("no ready pod has free adapter capacity: %w", lastErr)
+		}
+		if len(readyPods) == 0 {
+			return nil, fmt.Errorf("no ready pods to schedule on")
+		}
+		return nil, fmt.Errorf("no ready pod has free adapter capacity")
 	}
 
 	klog.InfoS("pod selected with first fit", "pod", klog.KObj(&selectedPod))
