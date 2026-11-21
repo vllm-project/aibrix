@@ -195,6 +195,11 @@ Available controllers:
 - ``model-warmup-controller``: Node preparation ahead of use through ModelWarmup (experimental)
 - ``stormservice-controller``: Multi-node orchestration with P/D and AFD support
 
+.. note::
+    The manager serves an admission webhook only when one of the controllers for its API group is enabled. ``model-adapter-controller``, ``model-claim-controller`` and ``model-warmup-controller`` enable the ``model`` group; ``stormservice-controller``, ``kv-cache-controller`` and ``distributed-inference-controller`` enable the ``orchestration`` group; ``pod-autoscaler-controller`` enables the ``autoscaling`` group. The Deployment webhook is served regardless of ``--controllers``. The manager skips the other webhooks at startup and logs each one.
+
+    If the installed webhook configuration still lists a skipped webhook, its ``failurePolicy`` decides what the API server does. Webhooks with ``failurePolicy: Ignore`` admit objects without their validation and defaulting. The ModelWarmup webhook uses ``failurePolicy: Fail``, so the API server rejects creating or updating a ModelWarmup while no ``model`` group controller is enabled.
+
 .. card:: What's next?
    :class-card: sd-border-1
 

@@ -218,24 +218,57 @@ msgid ""
 "support"
 msgstr "``stormservice-controller`` ：支持 P/D 和 AFD 的多节点编排"
 
-#: ../../source/getting_started/installation/installation.rst:198
+#: ../../source/getting_started/installation/installation.rst:199
+msgid ""
+"The manager serves an admission webhook only when one of the controllers "
+"for its API group is enabled. ``model-adapter-controller``, ``model-"
+"claim-controller`` and ``model-warmup-controller`` enable the ``model`` "
+"group; ``stormservice-controller``, ``kv-cache-controller`` and "
+"``distributed-inference-controller`` enable the ``orchestration`` group; "
+"``pod-autoscaler-controller`` enables the ``autoscaling`` group. The "
+"Deployment webhook is served regardless of ``--controllers``. The manager"
+" skips the other webhooks at startup and logs each one."
+msgstr ""
+"只有当某个 API 组的控制器之一被启用时，管理器才会提供该组的准入 webhook。 "
+"``model-adapter-controller`` 、 ``model-claim-controller`` 和 "
+"``model-warmup-controller`` 启用 ``model`` 组； ``stormservice-controller`` 、 "
+"``kv-cache-controller`` 和 ``distributed-inference-controller`` 启用 "
+"``orchestration`` 组； ``pod-autoscaler-controller`` 启用 ``autoscaling`` 组。"
+"无论 ``--controllers`` 如何设置，都会提供 Deployment webhook。管理器会在启动时跳过其余 "
+"webhook，并为每个被跳过的 webhook 输出一条日志。"
+
+#: ../../source/getting_started/installation/installation.rst:201
+msgid ""
+"If the installed webhook configuration still lists a skipped webhook, its"
+" ``failurePolicy`` decides what the API server does. Webhooks with "
+"``failurePolicy: Ignore`` admit objects without their validation and "
+"defaulting. The ModelWarmup webhook uses ``failurePolicy: Fail``, so the "
+"API server rejects creating or updating a ModelWarmup while no ``model`` "
+"group controller is enabled."
+msgstr ""
+"如果已安装的 webhook 配置中仍列出被跳过的 webhook，API 服务器的处理方式由其 "
+"``failurePolicy`` 决定。使用 ``failurePolicy: Ignore`` 的 webhook 会放行对象，"
+"不进行其校验和默认值设置。ModelWarmup webhook 使用 ``failurePolicy: Fail`` ，"
+"因此在没有启用任何 ``model`` 组控制器时，API 服务器会拒绝创建或更新 ModelWarmup。"
+
+#: ../../source/getting_started/installation/installation.rst:203
 msgid "What's next?"
 msgstr "下一步"
 
-#: ../../source/getting_started/installation/installation.rst:201
+#: ../../source/getting_started/installation/installation.rst:206
 msgid ":doc:`../quickstart`: deploy your first model"
 msgstr ":doc:`../quickstart` ：部署第一个模型"
 
-#: ../../source/getting_started/installation/installation.rst:202
+#: ../../source/getting_started/installation/installation.rst:207
 msgid ""
 ":doc:`../../production/model-deployment`: production model deployment "
 "guidance"
 msgstr ":doc:`../../production/model-deployment` ：生产环境模型部署指南"
 
-#: ../../source/getting_started/installation/installation.rst:203
+#: ../../source/getting_started/installation/installation.rst:208
 msgid ":doc:`../../production/gateway`: production gateway configuration"
 msgstr ":doc:`../../production/gateway` ：生产环境网关配置"
 
-#: ../../source/getting_started/installation/installation.rst:204
+#: ../../source/getting_started/installation/installation.rst:209
 msgid ":doc:`../../production/observability`: metrics, dashboards, and telemetry"
 msgstr ":doc:`../../production/observability` ：指标、仪表盘和遥测"

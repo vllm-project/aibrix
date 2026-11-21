@@ -64,18 +64,30 @@ func TestRegisterSchemasIncludesModelWarmupAPI(t *testing.T) {
 }
 
 func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
-	const (
-		modelAdapter    = "/validate-model-aibrix-ai-v1alpha1-modeladapter"
-		modelClaim      = "/validate-model-aibrix-ai-v1alpha1-modelclaim"
-		modelWarmup     = "/validate-model-aibrix-ai-v1alpha1-modelwarmup"
-		kvCache         = "/validate-orchestration-aibrix-ai-v1alpha1-kvcache"
-		stormService    = "/validate-orchestration-aibrix-ai-v1alpha1-stormservice"
-		rayClusterFleet = "/validate-orchestration-aibrix-ai-v1alpha1-rayclusterfleet"
-		podAutoscaler   = "/validate-autoscaling-aibrix-ai-v1alpha1-podautoscaler"
-		deployment      = "/validate-apps-v1-deployment"
-	)
-	model := []string{modelAdapter, modelClaim, modelWarmup}
-	orchestration := []string{kvCache, stormService, rayClusterFleet}
+	// Every path in config/webhook/manifests.yaml, so a webhook that registers only one of its
+	// mutating and validating paths is caught.
+	model := []string{
+		"/mutate-model-aibrix-ai-v1alpha1-modeladapter",
+		"/validate-model-aibrix-ai-v1alpha1-modeladapter",
+		"/validate-model-aibrix-ai-v1alpha1-modelclaim",
+		"/validate-model-aibrix-ai-v1alpha1-modelwarmup",
+	}
+	orchestration := []string{
+		"/mutate-orchestration-aibrix-ai-v1alpha1-kvcache",
+		"/validate-orchestration-aibrix-ai-v1alpha1-kvcache",
+		"/mutate-orchestration-aibrix-ai-v1alpha1-stormservice",
+		"/validate-orchestration-aibrix-ai-v1alpha1-stormservice",
+		"/validate-orchestration-aibrix-ai-v1alpha1-stormservice-scale",
+		"/validate-orchestration-aibrix-ai-v1alpha1-rayclusterfleet",
+	}
+	podAutoscaler := []string{
+		"/mutate-autoscaling-aibrix-ai-v1alpha1-podautoscaler",
+		"/validate-autoscaling-aibrix-ai-v1alpha1-podautoscaler",
+	}
+	deployment := []string{
+		"/mutate-apps-v1-deployment",
+		"/validate-apps-v1-deployment",
+	}
 	join := func(groups ...[]string) []string {
 		var paths []string
 		for _, group := range groups {
@@ -91,28 +103,28 @@ func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
 	}{
 		{
 			controllers: "*",
-			served:      join(model, orchestration, []string{podAutoscaler, deployment}),
+			served:      join(model, orchestration, podAutoscaler, deployment),
 		},
 		{
 			// The flags of config/standalone/model-adapter-controller.
 			controllers: "model-adapter-controller",
-			served:      join(model, []string{deployment}),
-			notServed:   join(orchestration, []string{podAutoscaler}),
+			served:      join(model, deployment),
+			notServed:   join(orchestration, podAutoscaler),
 		},
 		{
 			controllers: "model-warmup-controller",
-			served:      join(model, []string{deployment}),
-			notServed:   join(orchestration, []string{podAutoscaler}),
+			served:      join(model, deployment),
+			notServed:   join(orchestration, podAutoscaler),
 		},
 		{
 			controllers: "*,-pod-autoscaler-controller",
-			served:      join(model, orchestration, []string{deployment}),
-			notServed:   []string{podAutoscaler},
+			served:      join(model, orchestration, deployment),
+			notServed:   podAutoscaler,
 		},
 		{
 			controllers: "kv-cache-controller",
-			served:      join(orchestration, []string{deployment}),
-			notServed:   join(model, []string{podAutoscaler}),
+			served:      join(orchestration, deployment),
+			notServed:   join(model, podAutoscaler),
 		},
 	}
 
