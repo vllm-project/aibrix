@@ -17,6 +17,8 @@ limitations under the License.
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -24,6 +26,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/features"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 func TestRegisterSchemasIncludesModelClaimAPI(t *testing.T) {
@@ -54,4 +60,92 @@ func TestRegisterSchemasIncludesModelWarmupAPI(t *testing.T) {
 		Group: modelv1alpha1.GroupVersion.Group, Version: modelv1alpha1.GroupVersion.Version, Kind: "ModelWarmup",
 	})
 	require.NoError(t, err)
+}
+
+func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
+	const (
+		modelAdapter    = "/validate-model-aibrix-ai-v1alpha1-modeladapter"
+		modelClaim      = "/validate-model-aibrix-ai-v1alpha1-modelclaim"
+		modelWarmup     = "/validate-model-aibrix-ai-v1alpha1-modelwarmup"
+		kvCache         = "/validate-orchestration-aibrix-ai-v1alpha1-kvcache"
+		stormService    = "/validate-orchestration-aibrix-ai-v1alpha1-stormservice"
+		rayClusterFleet = "/validate-orchestration-aibrix-ai-v1alpha1-rayclusterfleet"
+		podAutoscaler   = "/validate-autoscaling-aibrix-ai-v1alpha1-podautoscaler"
+		deployment      = "/validate-apps-v1-deployment"
+	)
+	model := []string{modelAdapter, modelClaim, modelWarmup}
+	orchestration := []string{kvCache, stormService, rayClusterFleet}
+	join := func(groups ...[]string) []string {
+		var paths []string
+		for _, group := range groups {
+			paths = append(paths, group...)
+		}
+		return paths
+	}
+
+	tests := []struct {
+		controllers string
+		served      []string
+		notServed   []string
+	}{
+		{
+			controllers: "*",
+			served:      join(model, orchestration, []string{podAutoscaler, deployment}),
+		},
+		{
+			// The flags of config/standalone/model-adapter-controller.
+			controllers: "model-adapter-controller",
+			served:      join(model, []string{deployment}),
+			notServed:   join(orchestration, []string{podAutoscaler}),
+		},
+		{
+			controllers: "model-warmup-controller",
+			served:      join(model, []string{deployment}),
+			notServed:   join(orchestration, []string{podAutoscaler}),
+		},
+		{
+			controllers: "*,-pod-autoscaler-controller",
+			served:      join(model, orchestration, []string{deployment}),
+			notServed:   []string{podAutoscaler},
+		},
+		{
+			controllers: "kv-cache-controller",
+			served:      join(orchestration, []string{deployment}),
+			notServed:   join(model, []string{podAutoscaler}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.controllers, func(t *testing.T) {
+			previous := features.EnabledControllers
+			features.EnabledControllers = map[string]bool{}
+			t.Cleanup(func() { features.EnabledControllers = previous })
+			features.InitControllers(tt.controllers)
+
+			testScheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(testScheme))
+			require.NoError(t, RegisterSchemas(testScheme))
+			// Registering webhooks makes no API calls, so the manager never contacts this host.
+			mgr, err := ctrl.NewManager(&rest.Config{Host: "https://127.0.0.1:1"}, ctrl.Options{
+				Scheme:                 testScheme,
+				Metrics:                metricsserver.Options{BindAddress: "0"},
+				HealthProbeBindAddress: "0",
+			})
+			require.NoError(t, err)
+
+			require.NoError(t, setupWebhooks(mgr))
+
+			mux := mgr.GetWebhookServer().WebhookMux()
+			isServed := func(path string) bool {
+				_, pattern := mux.Handler(httptest.NewRequest(http.MethodPost, path, nil))
+				return pattern == path
+			}
+			for _, path := range tt.served {
+				require.Truef(t, isServed(path), "expected webhook %s to be served", path)
+			}
+			for _, path := range tt.notServed {
+				require.Falsef(t, isServed(path), "expected webhook %s not to be served", path)
+			}
+		})
+	}
 }
