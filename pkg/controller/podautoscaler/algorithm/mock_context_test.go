@@ -140,6 +140,10 @@ func (m *mockScalingContext) GetScaleToZero() bool {
 	return false
 }
 
+func (m *mockScalingContext) GetHoldScaleDownOnMetricFailure() bool {
+	return false
+}
+
 // UpdateByPaTypes - no-op for mock
 func (m *mockScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
 	return nil

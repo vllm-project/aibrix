@@ -503,6 +503,56 @@ func TestComputeDesiredReplicasGuardsEachMetricBeforeTakingTheMax(t *testing.T) 
 	}
 }
 
+// TestComputeDesiredReplicasNamesFailedMetrics checks that a recommendation made
+// while a metric source fails names that source, so the controller can report
+// that it rests on partial data. Without a failure no source is named.
+func TestComputeDesiredReplicasNamesFailedMetrics(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		strategy   autoscalingv1alpha1.ScalingStrategyType
+		failing    map[string]bool
+		wantFailed []string
+	}{
+		{name: "APA with a failed source", strategy: autoscalingv1alpha1.APA,
+			failing: map[string]bool{"queue_length": true}, wantFailed: []string{"queue_length"}},
+		{name: "KPA with a failed source", strategy: autoscalingv1alpha1.KPA,
+			failing: map[string]bool{"queue_length": true}, wantFailed: []string{"queue_length"}},
+		{name: "APA without a failure", strategy: autoscalingv1alpha1.APA},
+		{name: "KPA without a failure", strategy: autoscalingv1alpha1.KPA},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := testPodAutoscaler(tt.strategy)
+			pa.Spec.MetricsSources = append(pa.Spec.MetricsSources, autoscalingv1alpha1.MetricSource{
+				MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+				TargetMetric:     "queue_length",
+				TargetValue:      "50",
+			})
+			autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
+				mockMetricFetcher: mockMetricFetcher{
+					metricsValues:  map[string]float64{"gpu_cache_usage_perc": 25, "queue_length": 25},
+					failingMetrics: tt.failing,
+				},
+			}, fake.NewClientBuilder().Build())
+
+			pods := make([]corev1.Pod, 4)
+			for i := range pods {
+				pods[i].Name = fmt.Sprintf("ready-%d", i)
+			}
+			result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+				PodAutoscaler:   pa,
+				ScalingContext:  testScalingContext(t, &pa),
+				CurrentReplicas: 4,
+				ReplicaState:    ReplicaState{ReadyReplicas: 4},
+				Pods:            pods,
+				Timestamp:       time.Now(),
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantFailed, result.FailedMetrics)
+		})
+	}
+}
+
 func TestComputeDesiredReplicasDoesNotHoldWhenNoReplicasPending(t *testing.T) {
 	pa := testPodAutoscaler(autoscalingv1alpha1.APA)
 	autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
@@ -599,11 +649,16 @@ type mockMetricFetcher struct {
 	metricsValues map[string]float64
 	// unscrapable pods fail to report, as a pod that is not serving yet does.
 	unscrapable map[string]bool
+	// failingMetrics fail to fetch for every pod, as a source whose endpoint is down does.
+	failingMetrics map[string]bool
 }
 
 func (f *mockMetricFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	if f.unscrapable[pod.Name] {
 		return 0, fmt.Errorf("pod %s is not serving", pod.Name)
+	}
+	if f.failingMetrics[source.TargetMetric] {
+		return 0, fmt.Errorf("metric %s is unavailable", source.TargetMetric)
 	}
 	if v, ok := f.metricsValues[source.TargetMetric]; ok {
 		return v, nil
