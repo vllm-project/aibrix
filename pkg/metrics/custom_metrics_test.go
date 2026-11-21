@@ -330,3 +330,46 @@ func TestEmitHistogramWithoutObservationsExportsNoQuantiles(t *testing.T) {
 		assert.Equal(t, 0, podQuantileSeries(t, TimeToFirstTokenSeconds+q, served.Name), q)
 	}
 }
+
+func TestEngineHistogramsWithDifferentLabelsExportAndRetireIndependently(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	previousRegisterer := prometheus.DefaultRegisterer
+	previousHistograms := customHistograms
+	prometheus.DefaultRegisterer = registry
+	customHistograms = make(map[string]*histogramCollector)
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer = previousRegisterer
+		customHistograms = previousHistograms
+	})
+
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "warm", Namespace: "test"}}
+	first := &types.RoutingContext{Model: "first"}
+	second := &types.RoutingContext{Model: "second"}
+	firstLabels := map[string]string{"model_name": "first", "engine": "0"}
+	secondLabels := map[string]string{"model_name": "second"}
+	value := &HistogramMetricValue{Count: 1, Sum: 0.1, Buckets: map[string]float64{"1": 1}}
+	EmitMetricToPrometheus(first, pod, TimeToFirstTokenSeconds, value, firstLabels)
+	EmitMetricToPrometheus(second, pod, TimeToFirstTokenSeconds, value, secondLabels)
+
+	readModels := func() []string {
+		families, err := registry.Gather()
+		assert.NoError(t, err)
+		var models []string
+		for _, family := range families {
+			if family.GetName() != TimeToFirstTokenSeconds {
+				continue
+			}
+			for _, sample := range family.Metric {
+				for _, label := range sample.Label {
+					if label.GetName() == "model" {
+						models = append(models, label.GetValue())
+					}
+				}
+			}
+		}
+		return models
+	}
+	assert.ElementsMatch(t, []string{"first", "second"}, readModels())
+	DeleteEngineMetricFromPrometheus(second, pod, TimeToFirstTokenSeconds, secondLabels)
+	assert.Equal(t, []string{"first"}, readModels())
+}

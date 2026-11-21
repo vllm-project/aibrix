@@ -344,6 +344,15 @@ func (c *Store) updatePodMetrics() {
 				"pod", metaPod.Name, "namespace", metaPod.Namespace)
 			return true
 		}
+		if metaPod.claimMetrics != nil {
+			if len(metaPod.claimMetrics) != 0 {
+				c.updateGatewayTrackedPodMetrics(metaPod)
+			}
+			for _, target := range metaPod.claimMetrics {
+				c.enqueueModelClaimMetrics(metaPod, target, now)
+			}
+			return true
+		}
 		if c.shouldSkipPodMetricsFetch(metaPod, now) {
 			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonBackoff)
 			klog.V(4).InfoS("Pod metrics fetch is in backoff, skipping pod metrics update",
@@ -362,7 +371,7 @@ func (c *Store) updatePodMetrics() {
 		// goroutine from blocking indefinitely when workers are stuck on slow
 		// or unreachable engine pods.
 		select {
-		case c.podMetricsJobs <- metaPod:
+		case c.podMetricsJobs <- podMetricsJob{Pod: metaPod}:
 		default:
 			c.finishPodMetricsScheduling(metaPod)
 			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonQueueFull)
@@ -373,8 +382,18 @@ func (c *Store) updatePodMetrics() {
 	})
 }
 
-func (c *Store) worker(jobs <-chan *Pod) {
-	for pod := range jobs {
+type podMetricsJob struct {
+	*Pod
+	target *modelClaimMetricsTarget
+}
+
+func (c *Store) worker(jobs <-chan podMetricsJob) {
+	for job := range jobs {
+		if job.target != nil {
+			c.scrapeModelClaimMetrics(job.Pod, job.target)
+			continue
+		}
+		pod := job.Pod
 		c.markPodMetricsInFlight(pod)
 		ctx, cancel := context.WithTimeout(context.Background(), podMetricsFetchTimeout)
 		podMetricPort := getPodMetricPort(pod)
@@ -444,11 +463,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			// Update pod metrics using typed results
 			c.updatePodMetricsFromTypedResultAt(pod, result, fetchedAt)
 
-			c.syncRunningRequestsGlobally(pod)
-
-			c.updateRealtimeRunningRequestsDrainRate1m(pod)
-			c.updateRealtimeOutputTokenRateEWMA(pod)
-			c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+			c.updateGatewayTrackedPodMetrics(pod)
 
 			// Handle Prometheus-based metrics separately (these require PromQL queries)
 			if c.prometheusApi != nil {
@@ -465,6 +480,13 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				"errors", len(result.Errors))
 		}()
 	}
+}
+
+func (c *Store) updateGatewayTrackedPodMetrics(pod *Pod) {
+	c.syncRunningRequestsGlobally(pod)
+	c.updateRealtimeRunningRequestsDrainRate1m(pod)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
 }
 
 func (c *Store) tryMarkPodMetricsQueued(pod *Pod) bool {
@@ -671,7 +693,7 @@ func (c *Store) updatePodRecordAt(pod *Pod, modelName, metricName string, scope 
 				return fmt.Errorf("modelName should not be empty for scope %v", scope)
 			}
 		}
-		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), record)
+		pod.modelMetricStore(modelName).Store(c.getPodModelMetricName(modelName, metricName), record)
 	default:
 		return fmt.Errorf("scope %v is not supported", scope)
 	}
@@ -809,7 +831,11 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 	perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
 	if perSecRate >= 0 {
 		rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, rateMetricName, rateValue, metricValue.GetLabelValues())
+		if target := pod.claimMetrics[model]; target != nil {
+			target.emitMetric(rateMetricName, rateValue, metricValue.GetLabelValues())
+		} else {
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, rateMetricName, rateValue, metricValue.GetLabelValues())
+		}
 		_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
 		klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
 	}

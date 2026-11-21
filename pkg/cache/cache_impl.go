@@ -206,7 +206,7 @@ func (c *Store) GetMetricRecordByPodModel(podName, podNamespace, modelName, metr
 		return MetricRecord{}, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
-	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
+	return c.getPodMetricImpl(podName, metaPod.modelMetricStore(modelName), c.getPodModelMetricName(modelName, metricName))
 }
 
 // AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: instead of
