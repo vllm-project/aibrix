@@ -128,7 +128,7 @@ func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
 			require.NoError(t, RegisterSchemas(testScheme))
 			mgr := newWebhookTestManager(t, testScheme)
 
-			require.NoError(t, setupWebhooks(mgr))
+			require.NoError(t, setupWebhooks(mgr, webhookRegistrations))
 
 			mux := mgr.GetWebhookServer().WebhookMux()
 			isServed := func(path string) bool {
@@ -146,10 +146,8 @@ func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
 }
 
 func TestSetupWebhooksReturnsOtherSchemeErrors(t *testing.T) {
-	previous := webhookRegistrations
-	t.Cleanup(func() { webhookRegistrations = previous })
 	setupCalled := false
-	webhookRegistrations = []webhookRegistration{{
+	registrations := []webhookRegistration{{
 		name: "MissingKind",
 		// An unstructured object without a kind fails ObjectKinds with a missing-kind error,
 		// not a not-registered one, so it must not be skipped.
@@ -157,7 +155,7 @@ func TestSetupWebhooksReturnsOtherSchemeErrors(t *testing.T) {
 		setup: func(ctrl.Manager) error { setupCalled = true; return nil },
 	}}
 
-	err := setupWebhooks(newWebhookTestManager(t, runtime.NewScheme()))
+	err := setupWebhooks(newWebhookTestManager(t, runtime.NewScheme()), registrations)
 
 	require.True(t, runtime.IsMissingKind(err), "expected a missing-kind error, got %v", err)
 	require.False(t, setupCalled)

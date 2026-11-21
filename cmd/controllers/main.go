@@ -342,8 +342,8 @@ var webhookRegistrations = []webhookRegistration{
 // setupWebhooks registers the admission webhooks whose API types are in the manager's scheme.
 // RegisterSchemas adds an API group only when one of its controllers is enabled, so a webhook
 // for any other group is skipped rather than failing manager startup.
-func setupWebhooks(mgr ctrl.Manager) error {
-	for _, w := range webhookRegistrations {
+func setupWebhooks(mgr ctrl.Manager, registrations []webhookRegistration) error {
+	for _, w := range registrations {
 		_, _, err := mgr.GetScheme().ObjectKinds(w.obj)
 		if runtime.IsNotRegisteredError(err) {
 			setupLog.Info("skipping webhook: none of the controllers for its API group is enabled", "webhook", w.name)
@@ -370,7 +370,7 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig cfg.RuntimeConfig, certsRe
 		setupLog.Info("waiting for the cert generation to complete")
 		<-certsReady
 		setupLog.Info("certs ready")
-		if err := setupWebhooks(mgr); err != nil {
+		if err := setupWebhooks(mgr, webhookRegistrations); err != nil {
 			os.Exit(1)
 		}
 	}
