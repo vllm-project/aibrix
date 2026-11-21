@@ -861,14 +861,19 @@ func (c *Store) runningRequestsEstimate(pod *Pod, now time.Time) (float64, bool)
 }
 
 // updateRealtimeRunningRequestsDrainRate1m computes the 1-minute rolling rate at which completed
-// requests are draining on the pod and stores it under RealtimeRunningRequestsDrainRate1m.
-// Computed for all pods; the PD-disaggregation decode router scores on it.
+// requests are draining on the pod, stores it under RealtimeRunningRequestsDrainRate1m, and exports
+// it as a gauge on the gateway /metrics endpoint. Computed for all pods; the PD-disaggregation
+// decode router scores on it.
 func (c *Store) updateRealtimeRunningRequestsDrainRate1m(pod *Pod) {
 	completed := float64(atomic.LoadInt64(&pod.completedRequests))
 	drainRate := c.calculateRate1m(pod, "completed_requests", completed)
 	if drainRate >= 0 {
 		rateValue := &metrics.SimpleMetricValue{Value: drainRate}
-		metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeRunningRequestsDrainRate1m, rateValue, nil)
+		// The gauge describes the whole pod rather than one request, so its model label
+		// comes from the pod's own metadata: the model.aibrix.ai/name label, or the
+		// annotation of the same name for model names a label cannot carry (#3501).
+		modelName, _ := getModelNameFromPod(pod.Pod)
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.RealtimeRunningRequestsDrainRate1m, rateValue, nil)
 		_ = c.updatePodRecord(pod, "", metrics.RealtimeRunningRequestsDrainRate1m, metrics.PodMetricScope, rateValue)
 		klog.V(4).InfoS("Updating drain rate metric", "pod", pod.Name,
 			"completed_requests", completed, metrics.RealtimeRunningRequestsDrainRate1m, drainRate)
