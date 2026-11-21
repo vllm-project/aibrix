@@ -25,6 +25,7 @@ import (
 	"os"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
@@ -320,6 +321,45 @@ func main() {
 	}
 }
 
+// webhookRegistration pairs an admission webhook with the API type it serves.
+type webhookRegistration struct {
+	name  string
+	obj   runtime.Object
+	setup func(ctrl.Manager) error
+}
+
+var webhookRegistrations = []webhookRegistration{
+	{name: "ModelAdapter", obj: &modelv1alpha1.ModelAdapter{}, setup: apiwebhook.SetupModelAdapterWebhook},
+	{name: "ModelClaim", obj: &modelv1alpha1.ModelClaim{}, setup: apiwebhook.SetupModelClaimWebhook},
+	{name: "ModelWarmup", obj: &modelv1alpha1.ModelWarmup{}, setup: apiwebhook.SetupModelWarmupWebhook},
+	{name: "KVCache", obj: &orchestrationv1alpha1.KVCache{}, setup: apiwebhook.SetupKVCacheWebhookWithManager},
+	{name: "StormService", obj: &orchestrationv1alpha1.StormService{}, setup: apiwebhook.SetupStormServiceWebhookWithManager},
+	{name: "Deployment", obj: &appsv1.Deployment{}, setup: apiwebhook.SetupDeploymentWebhookWithManager},
+	{name: "PodAutoscaler", obj: &autoscalingv1alpha1.PodAutoscaler{}, setup: apiwebhook.SetupPodAutoscalerWebhookWithManager},
+	{name: "RayClusterFleet", obj: &orchestrationv1alpha1.RayClusterFleet{}, setup: apiwebhook.SetupRayClusterFleetWebhookWithManager},
+}
+
+// setupWebhooks registers the admission webhooks whose API types are in the manager's scheme.
+// RegisterSchemas adds an API group only when one of its controllers is enabled, so a webhook
+// for any other group is skipped rather than failing manager startup.
+func setupWebhooks(mgr ctrl.Manager, registrations []webhookRegistration) error {
+	for _, w := range registrations {
+		_, _, err := mgr.GetScheme().ObjectKinds(w.obj)
+		if runtime.IsNotRegisteredError(err) {
+			setupLog.Info("skipping webhook: none of the controllers for its API group is enabled", "webhook", w.name)
+			continue
+		}
+		if err == nil {
+			err = w.setup(mgr)
+		}
+		if err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", w.name)
+			return err
+		}
+	}
+	return nil
+}
+
 // TODO: if the argument list will grow, we should create a ControllerSetupOptions struct instead.
 func setupControllers(mgr ctrl.Manager, runtimeConfig cfg.RuntimeConfig, certsReady chan struct{}, disableWebhook bool) {
 	// The controllers won't work until the webhooks are operating,
@@ -330,36 +370,7 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig cfg.RuntimeConfig, certsRe
 		setupLog.Info("waiting for the cert generation to complete")
 		<-certsReady
 		setupLog.Info("certs ready")
-		if err := apiwebhook.SetupModelAdapterWebhook(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelAdapter")
-			os.Exit(1)
-		}
-		if err := apiwebhook.SetupModelClaimWebhook(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelClaim")
-			os.Exit(1)
-		}
-		if err := apiwebhook.SetupModelWarmupWebhook(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelWarmup")
-			os.Exit(1)
-		}
-		if err := apiwebhook.SetupKVCacheWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "KVCache")
-			os.Exit(1)
-		}
-		if err := apiwebhook.SetupStormServiceWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "StormService")
-			os.Exit(1)
-		}
-		if err := apiwebhook.SetupDeploymentWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "Deployment")
-			os.Exit(1)
-		}
-		if err := apiwebhook.SetupPodAutoscalerWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "PodAutoscaler")
-			os.Exit(1)
-		}
-		if err := apiwebhook.SetupRayClusterFleetWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "RayClusterFleet")
+		if err := setupWebhooks(mgr, webhookRegistrations); err != nil {
 			os.Exit(1)
 		}
 	}
