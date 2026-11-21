@@ -381,7 +381,11 @@ func buildRoutingErrorResponseWithBody(
 }
 
 // withRoutingResponseHeaders adds the request id and the target-pod headers the
-// routing context recorded to an immediate error response.
+// routing context recorded to an immediate error response. It copies RespHeaders
+// unfiltered, unlike HandleResponseHeaders under authoritativeRoutingPolicy. So under a
+// requestsInflight cap, a router must add its headers only after the target is admitted:
+// by AdmitTarget in Route, or by the gateway before PostRouteUpdate. A header added
+// earlier would reach the 429 for a pod that was refused.
 func withRoutingResponseHeaders(response *extProcPb.ProcessingResponse, routingCtx *types.RoutingContext, requestID string) *extProcPb.ProcessingResponse {
 	setHeaders := response.GetImmediateResponse().GetHeaders().GetSetHeaders()
 	setHeaders = buildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
