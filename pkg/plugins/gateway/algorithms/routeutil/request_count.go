@@ -43,7 +43,7 @@ func SelectTargetPodWithLeastRequestCountFromCounts(podRequestCount map[string]i
 	var targetPod *v1.Pod
 	targetPods := []string{}
 
-	minCount := math.MaxInt32
+	minCount := math.MaxInt
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
 	}
