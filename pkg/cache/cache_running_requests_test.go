@@ -533,6 +533,20 @@ func TestSumLiveFieldsAndOther_SaturatesTotal(t *testing.T) {
 	require.Equal(t, []string{"gw-dead"}, excluded)
 }
 
+func TestSumLiveFieldsAndOther_SaturatesOtherPositive(t *testing.T) {
+	remoteCount := strconv.FormatInt(math.MaxInt64-1, 10)
+	fields := map[string]string{
+		runningRequestsGatewayInstanceID: "2",
+		"gw-a":                           remoteCount,
+		"gw-b":                           remoteCount,
+	}
+	live := map[string]struct{}{runningRequestsGatewayInstanceID: {}, "gw-a": {}, "gw-b": {}}
+
+	total, otherPositive, _ := sumLiveFieldsAndOther(fields, live)
+	require.Equal(t, int64(math.MaxInt64), total)
+	require.Equal(t, int64(math.MaxInt64), otherPositive)
+}
+
 // The short liveness window drives fast exclusion from a sum, but must not be
 // mistaken for the much longer window that gates actually deleting a field: a
 // gateway missing only from the short window is a prune *candidate*, not yet safe

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -559,8 +560,9 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			expectImbalance: false,
 		},
 		{
+			// The peer sum fits uint64 and puts the relative threshold well above the maximum.
 			name:            "sum_of_other_counts_exceeds_int_range",
-			requestCounts:   map[string]int{"p0": math.MaxInt, "p1": math.MaxInt, "p2": 8},
+			requestCounts:   map[string]int{"p0": math.MaxInt, "p1": math.MaxInt, "p2": math.MaxInt / 2},
 			expectImbalance: false,
 		},
 		{
@@ -579,11 +581,11 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			expectImbalance: false, // gap=7 < minGap=8
 		},
 		{
-			// Two pods skip the relative factor check (it never holds for n=2 with factor=2)
-			// and fire on the absolute gap alone.
+			// The 8-request gap triggers the two-pod gate even though 18 is below the
+			// relative threshold of 2*(10+1) = 22.
 			name:            "two_pods_gap_at_min_triggers",
-			requestCounts:   map[string]int{"p0": 0, "p1": 8},
-			expectImbalance: true, // gap=8 >= minGap=8
+			requestCounts:   map[string]int{"p0": 10, "p1": 18},
+			expectImbalance: true,
 			expectMinPods:   []string{"p0"},
 		},
 		{
@@ -646,7 +648,7 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			result, _, _, imbalanced := getTargetPodListOnLoadImbalance(defaultNamespaceKeys(tt.requestCounts), pods, podRunningRequestImbalanceFactor, podRunningRequestImbalanceMinGap)
 			assert.Equal(t, tt.expectImbalance, imbalanced)
 			if tt.expectImbalance {
-				assert.NotEmpty(t, result)
+				require.NotEmpty(t, result)
 				for _, pod := range result {
 					assert.Contains(t, tt.expectMinPods, pod.Name)
 				}
@@ -662,6 +664,25 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 	}
 }
 
+func TestGetTargetPodListOnLoadImbalance_WidePeerSumCanTriggerGate(t *testing.T) {
+	peerLoad := int64(3_800_000_000_000_000_000)
+	if peerLoad > int64(math.MaxInt) {
+		t.Skip("load counts require a 64-bit int")
+	}
+	counts := map[string]int{"busy": math.MaxInt}
+	var peers []*v1.Pod
+	for _, name := range []string{"p0", "p1", "p2", "p3", "p4"} {
+		peers = append(peers, makeLBPod(name, ""))
+		counts[name] = int(peerLoad)
+	}
+	pods := append([]*v1.Pod{makeLBPod("busy", "")}, peers...)
+
+	// The peer sum exceeds MaxUint64, but their mean is below half of the busiest count.
+	result, _, _, imbalanced := getTargetPodListOnLoadImbalance(defaultNamespaceKeys(counts), pods, 2, 8)
+	assert.True(t, imbalanced)
+	assert.ElementsMatch(t, peers, result)
+}
+
 func TestGetTargetPodListOnLoadImbalance_PreservesLargeCountThreshold(t *testing.T) {
 	var large int64 = 1 << 53
 	if int64(math.MaxInt) < large+3 {
@@ -670,7 +691,8 @@ func TestGetTargetPodListOnLoadImbalance_PreservesLargeCountThreshold(t *testing
 	pods := []*v1.Pod{makeLBPod("p0", ""), makeLBPod("p1", ""), makeLBPod("p2", "")}
 	counts := defaultNamespaceKeys(map[string]int{"p0": int(large + 1), "p1": 1, "p2": int(large + 3)})
 
-	// Rounding each peer count before summing loses two requests from the threshold.
+	// Preserve the integer-sum decision here if the accumulation is refactored.
+	// Converting each peer count to float64 before summing would trip the gate.
 	result, _, _, imbalanced := getTargetPodListOnLoadImbalance(counts, pods, 2, 8)
 	assert.False(t, imbalanced)
 	assert.Empty(t, result)

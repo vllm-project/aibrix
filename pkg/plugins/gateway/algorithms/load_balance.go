@@ -491,15 +491,11 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 }
 
 // getTargetPodListOnLoadImbalance returns the least-loaded pods when load is severely skewed.
-// The absolute gap must be at least podRunningRequestImbalanceMinGap. For 3+ pods the busiest
-// pod must also exceed podRunningRequestImbalanceFactor*(meanOfOthers+1), where meanOfOthers
-// excludes the busiest pod itself. Excluding it matters: folding the busiest pod's own count
-// into the baseline it's compared against makes the baseline rise in lockstep as that pod gets
-// busier, so the check keeps almost-but-not-quite firing (the busiest pod would need to reach
-// roughly factor times the *combined* load of every other pod before triggering, not factor
-// times a typical pod's load) — silently permitting severe, worsening imbalance. Two pods skip
-// the factor check: with the default factor of 2, max > 2*(mean+1) reduces to max > max+2 and
-// never fires, which would disable hotspot protection on the common 2-replica deployment.
+// The absolute gap must be at least podRunningRequestImbalanceMinGap. With two pods, the
+// absolute gap alone determines whether the gate triggers. With three or more pods, the
+// busiest count must also exceed podRunningRequestImbalanceFactor*(meanOfOthers+1), where
+// meanOfOthers excludes one busiest pod. This keeps the relative threshold tied
+// to peer load as that pod's own count rises.
 //
 // TODO: "load" here is raw running-request count, with no notion of each pod's capacity. In a
 // heterogeneous pool this conflates "carrying a lot of work" with "overloaded": a pod that is
@@ -525,6 +521,8 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 		// Keep one maximum out of the sum and round only at the final comparison.
 		other := min(v, maxValue)
 		maxValue = max(v, maxValue)
+		// Routing expects non-negative running-request counts.
+		// Guard the uint64 conversion if a caller supplies a negative count.
 		if other < 0 || uint64(other) > math.MaxUint64-sumOfOthers {
 			needsWideSum = true
 		} else {
