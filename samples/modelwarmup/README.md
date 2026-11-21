@@ -77,6 +77,91 @@ The engine image and downloader are regular containers and may run
 concurrently after the precheck init container succeeds. These examples only
 prepare the image and model caches; they do not start an inference server.
 
+## Optional P2P distribution with Dragonfly
+
+Start with two or more authorized workers in the same resource pool. Install
+Dragonfly separately and check that the nodes can reach its scheduler and
+other peers. The platform operator owns the Dragonfly deployment and any
+registry mirror configuration.
+
+### Prepare model weights
+
+Use [dragonfly-model-download.yaml](dragonfly-model-download.yaml) on workers
+with a running `dfdaemon` and its socket at
+`/var/run/dragonfly/dfdaemon.sock`. The Job needs permission to use this
+node-local socket and to write to `/var/lib/aibrix/models`. Limit the extra
+sample label to workers that meet these prerequisites.
+
+```sh
+kubectl label node <worker1> <worker2> samples.aibrix.ai/dragonfly=true
+kubectl apply -f samples/modelwarmup/dragonfly-model-download.yaml
+kubectl wait --for=condition=Complete modelwarmup/dragonfly-model-download --timeout=15m
+```
+
+The sample uses Dragonfly Client v1.5.14. It downloads and checks a fixed
+revision of a public tiny Llama test model, then publishes the complete
+directory. The explicit `--scheduling-policy always` sends even this small
+model's files through peer scheduling. Under the default `auto` policy,
+small files may go directly to the source. A fresh run with an unavailable
+node peer fails the download Job. Source fallback within Dragonfly follows
+the platform's Dragonfly configuration.
+
+To load the prepared weights, schedule the serving workload on a worker
+where the Job completed. Mount the same node directory read-only and pass the
+explicit model path to the engine. For example, merge these fields into an
+existing vLLM Pod template and keep its normal GPU configuration.
+
+```yaml
+containers:
+- name: vllm
+  command: ["vllm", "serve"]
+  args:
+  - /models/tiny-random-llama-9fb191250dd56d0ba7ec9785a025ed29c03d5998
+  volumeMounts:
+  - name: model-cache
+    mountPath: /models
+    readOnly: true
+volumes:
+- name: model-cache
+  hostPath:
+    path: /var/lib/aibrix/models
+    type: Directory
+```
+
+### Preload a container image
+
+Configure the [containerd registry mirror](https://d7y.io/docs/operations/integrations/container-runtime/containerd/)
+on the workers that will pull the image. Use the existing image-preload
+sample with a digest for an image that provides its `sh -c "exit 0"` command.
+Replace the placeholder with a BusyBox digest from the registry configured on
+the nodes.
+
+```sh
+IMAGE_REF='docker.io/library/busybox@sha256:<digest>'
+kubectl patch --local -f samples/modelwarmup/modelwarmup.yaml --type=json \
+  -p "$(printf '[{"op":"replace","path":"/metadata/name","value":"dragonfly-image-warmup"},{"op":"replace","path":"/spec/imagePreload/images/0/image","value":"%s"},{"op":"add","path":"/spec/targets/0/nodeSelector/matchLabels/samples.aibrix.ai~1dragonfly","value":"true"}]' "$IMAGE_REF")" \
+  -o yaml | kubectl apply -f -
+kubectl wait --for=condition=Complete modelwarmup/dragonfly-image-warmup --timeout=30m
+```
+
+Kubelet asks the container runtime to pull the image. The runtime mirror
+determines the transport and any registry fallback.
+
+### Verify peer traffic
+
+Start with empty caches for the artifacts under test, including the relevant
+Dragonfly task cache. Compare direct and P2P runs using identical artifacts
+and similarly sized worker groups. Record bytes at the origin and the time
+from applying the resource to its `Complete` condition. Check that the
+downloaded model loads or that the preloaded image runs.
+
+Inspect Dragonfly's
+[client transfer counters](https://d7y.io/docs/operations/best-practices/observability/prometheus-metrics/)
+before and after each trial. An increase in `dragonfly_client_download_traffic`
+with `type="REMOTE_PEER"` confirms that peers served bytes. Compare it with
+`BACK_TO_SOURCE` and the origin logs. `ModelWarmup.status` reports which Jobs
+completed. A completed Job can have fetched every byte from the origin.
+
 ## Cache and completion behavior
 
 The download and precheck samples use a `hostPath` volume under
