@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
@@ -72,8 +73,10 @@ func (o relocationObservation) matches(pod *corev1.Pod) bool {
 }
 
 type relocationProbe struct {
-	at      time.Time
-	podName string
+	at             time.Time
+	lastDiscovered string
+	lastConfirmed  string
+	confirmNext    bool
 }
 
 type relocationChecks struct {
@@ -82,12 +85,24 @@ type relocationChecks struct {
 	nextPrune time.Time
 }
 
-func (s *relocationChecks) prune(now time.Time) {
+func (r *ModelClaimReconciler) pruneRelocationChecks(ctx context.Context, now time.Time) {
+	s := &r.relocationChecks
 	if now.Before(s.nextPrune) {
 		return
 	}
 	for key, observation := range s.pods {
-		if now.Sub(observation.at) > 2*relocationMaxBackoff {
+		if now.Sub(observation.at) <= 2*relocationMaxBackoff {
+			continue
+		}
+		if len(observation.engines) == 0 {
+			delete(s.pods, key)
+			continue
+		}
+		// A full sweep may take longer than the retention window. Keep
+		// evidence for the same live Pod until it can be checked again.
+		pod := &corev1.Pod{}
+		err := r.Get(ctx, key, pod)
+		if apierrors.IsNotFound(err) || (err == nil && (!observation.matches(pod) || !relocationPodAvailable(pod))) {
 			delete(s.pods, key)
 		}
 	}
@@ -117,7 +132,7 @@ func (r *ModelClaimReconciler) reconcileRelocationCleanup(
 		checks.pods = make(map[types.NamespacedName]relocationObservation)
 		checks.probes = make(map[string]relocationProbe)
 	}
-	checks.prune(now)
+	r.pruneRelocationChecks(ctx, now)
 
 	due, snapshots := r.relocationReadings(ctx, namespace, candidates, readings, now)
 	if len(due) == 0 {
@@ -208,11 +223,8 @@ func (r *ModelClaimReconciler) relocationReadings(
 	ctx context.Context, namespace string, candidates []corev1.Pod, readings *runtimeReadings, now time.Time,
 ) ([]corev1.Pod, map[string]*RuntimeSnapshot) {
 	checks := &r.relocationChecks
-	probe := checks.probes[namespace]
-	allowProbe := now.Sub(probe.at) >= relocationCheckInterval
 	var due []corev1.Pod
 	snapshots := make(map[string]*RuntimeSnapshot)
-	var pick *corev1.Pod
 	for i := range candidates {
 		pod := &candidates[i]
 		if pod.UID == "" {
@@ -224,24 +236,89 @@ func (r *ModelClaimReconciler) relocationReadings(
 		}
 		if reading, ok := readings.byPod[pod.Name]; ok {
 			due = append(due, *pod)
+			snapshots[pod.Name] = nil
 			if reading.err == nil {
 				snapshots[pod.Name] = reading.snapshot
 			}
-		} else if allowProbe && (pick == nil || nextRelocationProbe(pod.Name, pick.Name, probe.podName)) {
-			pick = pod
 		}
 	}
-	if pick != nil {
-		probeCtx, cancel := relocationCleanupContext(ctx)
-		snapshot, err := readings.of(probeCtx, pick)
-		cancel()
-		checks.probes[namespace] = relocationProbe{at: now, podName: pick.Name}
-		due = append(due, *pick)
-		if err == nil {
-			snapshots[pick.Name] = snapshot
-		}
+	probe := checks.probes[namespace]
+	if now.Sub(probe.at) < relocationCheckInterval {
+		return due, snapshots
+	}
+	probeCtx, cancel := relocationCleanupContext(ctx)
+	defer cancel()
+	pod := r.pickRelocationProbe(probeCtx, namespace, snapshots, &probe, now)
+	probe.at = now
+	checks.probes[namespace] = probe
+	if pod == nil {
+		return due, snapshots
+	}
+	snapshot, err := readings.of(probeCtx, pod)
+	due = append(due, *pod)
+	if err == nil {
+		snapshots[pod.Name] = snapshot
 	}
 	return due, snapshots
+}
+
+// The probe budget and rotation cover the same namespace-wide set of Pods.
+// Alternate discovery and confirmation when both have work, keeping an
+// independent cursor so repeated confirmations cannot starve other Pods.
+func (r *ModelClaimReconciler) pickRelocationProbe(
+	ctx context.Context, namespace string, sampled map[string]*RuntimeSnapshot, probe *relocationProbe, now time.Time,
+) *corev1.Pod {
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(namespace),
+		client.MatchingLabels{constants.ModelPoolLabelEnabled: constants.ModelPoolLabelEnabledValue}); err != nil {
+		klog.ErrorS(err, "list warm pods for relocation cleanup", "namespace", namespace)
+		return nil
+	}
+	var discovery, confirmation *corev1.Pod
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if _, read := sampled[pod.Name]; read || !relocationPodAvailable(pod) {
+			continue
+		}
+		previous := r.relocationChecks.pods[client.ObjectKeyFromObject(pod)]
+		if previous.matches(pod) {
+			if now.Sub(previous.at) < relocationCheckInterval {
+				continue
+			}
+			if len(previous.engines) != 0 {
+				if previous.retryDue(now) && (confirmation == nil || nextRelocationProbe(pod.Name, confirmation.Name, probe.lastConfirmed)) {
+					confirmation = pod
+				}
+				continue
+			}
+		}
+		if discovery == nil || nextRelocationProbe(pod.Name, discovery.Name, probe.lastDiscovered) {
+			discovery = pod
+		}
+	}
+	if confirmation != nil && (probe.at.IsZero() || probe.confirmNext || discovery == nil) {
+		probe.lastConfirmed, probe.confirmNext = confirmation.Name, false
+		return confirmation
+	}
+	if discovery != nil {
+		probe.lastDiscovered, probe.confirmNext = discovery.Name, true
+	}
+	return discovery
+}
+
+func (o relocationObservation) retryDue(now time.Time) bool {
+	for _, retry := range o.engines {
+		if !now.Before(retry.nextTry) {
+			return true
+		}
+	}
+	return false
+}
+
+func relocationPodAvailable(pod *corev1.Pod) bool {
+	return pod.UID != "" && pod.Status.PodIP != "" && pod.Status.Phase == corev1.PodRunning &&
+		pod.Labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue &&
+		pod.DeletionTimestamp.IsZero()
 }
 
 // Start after the last probe and wrap around at the end of the pool.
@@ -303,9 +380,7 @@ func (r *ModelClaimReconciler) tryRelocationStop(ctx context.Context, candidate 
 	current := &corev1.Pod{}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(pod), current); err != nil ||
 		current.UID != pod.UID || current.Status.PodIP != pod.Status.PodIP ||
-		current.Status.Phase != corev1.PodRunning ||
-		current.Labels[constants.ModelPoolLabelEnabled] != constants.ModelPoolLabelEnabledValue ||
-		!current.DeletionTimestamp.IsZero() {
+		!relocationPodAvailable(current) {
 		recordRelocationSkip(pod, engine.model, "pod_unverified")
 		return false
 	}

@@ -177,8 +177,103 @@ func TestRelocationCleanupBacksOffAcceptedStopsWhileTheEngineRemains(t *testing.
 	missing := relocationCleanupTotal.WithLabelValues("skipped", "missing_claim_ref")
 	before := testutil.ToFloat64(missing)
 	snapshot.Models[0].ClaimRef = nil
-	r.Now = func() time.Time { return start.Add(3 * time.Minute) }
+	r.Now = func() time.Time { return start.Add(5 * time.Minute) }
 	r.reconcileRelocationCleanup(ctx, claim.Namespace, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
 	assert.Len(t, runtime.deactivateCalls, 3)
 	assert.Equal(t, before+1, testutil.ToFloat64(missing))
+}
+
+func newRelocationProbeFixture(t *testing.T, size, orphan int) (*ModelClaimReconciler, *fakeRuntime, []corev1.Pod, *time.Time) {
+	t.Helper()
+	owner := claimWithCost(300, 100)
+	owner.UID = "claim-uid"
+	objs := []client.Object{owner}
+	pods := make([]corev1.Pod, 0, size)
+	snapshots := map[string]*RuntimeSnapshot{}
+	for n := 1; n <= size; n++ {
+		pod, snapshot := sizedWarmPod(fmt.Sprintf("warm-%02d", n), fmt.Sprintf("10.0.0.%d", n), 1000)
+		pod.UID = types.UID(pod.Name)
+		if n == orphan {
+			snapshot.Models = []RuntimeSnapshotModel{{
+				ModelName: servedModelName(owner), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
+				ClaimRef: &ModelClaimRef{Namespace: owner.Namespace, Name: owner.Name, UID: string(owner.UID)},
+			}}
+		}
+		objs = append(objs, pod)
+		pods = append(pods, *pod)
+		snapshots[pod.Status.PodIP] = snapshot
+	}
+	r, runtime := newReconciler(t, objs...)
+	runtime.snapshots = snapshots
+	now := time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	return r, runtime, pods, &now
+}
+
+func TestRelocationCleanupConfirmsAnOrphanBeforeDiscoveringTheEntirePool(t *testing.T) {
+	r, runtime, pods, now := newRelocationProbeFixture(t, 21, 1)
+	for range 3 {
+		r.reconcileRelocationCleanup(context.Background(), testNamespace, pods, newRuntimeReadings(runtime))
+		*now = now.Add(30 * time.Second)
+	}
+	assert.Equal(t, []string{pods[0].Status.PodIP}, runtime.deactivatedOn)
+	assert.Positive(t, runtime.snapshotCallsTo[pods[1].Status.PodIP], "confirmation must leave room for discovery")
+}
+
+func TestRelocationCleanupProbesAcrossDisjointSelectors(t *testing.T) {
+	r, runtime, pods, now := newRelocationProbeFixture(t, 2, 2)
+	for range 6 {
+		// The first pool always reconciles before the second.
+		for i := range pods {
+			r.reconcileRelocationCleanup(context.Background(), testNamespace, pods[i:i+1], newRuntimeReadings(runtime))
+		}
+		*now = now.Add(30 * time.Second)
+	}
+	assert.Contains(t, runtime.deactivatedOn, pods[1].Status.PodIP)
+	assert.Positive(t, runtime.snapshotCallsTo[pods[0].Status.PodIP])
+}
+
+func TestRelocationCleanupKeepsAnUnconfirmedOrphanPastThePruneWindow(t *testing.T) {
+	r, runtime, pods, now := newRelocationProbeFixture(t, 21, 1)
+	r.reconcileRelocationCleanup(context.Background(), testNamespace, pods, newRuntimeReadings(runtime))
+	require.Empty(t, runtime.deactivatedOn)
+	*now = now.Add(11 * time.Minute)
+	r.reconcileRelocationCleanup(context.Background(), testNamespace, pods, newRuntimeReadings(runtime))
+	assert.Equal(t, []string{pods[0].Status.PodIP}, runtime.deactivatedOn)
+}
+
+func TestRelocationCleanupDiscoveryStillAdvancesWithConfirmationsWaiting(t *testing.T) {
+	r, runtime, pods, now := newRelocationProbeFixture(t, 3, 1)
+	ctx := context.Background()
+	first, second, third := pods[0].Status.PodIP, pods[1].Status.PodIP, pods[2].Status.PodIP
+	runtime.snapshots[second].Models = []RuntimeSnapshotModel{runtime.snapshots[first].Models[0]}
+	readings := newRuntimeReadings(runtime)
+	readings.replace(&pods[0], runtime.snapshots[first])
+	r.reconcileRelocationCleanup(ctx, testNamespace, pods, readings)
+	require.Equal(t, 1, runtime.snapshotCallsTo[second])
+
+	*now = now.Add(30 * time.Second)
+	r.reconcileRelocationCleanup(ctx, testNamespace, pods, newRuntimeReadings(runtime))
+	require.Equal(t, []string{first}, runtime.deactivatedOn)
+	*now = now.Add(30 * time.Second)
+	r.reconcileRelocationCleanup(ctx, testNamespace, pods, newRuntimeReadings(runtime))
+	assert.Equal(t, []string{first}, runtime.deactivatedOn, "discovery gets its turn")
+	assert.Equal(t, 1, runtime.snapshotCallsTo[third])
+	*now = now.Add(30 * time.Second)
+	r.reconcileRelocationCleanup(ctx, testNamespace, pods, newRuntimeReadings(runtime))
+	assert.Equal(t, []string{first, second}, runtime.deactivatedOn)
+}
+
+func TestRelocationCleanupPrunesAnExpiredObservationWhenThePodIsGone(t *testing.T) {
+	r, runtime, pods, now := newRelocationProbeFixture(t, 1, 1)
+	ctx := context.Background()
+	key := client.ObjectKeyFromObject(&pods[0])
+	r.reconcileRelocationCleanup(ctx, testNamespace, pods, newRuntimeReadings(runtime))
+	require.NotEmpty(t, r.relocationChecks.pods[key].engines)
+	require.NoError(t, r.Delete(ctx, &pods[0]))
+
+	*now = now.Add(11 * time.Minute)
+	r.reconcileRelocationCleanup(ctx, testNamespace, nil, newRuntimeReadings(runtime))
+	assert.NotContains(t, r.relocationChecks.pods, key)
+	assert.Empty(t, runtime.deactivateCalls)
 }
