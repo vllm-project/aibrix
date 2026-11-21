@@ -698,6 +698,13 @@ func TestHandleRequestBody_ReplicaInflight429RoutingHeaders(t *testing.T) {
 	}
 	twoProfiles := "{" + profiles + "}"
 	authoritative := `{"authoritativeRoutingPolicy":true,` + profiles + "}"
+	// fullAtAdmission: the filter still sees room on the only pod, then admission finds it full.
+	fullAtAdmission := func(t *testing.T) (*MockCache, *mockRouter) {
+		mockCache := newCache(pod("a", twoProfiles))
+		mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil)
+		mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
+		return mockCache, new(mockRouter)
+	}
 
 	cases := []struct {
 		name          string
@@ -706,7 +713,10 @@ func TestHandleRequestBody_ReplicaInflight429RoutingHeaders(t *testing.T) {
 		// leastRequest routes with a manager that resolves least-request, the strategy
 		// requestsInflight forces when the client's routing-strategy header is ignored.
 		leastRequest bool
-		wantProfile  string
+		// postRoute routes with a router that has PostRouteUpdate, the only kind the
+		// single-candidate fast path admits itself.
+		postRoute   bool
+		wantProfile string
 	}{
 		{
 			name:          "auto, every replica already at the cap",
@@ -719,13 +729,8 @@ func TestHandleRequestBody_ReplicaInflight429RoutingHeaders(t *testing.T) {
 			// filter still sees room, then admission finds the replica full.
 			name:          "auto, selected replica fills up before admission",
 			configProfile: "auto",
-			setup: func(t *testing.T) (*MockCache, *mockRouter) {
-				mockCache := newCache(pod("a", twoProfiles))
-				mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil)
-				mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
-				return mockCache, new(mockRouter)
-			},
-			wantProfile: "batch",
+			setup:         fullAtAdmission,
+			wantProfile:   "batch",
 		},
 		{
 			// types.ErrTargetReplicaInflightExceeded from a router that admits its target
@@ -744,6 +749,15 @@ func TestHandleRequestBody_ReplicaInflight429RoutingHeaders(t *testing.T) {
 				return mockCache, router
 			},
 			wantProfile: "batch",
+		},
+		{
+			// types.ErrTargetReplicaInflightExceeded from the single-candidate fast path,
+			// which admits the pod before it runs the router's PostRouteUpdate.
+			name:          "auto, single-candidate fast path refuses the pod before PostRouteUpdate",
+			configProfile: "auto",
+			setup:         fullAtAdmission,
+			postRoute:     true,
+			wantProfile:   "batch",
 		},
 		{
 			name:          "explicit profile gets no profile header",
@@ -769,6 +783,15 @@ func TestHandleRequestBody_ReplicaInflight429RoutingHeaders(t *testing.T) {
 			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "req-1", "u")
 			routingCtx.ReqPath = PathChatCompletions
 			routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(TestRouterAlgorithm)
+			var updater *postRouteFunc
+			if tc.postRoute {
+				updater = &postRouteFunc{routeFunc: func(*types.RoutingContext, types.PodList) (string, error) {
+					t.Fatal("the single-candidate fast path must not call Route")
+					return "", nil
+				}}
+				s.routerManager = prefixCacheManager(updater)
+				routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routing.RouterPrefixCache)
+			}
 			routingCtx.ReqConfigProfile = tc.configProfile
 			req := &extProcPb.ProcessingRequest{
 				Request: &extProcPb.ProcessingRequest_RequestBody{
@@ -785,6 +808,10 @@ func TestHandleRequestBody_ReplicaInflight429RoutingHeaders(t *testing.T) {
 			require.Contains(t, refused.GetBody(), ErrorCodeReplicaInflightExceeded)
 			mockCache.AssertExpectations(t)
 			router.AssertExpectations(t)
+			if updater != nil {
+				assert.Empty(t, updater.updated, "a refused request must not reach PostRouteUpdate")
+				assert.True(t, routingCtx.ReplicaInflightChecked, "the fast path, not enforceReplicaInflight, must refuse the pod")
+			}
 
 			headers := map[string]string{}
 			for _, h := range refused.GetHeaders().GetSetHeaders() {
