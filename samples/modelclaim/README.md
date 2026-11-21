@@ -25,6 +25,12 @@ and the limitations of ModelClaim. The
 [validation runbook](../../development/tutorials/modelclaim/manual-validation-runbook.md)
 checks the feature on real GPUs with these samples.
 
+The Gateway uses each active binding's engine port to collect KV-cache
+utilization and request metrics for that model. The models on a shared Pod are
+scraped independently. When a binding sleeps, is removed, or changes ports,
+the Gateway drops the old binding's samples and metric series. Ordinary model
+Pods still use their `model.aibrix.ai/metric-port` label or port `8000`.
+
 Delete the claims before the pool, so that the controller can stop their
 engines:
 
