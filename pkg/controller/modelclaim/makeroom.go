@@ -535,8 +535,9 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if err != nil {
 			continue
 		}
-		for j := range shared {
-			pod := &shared[j]
+		free := podsFreeForModelName(ctx, claim, shared, readings)
+		for j := range free {
+			pod := &free[j]
 			if _, found := r.planRoom(ctx, claim, pod, ledgers[pod.Name], perGPU.minimumReserveBytes(), readings); found {
 				return false
 			}
@@ -590,7 +591,7 @@ func (r *ModelClaimReconciler) waitingClaims(
 		if claim.Name == pm.Name {
 			claim = *pm
 		}
-		if !priorityEligible(&claim, candidates) {
+		if !priorityEligible(&claim, claims, candidates) {
 			continue
 		}
 		waiting = append(waiting, claim)
