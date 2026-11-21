@@ -280,7 +280,9 @@ when sweeps succeed a crashed gateway's counts stop being picked up by new sweep
 plus one sweep interval (existing cached entries age out after 3 × the interval from their `readAt`
 if not overwritten). While `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`, the gateway snapshot sync
 still writes this gateway's `aibrix:pod:*` hashes (so gateways running with the flag off still read
-them during mixed-config rollouts and rollbacks) while skipping its `SCAN` and cross-gateway
+them during mixed-config rollouts and rollbacks; until those writes are removed in stage (c) of
+#3442, enabling the reader provides fresh remote counts rather than lower Redis write load at large
+fleet scale) while skipping its `SCAN` and cross-gateway
 `HGETALL` read phase. Because the snapshot read phase is skipped, `aibrix_gateway_snapshot_remote_keys`
 and `aibrix_gateway_snapshot_oldest_read_age_seconds` are not registered or emitted while the reader
 is enabled; monitor `aibrix_gateway_remote_running_reader_pods{state}` and
@@ -290,7 +292,8 @@ is enabled; monitor `aibrix_gateway_remote_running_reader_pods{state}` and
 case-insensitively. To enable, use `true`/`1`/`t`/`yes`/`y`/`on`/`enabled`/`enable`. To disable
 (rolling back to the gateway snapshot read path), use
 `false`/`0`/`f`/`no`/`n`/`off`/`disabled`/`disable`. A whitespace-only value or an unrecognized
-spelling logs an error and disables the reader (fail-closed). Check the startup log line
+spelling logs an error and disables the reader (fail-closed), which carries the same large-scale
+snapshot fallback behavior below. Check the startup log line
 `Initializing remote running reader` to confirm it is running.
 `aibrix_gateway_remote_running_reader_pods{state}` counts the pods selected as ready at sweep start
 that remain ready (`utils.FilterReadyPod`) at the end of the sweep by whether their count was read
@@ -313,7 +316,7 @@ published).
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
-| `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `true` | Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot (skipping snapshot `SCAN`/reads while keeping `aibrix:pod:*` writes for mixed rollouts and rollbacks). Accepts the case-insensitive spellings above with surrounding whitespace trimmed; unset or empty uses the default (`true`). Set `false`/`0`/`off`/`no`/`disabled` to roll back to snapshot reads. Invalid values, including whitespace-only values, log an error and disable the reader. Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
+| `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `true` | Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot (skipping snapshot `SCAN`/reads while keeping `aibrix:pod:*` writes for mixed rollouts and rollbacks; until stage (c) removes those writes, this provides fresh remote counts rather than lower Redis write load at scale). Accepts the case-insensitive spellings above with surrounding whitespace trimmed; unset or empty uses the default (`true`). Set `false`/`0`/`off`/`no`/`disabled` to roll back to snapshot reads (note: at G=8, N >= 2000 fleet scale, snapshot sync may time out before publishing, falling back to local-only estimates and withholding `realtime_num_requests_running`). Invalid values, including whitespace-only values, log an error and fail closed to disabled (with the same large-scale local-only consequence). Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 | `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` | duration | `1s` | How often the reader sweeps known ready pods (`utils.FilterReadyPod`) when `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`; also each sweep's Redis-phase time budget. Clamped to a minimum of `100ms` (with a warning). Pods refreshed within the last half interval are skipped, and a pod's count is used for 3 × this interval after it was read. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 
 It can also be set per request by the model config profile (`routingConfig.candidate.k`); see [Model Config Profile Overrides](#model-config-profile-overrides).
