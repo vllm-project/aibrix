@@ -43,9 +43,11 @@ type emitSite struct {
 // when an entry goes stale in either direction, so a merged definition or a
 // removed emit forces the entry out instead of leaving a silent exception
 // behind.
-var pendingDefinitions = map[string]string{
-	metrics.RealtimeNumRequestsRunning: "#3499",
-}
+//
+// The map is empty. realtime_num_requests_running is no longer an
+// EmitMetricToPrometheus site: its sync-path emit was removed and the series
+// is exported by the scrape-time collector, which this scan does not see.
+var pendingDefinitions = map[string]string{}
 
 // TestEmittedMetricNamesHaveDefinitions is the CI guard for #3506: a metric name
 // without a definition entry in metrics.Metrics is dropped by
