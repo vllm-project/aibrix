@@ -1240,12 +1240,21 @@ func (b *PodBlacklist) RecordProbeResult(pod *v1.Pod, result ProbeResult, failur
 	return true
 }
 
+// HasExcluded reports whether any tracked entry can currently exclude its pod
+// (load-excluded, open breaker, or request-failure block). It reads the same
+// atomic counter FilterBlacklisted uses to skip per-pod lookups on a healthy
+// fleet: false guarantees no pod is excluded, while true means callers should
+// consult FilterBlacklisted or Allow.
+func (b *PodBlacklist) HasExcluded() bool {
+	return Enabled && b.excluded.Load() > 0
+}
+
 // FilterBlacklisted returns the pods Allow admits, in order. While no entry can exclude
 // its pod it returns pods itself, so the common case costs no lookup and no allocation;
 // and when it does look, it allocates only if it finds a pod to drop. Callers must not
 // modify the result in place.
 func (b *PodBlacklist) FilterBlacklisted(pods []*v1.Pod) []*v1.Pod {
-	if !Enabled || b.excluded.Load() == 0 {
+	if !b.HasExcluded() {
 		return pods
 	}
 	var out []*v1.Pod // allocated at the first pod to drop

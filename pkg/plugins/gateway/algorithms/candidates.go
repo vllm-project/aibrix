@@ -107,12 +107,18 @@ func candidateStageApplies(ctx *types.RoutingContext) bool {
 // the set; otherwise K of them (see routingCandidateK). It reads no per-pod state from Redis.
 // router is the one Select returned for ctx.
 //
-// When the request has a per-replica inflight cap, the pods the stage is about to rank are first
+// filterScout, when non-nil, is applied to the bounded scout before inflight filtering and
+// estimation (for example, the gateway's cap-aware pod blacklist filter) so excluded pods that
+// have drained to zero load cannot win the ranked slots. It sees only the scout, never the full
+// readyPods slice, and is skipped at zero cost when nil. If filterScout returns an empty slice,
+// the unfiltered scout is kept so the caller's fallback stays in charge.
+//
+// When the request has a per-replica inflight cap, the pods the stage is about to rank are also
 // filtered on this gateway's in-memory running counts, so the ranked slots do not go to pods the
 // Redis filter is about to drop. That read is process memory only and bounded by the scout; the
 // Redis filter stays the source of truth for the 429 (see excludeInflightSaturated).
-func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
-	return selectCandidates(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K)
+func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K, filterScout, true)
 }
 
 // ReselectCandidates is SelectCandidates for a second pass over the same decision, such as the
@@ -120,23 +126,23 @@ func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Rou
 // way, but does not count the decision again: aibrix_routing_candidate_selections_total counts
 // one narrowing per request.
 func ReselectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
-	return selectCandidatesWithMetric(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K, false)
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K, nil, false)
 }
 
 func selectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int) []*v1.Pod {
-	return selectCandidatesWithMetric(ctx, c, router, readyPods, k, true)
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, k, nil, true)
 }
 
 // selectCandidatesWithMetric is the stage itself. countDecision says whether a decision it
 // narrows is added to aibrix_routing_candidate_selections_total.
-func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int, countDecision bool) []*v1.Pod {
+func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int, filterScout func([]*v1.Pod) []*v1.Pod, countDecision bool) []*v1.Pod {
 	if k <= 0 || len(readyPods) <= k || !candidateStageApplies(ctx) {
 		return readyPods
 	}
 
 	candidates := make([]*v1.Pod, 0, k)
 	picked := make(map[*v1.Pod]struct{}, k)
-	ranked, scouted, excluded := 0, 0, 0
+	ranked, scouted, excludedByFilter, excluded := 0, 0, 0, 0
 	path := candidatePathNoEstimate
 	parts := candidateParts(router)
 	if candidateRankedSlots(k) == 0 {
@@ -146,6 +152,16 @@ func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router
 		path = candidatePathEstimateFailed
 		scout := candidateScout(ctx, parts, readyPods, k)
 		scouted = len(scout)
+		// Run the caller's scout filter (e.g. cap-aware pod blacklist) before
+		// excludeInflightSaturated: inflight filtering drops loaded healthy pods, not drained
+		// excluded pods, so running it first would inflate the excluded share of the remaining
+		// scout and falsely trip the exclusion cap. It also mirrors selectTargetPod's order.
+		if filterScout != nil {
+			if kept := filterScout(scout); len(kept) > 0 {
+				excludedByFilter = len(scout) - len(kept)
+				scout = kept
+			}
+		}
 		scout, excluded = excludeInflightSaturated(ctx, c, scout)
 		if estimates, ok := candidateEstimates(ctx, parts, scout); ok {
 			path = candidatePathRanked
@@ -163,8 +179,8 @@ func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router
 
 	if klog.V(5).Enabled() {
 		klog.V(5).InfoS("routing candidate stage", "request_id", ctx.RequestID, "ready_pods", len(readyPods),
-			"candidates", len(candidates), "scouted", scouted, "excluded_at_cap", excluded, "ranked", ranked,
-			"path", path, "strategy", ctx.ResolvedStrategy)
+			"candidates", len(candidates), "scouted", scouted, "excluded_by_filter", excludedByFilter,
+			"excluded_at_cap", excluded, "ranked", ranked, "path", path, "strategy", ctx.ResolvedStrategy)
 	}
 	return candidates
 }

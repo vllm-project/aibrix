@@ -119,6 +119,10 @@ const (
 	GatewayPodBlacklistProbeTotal      = "gateway_pod_blacklist_probe_total"
 	GatewayPodBlacklistExcludedPods    = "gateway_pod_blacklist_excluded_pods"
 	GatewayPodBlacklistFallbackTotal   = "gateway_pod_blacklist_fallback_total"
+	// GatewayPodBlacklistReselectTotal counts requests whose candidate stage re-ran over all
+	// non-blacklisted ready pods because too many or all candidates were excluded while the
+	// fleet as a whole stayed within the cap, by reason (all_excluded or over_cap).
+	GatewayPodBlacklistReselectTotal = "gateway_pod_blacklist_reselect_total"
 	// GatewayPodBlacklistRequestFailuresTotal counts upstream failure statuses the request-failure
 	// source saw, by status and by outcome (counted or ignored while the pod was excluded).
 	GatewayPodBlacklistRequestFailuresTotal = "gateway_pod_blacklist_request_failures_total"
@@ -468,6 +472,12 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType:   MetricType{Raw: Counter},
 			Description:  "Requests routed with the pod blacklist ignored, because every pod or too many of them were excluded",
+		},
+		GatewayPodBlacklistReselectTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests whose candidate stage re-ran over all non-blacklisted ready pods because too many or all candidates were excluded",
 		},
 		GatewayPodBlacklistRequestFailuresTotal: {
 			MetricScope:  PodMetricScope,
