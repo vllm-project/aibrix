@@ -1405,7 +1405,17 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod list: %w", err)
 	}
-	replicaState := replicaStateFromPods(podList.Items, currentReplicas)
+	roleSets, err := scalesRoleSets(&pa, scaleObject)
+	if err != nil {
+		return nil, err
+	}
+	var expectedPods int32
+	if roleSets {
+		if expectedPods, err = expectedPodsPerRoleSet(&pa, scaleObject); err != nil {
+			return nil, err
+		}
+	}
+	replicaState := replicaStateFromPods(podList.Items, currentReplicas, roleSets, expectedPods)
 
 	// Create request for autoscaler with ScalingContext
 	replicaRequest := ReplicaComputeRequest{
@@ -1415,6 +1425,7 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 		ReplicaState:    replicaState,
 		Pods:            podList.Items,
 		Timestamp:       r.nowTime(),
+		PodsPerReplica:  podsPerReplica(roleSets, expectedPods, podList.Items),
 	}
 
 	// Use autoscaler to compute desired replicas
