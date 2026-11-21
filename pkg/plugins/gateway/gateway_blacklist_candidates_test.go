@@ -449,7 +449,7 @@ func newLoadedCandidateBlacklistFleet(t *testing.T, n, k, blacklistedPct int) (*
 func (f *candidateBlacklistFleet) routeWith(algo types.RoutingAlgorithm) (string, error) {
 	f.t.Helper()
 	ctx := types.NewRoutingContext(context.Background(), algo, "m", "hello", "req", "")
-	f.t.Cleanup(ctx.Delete)
+	defer ctx.Delete()
 	ctx.ConfigProfile = f.profile
 	return f.server.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: f.pods}, "")
 }
