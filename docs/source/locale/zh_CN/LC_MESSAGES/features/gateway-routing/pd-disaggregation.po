@@ -1926,8 +1926,8 @@ msgid ""
 "``round_robin``, or ``least_request`` for the encode pod with the fewest "
 "items in flight. Environment only."
 msgstr ""
-"encode 阶段为每个媒体项选择 encode Pod 的方式：``round_robin``，或 "
-"``least_request``（选择在途项最少的 encode Pod）。仅支持环境变量。"
+"encode 阶段为每个媒体项选择 encode Pod 时，可使用 ``round_robin`` 轮流选择，或使用 "
+"``least_request`` 选择在途项最少的 encode Pod。此策略只能通过环境变量设置。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:806
 msgid "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"
