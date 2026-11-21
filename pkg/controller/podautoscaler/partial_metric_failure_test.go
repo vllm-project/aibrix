@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -63,6 +64,7 @@ func withQueueLength(pa *autoscalingv1alpha1.PodAutoscaler) {
 // the PodAutoscaler's other events. Recovery is reported once too.
 func TestReconcileReportsFailedMetricSourcesOnChange(t *testing.T) {
 	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
+	withQueueLength(pa)
 	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
 	recorder := record.NewFakeRecorder(100)
 	h.reconciler.EventRecorder = recorder
@@ -291,11 +293,18 @@ func TestReconcileAllMetricsFailingWithHold(t *testing.T) {
 	h.reconciler.EventRecorder = recorder
 	mon := &fakeMonitor{}
 	h.reconciler.monitor = mon
-	h.reconciler.autoScaler = &fakeAutoScaler{
-		result: &ReplicaComputeResult{Valid: false, FailedMetrics: []string{"cpu", "queue_length"}},
-		err:    fmt.Errorf("all 2 metric sources failed"),
+	autoScaler := &fakeAutoScaler{result: &ReplicaComputeResult{DesiredReplicas: 1, Algorithm: "kpa", Valid: true}}
+	h.reconciler.autoScaler = autoScaler
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("healthy Reconcile returned error: %v", err)
 	}
+	if mon.failedSources != 0 {
+		t.Fatalf("exported %d failed sources while every source is read, want 0", mon.failedSources)
+	}
+	drainEvents(recorder)
 
+	autoScaler.result = &ReplicaComputeResult{Valid: false, FailedMetrics: []string{"cpu", "queue_length"}}
+	autoScaler.err = fmt.Errorf("all 2 metric sources failed")
 	for i := 0; i < 2; i++ {
 		if _, err := h.reconcile(); err == nil {
 			t.Fatal("Reconcile returned no error with every metric source failing")
@@ -320,5 +329,80 @@ func TestReconcileAllMetricsFailingWithHold(t *testing.T) {
 	if computeFailures != 2 || named != 1 {
 		t.Fatalf("got %d %s and %d %s naming the sources; want 2 and 1",
 			computeFailures, ReasonFailedComputeScale, named, ReasonFailedGetMetrics)
+	}
+}
+
+// TestReconcileDoesNotReportRecoveryForARemovedSource checks that removing a
+// failing source from the spec stops tracking it without claiming it can be
+// read again, while a source that is read again is reported as recovered.
+func TestReconcileDoesNotReportRecoveryForARemovedSource(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
+	withQueueLength(pa)
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	recorder := record.NewFakeRecorder(100)
+	h.reconciler.EventRecorder = recorder
+	autoScaler := &fakeAutoScaler{result: &ReplicaComputeResult{
+		DesiredReplicas: 1, Algorithm: "kpa", Valid: true, FailedMetrics: []string{"queue_length"},
+	}}
+	h.reconciler.autoScaler = autoScaler
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	drainEvents(recorder)
+
+	// queue_length is removed from the spec while its endpoint is still down.
+	latest := h.latest()
+	latest.Spec.MetricsSources = latest.Spec.MetricsSources[:1]
+	if err := h.client.Update(context.Background(), latest); err != nil {
+		t.Fatalf("update PodAutoscaler: %v", err)
+	}
+	autoScaler.result = &ReplicaComputeResult{DesiredReplicas: 1, Algorithm: "kpa", Valid: true}
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	if got := drainEvents(recorder, ReasonRecoveredMetrics, ReasonFailedGetMetrics); len(got) != 0 {
+		t.Fatalf("removing a failing source raised %v", got)
+	}
+	h.reconciler.metricHealthMu.Lock()
+	_, tracked := h.reconciler.metricHealth[h.key]
+	h.reconciler.metricHealthMu.Unlock()
+	if tracked {
+		t.Fatal("the removed source is still tracked as failing")
+	}
+}
+
+// TestHeldPassDoesNotRewriteStatus checks that a held pass sets ScalingActive
+// once, to False/ScaleDownHeld, even while observed replicas differ from the
+// held count. Setting it twice would move lastTransitionTime on every pass,
+// write the status and enqueue the PodAutoscaler again.
+func TestHeldPassDoesNotRewriteStatus(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
+	pa.Annotations = map[string]string{types.HoldScaleDownOnMetricFailureLabel: "true"}
+	withQueueLength(pa)
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	h.scaleClient.counts = &ReplicaCounts{Configured: 4, Observed: 2}
+	clock := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	h.reconciler.now = func() time.Time { return clock }
+	h.reconciler.autoScaler = &fakeAutoScaler{result: &ReplicaComputeResult{
+		DesiredReplicas: 1, Algorithm: "kpa", Valid: true, FailedMetrics: []string{"queue_length"},
+	}}
+
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	requireCondition(t, h.latest(), ConditionScalingActive, metav1.ConditionFalse, ReasonScaleDownHeld)
+	before := apimeta.FindStatusCondition(h.latest().Status.Conditions, ConditionScalingActive).LastTransitionTime
+
+	clock = clock.Add(30 * time.Second)
+	writes, err := h.reconcile()
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if writes != 0 {
+		t.Fatalf("an unchanged held pass wrote the status %d time(s)", writes)
+	}
+	if after := apimeta.FindStatusCondition(h.latest().Status.Conditions, ConditionScalingActive).LastTransitionTime; !after.Equal(&before) {
+		t.Fatalf("ScalingActive lastTransitionTime moved from %v to %v", before, after)
 	}
 }

@@ -1489,8 +1489,8 @@ func TestReconcileDeletedPodAutoscalerReleasesState(t *testing.T) {
 			other:   "apps/v1.Deployment/ns1/other",
 		},
 		metricHealth: map[ktypes.NamespacedName]metricSourceHealth{
-			deleted: {failed: "queue_length"},
-			other:   {failed: "queue_length"},
+			deleted: {failed: []string{"queue_length"}},
+			other:   {failed: []string{"queue_length"}},
 		},
 	}
 
