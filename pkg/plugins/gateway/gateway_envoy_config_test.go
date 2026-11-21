@@ -38,19 +38,16 @@ var envoyConfigPaths = []string{
 
 const extProcFilterName = "envoy.filters.http.ext_proc"
 
-// Clusters that serve the gateway's own endpoints or the metadata service.
-// Their responses are not completions, so ext_proc must not process them.
-var nonInferenceClusters = map[string]bool{
-	"gateway_http":     true,
-	"metadata_service": true,
-	"gateway_metrics":  true,
-}
-
-// Clusters that reach an inference engine. ext_proc must stay on for them,
-// because that is where the gateway picks the target pod.
-var inferenceClusters = map[string]bool{
-	"original_destination_cluster": true,
-	"vllm_backend":                 true,
+// Whether ext_proc must be disabled on routes to each cluster. The gateway's own
+// endpoints and the metadata service do not return completions, so ext_proc must
+// skip them; inference clusters keep it, because that is where the gateway picks
+// the target pod. A route to a cluster missing here fails the test.
+var extProcDisabledByCluster = map[string]bool{
+	"gateway_http":                 true,
+	"metadata_service":             true,
+	"gateway_metrics":              true,
+	"original_destination_cluster": false,
+	"vllm_backend":                 false,
 }
 
 // envoyRoute holds only the fields this test reads.
@@ -112,31 +109,24 @@ func TestEnvoyConfigExtProcDisabledOnNonInferenceRoutes(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			routes := loadEnvoyRoutes(t, path)
 
-			checkedNonInference, checkedInference := 0, 0
+			seen := map[bool]bool{} // which kinds of route were checked
 			for _, r := range routes {
 				// direct_response routes have no upstream and never reach ext_proc's response path.
 				if r.Route == nil {
 					continue
 				}
 				cluster := r.Route.Cluster
-				extProcDisabled := r.TypedPerFilterConfig[extProcFilterName].Disabled
-
-				switch {
-				case nonInferenceClusters[cluster]:
-					checkedNonInference++
-					assert.True(t, extProcDisabled,
-						"route %q -> %s must disable %s: its response is not a completion",
-						r.Match.Prefix, cluster, extProcFilterName)
-				case inferenceClusters[cluster]:
-					checkedInference++
-					assert.False(t, extProcDisabled,
-						"route %q -> %s must keep %s enabled: the gateway routes inference requests there",
-						r.Match.Prefix, cluster, extProcFilterName)
+				want, known := extProcDisabledByCluster[cluster]
+				if !assert.True(t, known, "route %q -> unknown cluster %q: add it to extProcDisabledByCluster",
+					r.Match.Prefix, cluster) {
+					continue
 				}
+				seen[want] = true
+				assert.Equal(t, want, r.TypedPerFilterConfig[extProcFilterName].Disabled,
+					"route %q -> %s: %s disabled should be %v", r.Match.Prefix, cluster, extProcFilterName, want)
 			}
 
-			require.Positive(t, checkedNonInference, "no non-inference routes found in %s", path)
-			require.Positive(t, checkedInference, "no inference routes found in %s", path)
+			require.True(t, seen[true] && seen[false], "%s must have both inference and non-inference routes", path)
 		})
 	}
 }
