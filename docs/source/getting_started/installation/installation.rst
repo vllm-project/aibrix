@@ -57,7 +57,7 @@ Prerequisites
 .. code:: bash
 
     # Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
-    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.9.4 -n envoy-gateway-system \
+    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system \
     --create-namespace \
     --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true
 
@@ -95,6 +95,16 @@ Install AIBrix with Helm
     kubectl apply -f dist/chart/crds/
     # Install AIBrix with the pinned release version:
     helm install aibrix dist/chart -f dist/chart/stable.yaml -n aibrix-system --create-namespace
+
+.. note::
+    The stable Helm path stays on the released v0.8.0 stack: Envoy Gateway
+    v1.2.8 with Envoy v1.33.2, matching the released AIBrix images pinned in
+    ``stable.yaml`` and ``vke.yaml``. The checkout's default ``values.yaml``
+    and the Kustomize manifests carry the new Envoy Gateway v1.9.4 / Envoy
+    v1.39.6 stack for the next release; a release that ships AIBrix images
+    qualified behind the new proxy will move these stable pins. To move an
+    existing installation forward, follow the upgrade procedure below instead
+    of mixing the two.
 
 
 Upgrade AIBrix with Helm
@@ -161,6 +171,20 @@ the checkout's dependency and wait for its controller:
 
     kubectl apply -k config/dependency/envoy-gateway --server-side
     kubectl -n envoy-gateway-system rollout status deployment/envoy-gateway --timeout=5m
+
+.. warning::
+
+    Between the controller upgrade above and the AIBrix chart upgrade, the new
+    controller already serves xDS to proxies that still run the old Envoy
+    image, and the chart upgrade then rolls each proxy Pod from the old image
+    to the new one. Treat this mixed window as best-effort, not zero-downtime:
+    in-flight requests can see connection resets or timeouts while each proxy
+    restarts. While an old proxy is still in service, sample its xDS rejection
+    counters (the ``*_update_rejected`` stats on its admin endpoint) in
+    addition to the post-upgrade checks below. Rising rejections mean the old
+    proxy is refusing the new controller's configuration: a Ready Pod or
+    passing traffic then proves only the previously accepted configuration,
+    so complete the proxy roll promptly instead of leaving the window open.
 
 Only after the target controller is available, update AIBrix CRDs and upgrade
 the AIBrix chart. Preserve your own reviewed AIBrix values, including image
@@ -258,6 +282,12 @@ Check that the Gateway and its policies are accepted for their current
 after restarting a proxy as well as before it: a proxy can keep serving its
 previous configuration when a newer configuration is rejected. A ready Pod
 alone does not prove that the new routing configuration works.
+
+If the old proxy's rejection counters rose during the mixed window, or any
+check above fails after the roll completes, stop and use the
+cluster-admin-owned recovery plan from the rollback warning above instead of
+accepting the upgrade; a successful rollout does not clear persistent
+rejections.
 
 
 Uninstall AIBrix with Helm
