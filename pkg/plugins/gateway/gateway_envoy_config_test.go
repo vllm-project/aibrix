@@ -111,7 +111,13 @@ func TestEnvoyConfigExtProcDisabledOnNonInferenceRoutes(t *testing.T) {
 
 			seen := map[bool]bool{} // which kinds of route were checked
 			for _, r := range routes {
-				// direct_response routes have no upstream and never reach ext_proc's response path.
+				// Only prefix matches are decoded; another match kind (path, safe_regex, ...)
+				// needs this test updated before it can be checked.
+				if !assert.NotEmpty(t, r.Match.Prefix, "route without a prefix match in %s: extend envoyRoute to decode it", path) {
+					continue
+				}
+				// direct_response routes have no upstream response for ext_proc to parse; their
+				// request headers still go through ext_proc, which this test does not cover.
 				if r.Route == nil {
 					continue
 				}
