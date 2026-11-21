@@ -112,7 +112,7 @@ type Server struct {
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
 	// podBlacklist is the per-pod exclusion list (probe sweep, load-outlier flag,
-	// flaky re-add) that selectTargetPod consults before routing (see the blacklist package). Its
+	// flaky re-add, upstream failure statuses) that selectTargetPod consults before routing (see the blacklist package). Its
 	// zero value is ready to use.
 	podBlacklist blacklist.PodBlacklist
 	// allBlacklistedLog throttles the "every ready pod is blacklisted" line per model.
@@ -751,6 +751,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		// already being served on.
 		st.routerCtx.MarkDecodeResponded()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
+		s.recordPodResponse(st)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
 			s.finishRequestCount(st)

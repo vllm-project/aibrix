@@ -119,6 +119,9 @@ const (
 	GatewayPodBlacklistProbeTotal      = "gateway_pod_blacklist_probe_total"
 	GatewayPodBlacklistExcludedPods    = "gateway_pod_blacklist_excluded_pods"
 	GatewayPodBlacklistFallbackTotal   = "gateway_pod_blacklist_fallback_total"
+	// GatewayPodBlacklistRequestFailuresTotal counts upstream failure statuses the request-failure
+	// source saw, by status and by outcome (counted or ignored while the pod was excluded).
+	GatewayPodBlacklistRequestFailuresTotal = "gateway_pod_blacklist_request_failures_total"
 )
 
 var (
@@ -450,6 +453,12 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType:   MetricType{Raw: Counter},
 			Description:  "Requests routed with the pod blacklist ignored, because every pod or too many of them were excluded",
+		},
+		GatewayPodBlacklistRequestFailuresTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Upstream failure statuses (502, 503, 504) the pod blacklist saw in responses, by status and outcome",
 		},
 	}
 )

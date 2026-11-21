@@ -34,8 +34,11 @@ import (
 // GET /health must be 2xx and, for vllm/sglang pods, GET /v1/models must
 // return a JSON list naming the model.
 //
-// Nothing else reports on a pod: the gateway does not record request outcomes.
-// This sweep catches a pod that has gone bad, or a stale registration whose
+// The other thing that can report on a pod is the response status of the requests it
+// serves (RecordResponse, opt-in: AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD); this
+// sweep is the only one that looks at a pod nobody is
+// sending traffic to, and at one that answers requests but is not the engine it
+// was registered as. It catches a pod that has gone bad, or a stale registration whose
 // address is gone or now belongs to another process, and blacklists it:
 //
 //   - a pod found dead (GET /health failing, or GET /v1/models answering 2xx
