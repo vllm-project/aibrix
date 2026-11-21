@@ -107,18 +107,30 @@ static_resources:
                           route:
                             cluster: metadata_service
                             timeout: 30s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
 
                         - match:
                             prefix: "/v1/files"
                           route:
                             cluster: metadata_service
                             timeout: 120s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
 
                         - match:
                             prefix: "/v1/batches"
                           route:
                             cluster: metadata_service
                             timeout: 30s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
 
                         # ============================================
                         # Health & Monitoring
@@ -142,6 +154,10 @@ static_resources:
                           route:
                             cluster: gateway_metrics
                             timeout: 10s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
 
                         - match:
                             prefix: "/v1/"
