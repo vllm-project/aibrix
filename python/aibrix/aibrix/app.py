@@ -1,9 +1,24 @@
+# Copyright 2026 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import argparse
 import os
 import shutil
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, Union
+from typing import AsyncIterator, Optional, Union
 from urllib.parse import urljoin
 
 import uvicorn
@@ -268,11 +283,32 @@ async def readiness_check():
     return JSONResponse(content={"status": "not ready"}, status_code=503)
 
 
+@asynccontextmanager
+async def runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Discover preloaded files before the first Claim asks for a snapshot.
+    # Reuse the existing supervisor cadence and stop it on agent shutdown;
+    # managed engine processes retain their existing registry/adoption behavior.
+    from aibrix.runtime.model_runtime import get_model_runtime
+
+    runtime = get_model_runtime()
+    runtime.start_supervisor()
+    try:
+        yield
+    finally:
+        runtime.stop_supervisor()
+
+
 def build_app(args: argparse.Namespace):
     if args.enable_fastapi_docs:
-        app = FastAPI(debug=False)
+        app = FastAPI(debug=False, lifespan=runtime_lifespan)
     else:
-        app = FastAPI(debug=False, openapi_url=None, docs_url=None, redoc_url=None)
+        app = FastAPI(
+            debug=False,
+            openapi_url=None,
+            docs_url=None,
+            redoc_url=None,
+            lifespan=runtime_lifespan,
+        )
 
     INFO_METRICS.info(
         {
