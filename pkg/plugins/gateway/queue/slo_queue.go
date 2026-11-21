@@ -218,6 +218,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 		q.dequeueCandidates[0].SubKey = key
 		return true
 	}
+	var canceled *types.QueueEntry
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		r, peekErr := sub.Peek(currentTime, pods)
 		if peekErr == types.ErrQueueEmpty {
@@ -225,6 +226,15 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 		} else if peekErr != nil {
 			klog.Errorf("Failed to peek subqueue %s: %v.", key, peekErr)
 			return true
+		}
+
+		if err := r.Err(); err != nil {
+			// Peek can dispatch through subRoute below. Return a canceled head
+			// to the worker for removal before ranking or touching a backend.
+			canceled = r
+			q.lastCandidateSubKey = key
+			q.lastCandidateError = err
+			return false
 		}
 
 		// Keep fallback decision in case anything wrong.
@@ -286,6 +296,10 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 		})
 		return true
 	})
+
+	if canceled != nil {
+		return canceled, nil
+	}
 
 	if len(q.dequeueCandidates) == 0 {
 		return nil, types.ErrQueueEmpty
@@ -371,7 +385,7 @@ func (q *SLOQueue) Dequeue(ts time.Time) (*types.QueueEntry, error) {
 	}
 	if q.lastCandidateFallbackReason != "" {
 		// Label from the entry's frozen metadata, not from its routing context: the
-		// requester may already have been unblocked and its context recycled.
+		// reporting does not depend on the routing context's lifetime.
 		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: entry.Model, BaseModel: entry.BaseModel},
 			nil, metrics.GatewayQueueFIFOFallbackTotal,
 			&metrics.SimpleMetricValue{Value: 1.0},
