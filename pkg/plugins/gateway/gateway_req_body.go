@@ -276,12 +276,12 @@ func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, request
 	if errors.Is(err, types.ErrTargetReplicaInflightExceeded) {
 		limit := replicaInflightLimit(routingCtx)
 		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "replica_at_capacity")
-		return replicaInflightExceededResponse(model, limit)
+		return withRoutingResponseHeaders(replicaInflightExceededResponse(model, limit), routingCtx, requestID)
 	}
 	if errors.Is(err, errReplicaInflightExceeded) {
 		limit := replicaInflightLimit(routingCtx)
 		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
-		return replicaInflightExceededResponse(model, limit)
+		return withRoutingResponseHeaders(replicaInflightExceededResponse(model, limit), routingCtx, requestID)
 	}
 	if externalResponse, ok := buildExternalRouterErrorResponse(routingCtx, requestID, err); ok {
 		klog.ErrorS(err, "external routing decision failed", "requestID", requestID, "model", model)
@@ -381,7 +381,11 @@ func buildRoutingErrorResponseWithBody(
 }
 
 // withRoutingResponseHeaders adds the request id and the target-pod headers the
-// routing context recorded to an immediate error response.
+// routing context recorded to an immediate error response. It copies RespHeaders
+// unfiltered, unlike HandleResponseHeaders under authoritativeRoutingPolicy. So under a
+// requestsInflight cap, a router must add its headers only after the target is admitted:
+// by AdmitTarget in Route, or by the gateway before PostRouteUpdate. A header added
+// earlier would reach the 429 for a pod that was refused.
 func withRoutingResponseHeaders(response *extProcPb.ProcessingResponse, routingCtx *types.RoutingContext, requestID string) *extProcPb.ProcessingResponse {
 	setHeaders := response.GetImmediateResponse().GetHeaders().GetSetHeaders()
 	setHeaders = buildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
