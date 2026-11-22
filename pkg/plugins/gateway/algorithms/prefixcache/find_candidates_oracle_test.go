@@ -162,25 +162,28 @@ func TestFindCandidates_OracleEquivalence(t *testing.T) {
 					gotCtx.Delete()
 				}
 
-				// 2. Unbiased tie-shuffle at cutoff boundary (max=2 over 3 tied 100% holders: pods 2, 7, 15).
-				firstSlotCounts := map[*v1.Pod]int{}
-				includedCounts := map[*v1.Pod]int{}
-				const trials = 300
+				// 2. Unbiased tie-shuffle over 3 tied 100% holders (pods 2, 7, 15).
+				// Checking all 3! = 6 permutations pins rand.Shuffle: Go map iteration
+				// randomizes the starting bucket but visits entries in cyclic order
+				// (at most 3 permutations), so dropping rand.Shuffle fails this check.
+				permCounts := map[string]int{}
+				includedTop2 := map[*v1.Pod]int{}
+				const trials = 600
 				for i := 0; i < trials; i++ {
 					ctx := newSeededMatchContext(full)
-					got := r.FindCandidates(ctx, podList, 2)
+					got := r.FindCandidates(ctx, podList, 3)
 					ctx.Delete()
-					require.Len(t, got, 2)
-					firstSlotCounts[got[0]]++
-					for _, p := range got {
-						includedCounts[p]++
-					}
+					require.Len(t, got, 3)
+					perm := got[0].Name + "," + got[1].Name + "," + got[2].Name
+					permCounts[perm]++
+					includedTop2[got[0]]++
+					includedTop2[got[1]]++
 				}
 				tiedFull := []*v1.Pod{pods[2], pods[7], pods[15]}
-				assert.Len(t, includedCounts, len(tiedFull), "only full-match holders should be picked when max=2")
-				for _, p := range tiedFull {
-					assert.Greater(t, firstSlotCounts[p], 30, "tied holder %s should appear in slot 0 roughly 1/3 of the time", p.Name)
-					assert.Greater(t, includedCounts[p], 100, "tied holder %s should appear in top-2 roughly 2/3 of the time", p.Name)
+				assert.Len(t, includedTop2, len(tiedFull), "only full-match holders should be picked in top-3")
+				assert.Len(t, permCounts, 6, "all 6 permutations of 3 tied holders must appear (rand.Shuffle required)")
+				for perm, count := range permCounts {
+					assert.GreaterOrEqual(t, count, 40, "permutation %s appeared only %d/%d times; expected ~%d", perm, count, trials, trials/6)
 				}
 
 				// 3. Cache miss returns empty without failing and retains SeededPrefixMatch.

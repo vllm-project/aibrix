@@ -1044,7 +1044,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// memory only; excludeBlacklistedCandidates and the Redis filter below stay authoritative.
 		allReady := readyPods
 		readyBeforeCandidates := len(readyPods)
-		readyPods = selectStageCandidates(routeCtx, s.cache, router, routableSnapshot, readyPods, externalFilterExpr, encoders, s.scoutBlacklistFilter())
+		readyPods = selectStageCandidates(routeCtx, s.cache, router, routableSnapshot, readyPods, s.scoutBlacklistFilter())
 		// The scope is what the filter actually ran on, not which branch ran: with the candidate
 		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
 		// It is read before the blacklist drops pods, which says nothing about what was sampled.
@@ -1138,13 +1138,25 @@ func routablePodsFromList(pods types.PodList) ([]*v1.Pod, *utils.PodArray) {
 	return utils.FilterRoutablePods(pods.All()), nil
 }
 
+// isSnapshot reports whether ready is still the exact backing slice of snap
+// (same length and same first element address), meaning no upstream stage
+// narrowed or replaced it. Checking identity directly rather than enumerating
+// upstream filters stays correct if another stage is added before the candidate
+// stage in the future.
+func isSnapshot(ready []*v1.Pod, snap *utils.PodArray) bool {
+	if snap == nil {
+		return false
+	}
+	all := snap.All()
+	return len(ready) == len(all) && (len(all) == 0 || &ready[0] == &all[0])
+}
+
 // selectStageCandidates runs the candidate stage, reusing routableSnapshot only
-// when no upstream filter narrowed readyPods (empty external-filter and no
-// encoders split off; for non-exclusive strategies the blacklist runs after
-// this stage). Otherwise it falls back cleanly to readyPods so
-// SeededPrefixMatch.Pods stays strictly scoped to the stage's input.
-func selectStageCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, routableSnapshot *utils.PodArray, readyPods []*v1.Pod, externalFilterExpr string, encoders []*v1.Pod, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
-	if routableSnapshot != nil && externalFilterExpr == "" && len(encoders) == 0 {
+// when readyPods still is that exact snapshot. Otherwise it falls back cleanly
+// to readyPods so SeededPrefixMatch.Pods stays strictly scoped to the stage's
+// input.
+func selectStageCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, routableSnapshot *utils.PodArray, readyPods []*v1.Pod, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
+	if isSnapshot(readyPods, routableSnapshot) {
 		return routing.SelectCandidatesFromPodList(ctx, c, router, routableSnapshot, filterScout)
 	}
 	return routing.SelectCandidates(ctx, c, router, readyPods, filterScout)

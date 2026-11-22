@@ -176,6 +176,58 @@ func TestPodArrayKeyIndexPanicRepeats(t *testing.T) {
 	}
 }
 
+// TestCustomizedRegistryInvalidatesKeyIndexOnStoreAndDelete pins the cache
+// boundary invariant: Store and Delete publish a fresh *PodArray so Routable,
+// KeySet, and ByKey never serve stale pods across informer updates while older
+// snapshots remain immutable.
+func TestCustomizedRegistryInvalidatesKeyIndexOnStoreAndDelete(t *testing.T) {
+	reg := NewRegistryWithArrayProvider(func(pods []*v1.Pod) *PodArray {
+		return &PodArray{Pods: pods}
+	})
+	podA := newReadyPod("pod-a", "10.0.0.1")
+	podB := newReadyPod("pod-b", "10.0.0.2")
+	keyA := GeneratePodKey(podA.Namespace, podA.Name)
+	keyB := GeneratePodKey(podB.Namespace, podB.Name)
+	reg.Store(keyA, podA)
+	reg.Store(keyB, podB)
+
+	gen1 := reg.Array()
+	if gen1.Routable().Len() != 2 || len(gen1.KeySet()) != 2 || gen1.ByKey()[keyA] != podA {
+		t.Fatalf("unexpected gen1 caches: routable=%d keys=%d", gen1.Routable().Len(), len(gen1.KeySet()))
+	}
+
+	// Replace podA with an unready pod object (same key): new snapshot must reflect it.
+	podAUnready := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: podA.Namespace, Name: podA.Name}}
+	reg.Store(keyA, podAUnready)
+	gen2 := reg.Array()
+	if gen2 == gen1 {
+		t.Fatalf("Store did not publish a new *PodArray")
+	}
+	if gen2.Routable().Len() != 1 || gen2.ByKey()[keyA] != podAUnready {
+		t.Fatalf("gen2 did not reflect updated podA: routable=%d byKey=%v", gen2.Routable().Len(), gen2.ByKey()[keyA])
+	}
+	if _, ok := gen2.Routable().KeySet()[keyA]; ok {
+		t.Fatalf("gen2.Routable().KeySet() must not contain unready podA")
+	}
+	// Earlier snapshot stays untouched for in-flight requests.
+	if gen1.Routable().Len() != 2 || gen1.ByKey()[keyA] != podA {
+		t.Fatalf("gen1 was mutated by later Store")
+	}
+
+	// Delete podB: new snapshot drops keyB cleanly.
+	reg.Delete(keyB)
+	gen3 := reg.Array()
+	if gen3.Routable().Len() != 0 || len(gen3.KeySet()) != 1 {
+		t.Fatalf("gen3 after Delete: routable=%d keys=%d, want 0/1", gen3.Routable().Len(), len(gen3.KeySet()))
+	}
+	if _, ok := gen3.KeySet()[keyB]; ok {
+		t.Fatalf("gen3.KeySet() still contains deleted keyB")
+	}
+	if gen3.ByKey()[keyB] != nil {
+		t.Fatalf("gen3.ByKey() still contains deleted keyB")
+	}
+}
+
 // BenchmarkPodArrayKeyIndexChurn interleaves CustomizedRegistry.Store (which
 // invalidates the published *PodArray generation) with simulated prefix-cache
 // FindCandidates requests at N=2000. Comparing cached (arr.KeySet + arr.ByKey)
@@ -290,5 +342,3 @@ func BenchmarkPodArrayKeyIndexChurn(b *testing.B) {
 		})
 	}
 }
-
-var _ = metav1.ObjectMeta{}

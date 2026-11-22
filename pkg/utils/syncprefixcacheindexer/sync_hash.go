@@ -230,7 +230,9 @@ func (s *SyncPrefixHashTable) Close() {
 }
 
 // MatchPrefix matches the input token prefix if already cached
-// returns map[podname]%prefixmatch along with all prefix hashes
+// returns map[podname]%prefixmatch along with all prefix hashes.
+// readyPods may be a shared read-only map (such as PodArray.KeySet) and must not
+// be modified.
 func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens []byte, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	ctx := ModelContext{
 		ModelName: modelName,

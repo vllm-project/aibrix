@@ -37,6 +37,18 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+func TestIsSnapshot(t *testing.T) {
+	pods := makeRoutableSnapshotPods(4, nil)
+	snap := &utils.PodArray{Pods: pods}
+
+	assert.False(t, isSnapshot(pods, nil))
+	assert.True(t, isSnapshot(pods, snap))
+	assert.False(t, isSnapshot(pods[:3], snap), "narrowed prefix slice is not the full snapshot")
+	assert.False(t, isSnapshot(pods[1:], snap), "offset suffix slice is not the full snapshot")
+	assert.False(t, isSnapshot(slices.Clone(pods), snap), "freshly allocated copy is not the snapshot")
+	assert.True(t, isSnapshot(nil, &utils.PodArray{}))
+}
+
 // TestSelectTargetPod_PrefixCacheSnapshotReuseGuard verifies that:
 //  1. With empty external-filter and no encoders, selectTargetPod passes the
 //     routable *utils.PodArray snapshot into SelectCandidatesFromPodList so
@@ -158,6 +170,17 @@ func TestSelectTargetPod_PrefixCacheSnapshotReuseGuard(t *testing.T) {
 		podsArr, err := store.ListPodsByModel("m")
 		require.NoError(t, err)
 		arr := podsArr.(*utils.PodArray)
+
+		// Seed the prefix directly onto an encoder pod (pods[0]) so that a
+		// regression reusing routableSnapshot despite SplitEncoders would have
+		// FindCandidates return pods[0] and route to an encoder.
+		seedCtx := types.NewRoutingContext(context.Background(), routing.RouterPrefixCache, "m", prompt, "seed-enc", "")
+		router, err := rm.Select(seedCtx)
+		require.NoError(t, err)
+		updater, ok := router.(types.PostRouteUpdater)
+		require.True(t, ok, "prefix-cache router should implement PostRouteUpdater")
+		require.NoError(t, updater.PostRouteUpdate(seedCtx, arr, pods[0]))
+		seedCtx.Delete()
 
 		for i := 0; i < 20; i++ {
 			ctx := types.NewRoutingContext(context.Background(), routing.RouterPrefixCache, "m", prompt, fmt.Sprintf("enc-%d", i), "")
