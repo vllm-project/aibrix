@@ -102,11 +102,21 @@ func TestSplitEncoders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			orig := slices.Clone(tt.pods)
-			serving, encoders := SplitEncoders(tt.pods)
+			// Give non-empty inputs spare capacity (matching FilterRoutablePods output)
+			// so aliasing checks catch any partial-slice alias or spare-capacity write.
+			input := tt.pods
+			if len(tt.pods) > 0 {
+				input = make([]*v1.Pod, len(tt.pods), len(tt.pods)+4)
+				copy(input, tt.pods)
+			}
+			orig := slices.Clone(input)
+			serving, encoders := SplitEncoders(input)
 			assert.Equal(t, tt.wantServing, serving)
 			assert.Equal(t, tt.wantEncoders, encoders)
-			assert.Equal(t, orig, tt.pods, "input slice must not be modified")
+			assert.Equal(t, orig, input, "input slice must not be modified")
+			if len(encoders) > 0 && len(serving) > 0 {
+				assert.NotSame(t, &input[0], &serving[0], "mixed result must return a fresh serving slice, not alias pods")
+			}
 		})
 	}
 }
@@ -146,8 +156,10 @@ func TestSplitEncoders_MixedPreallocatesServingOnce(t *testing.T) {
 			})
 			require.Len(t, serving, 199)
 			require.Len(t, encoders, 1)
-			// 1 alloc for serving + 1 alloc for the single-element encoders slice.
-			assert.LessOrEqual(t, allocs, 2.0, "serving slice should be preallocated in one shot")
+			assert.NotSame(t, &pods[0], &serving[0], "mixed result must return a fresh serving slice")
+			assert.Equal(t, len(pods)-1, cap(serving), "serving slice should be preallocated to exact upper bound")
+			// Exactly 1 alloc for serving + 1 alloc for the single-element encoders slice.
+			assert.EqualValues(t, 2, allocs, "serving slice should be preallocated in one shot")
 		})
 	}
 }
