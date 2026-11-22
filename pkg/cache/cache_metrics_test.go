@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
@@ -28,6 +29,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -1904,4 +1907,166 @@ func TestUpdateModelReplicaMetricsSkipsQuarantinedPods(t *testing.T) {
 	store.updateModelReplicaMetrics()
 	require.ElementsMatch(t, []string{"pod-0", "pod-1"}, emitted)
 	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+}
+
+// seedCompletedRequestsHistory plants a rate-window baseline for the pod's
+// completed_requests counter so calculateRate1m has a snapshot far enough in
+// the past (it discards windows shorter than 10s) without sleeping.
+func seedCompletedRequestsHistory(t *testing.T, pod *Pod, baseline float64, age time.Duration) {
+	t.Helper()
+	key := rateHistoryKey(pod, "", "completed_requests")
+	rateCalculator.mu.Lock()
+	rateCalculator.history[key] = []MetricSnapshot{{Value: baseline, Timestamp: time.Now().Add(-age)}}
+	rateCalculator.mu.Unlock()
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, key)
+		rateCalculator.mu.Unlock()
+	})
+}
+
+// scrapeGatewayMetrics renders the gateway plugin's /metrics response in
+// process: a promhttp handler over the default registry, the same gatherer the
+// gateway serves (gateway.go mounts promhttp on the default registry), invoked
+// through a recorder so the test needs no listening port.
+func scrapeGatewayMetrics(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	return recorder
+}
+
+// metricFamilyFromHTTP parses a /metrics response and returns the named family,
+// nil when the endpoint does not export it at all.
+func metricFamilyFromHTTP(t *testing.T, body io.Reader, metricName string) *dto.MetricFamily {
+	t.Helper()
+	var parser expfmt.TextParser
+	families, err := parser.TextToMetricFamilies(body)
+	require.NoError(t, err)
+	return families[metricName]
+}
+
+// gaugeValueForLabels returns the value of the gauge series whose labels
+// include wantLabels.
+func gaugeValueForLabels(family *dto.MetricFamily, wantLabels map[string]string) (float64, bool) {
+	if family == nil {
+		return 0, false
+	}
+	for _, m := range family.Metric {
+		labels := make(map[string]string, len(m.Label))
+		for _, lp := range m.Label {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		matched := true
+		for name, want := range wantLabels {
+			if labels[name] != want {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			if g := m.GetGauge(); g != nil {
+				return g.GetValue(), true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// Regression for #3501: updateRealtimeRunningRequestsDrainRate1m always tried
+// to export realtime_running_requests_drain_rate_1m, but the metric had no
+// definition entry, so EmitMetricToPrometheus dropped it and the gateway's
+// /metrics response never carried the series. Thirty requests completed over a
+// seeded ~30s window must export a gauge of ~1 request per second, with the
+// model label following the pod's own metadata.
+func TestUpdateRealtimeRunningRequestsDrainRate1m_ExportsDrainRateGauge(t *testing.T) {
+	tests := []struct {
+		name        string
+		podName     string
+		labels      map[string]string
+		annotations map[string]string
+		wantModel   string
+	}{
+		{
+			name:      "model label comes from the pod label",
+			podName:   "drain-gauge-label",
+			labels:    map[string]string{constants.ModelLabelName: "test-model"},
+			wantModel: "test-model",
+		},
+		{
+			name:        "model label falls back to the pod annotation",
+			podName:     "drain-gauge-annotation",
+			annotations: map[string]string{constants.ModelLabelName: "org/model-with-slashes"},
+			wantModel:   "org/model-with-slashes",
+		},
+		{
+			name:    "model label is empty when the pod has neither",
+			podName: "drain-gauge-empty",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := namespacedTestPod(testNamespace, tt.podName)
+			pod.Labels = tt.labels
+			pod.Annotations = tt.annotations
+
+			seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+			atomic.StoreInt64(&pod.completedRequests, 30) // 30 completions over the ~30s window
+
+			store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+			family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+			require.NotNil(t, family, "the gateway /metrics response must export %s", metrics.RealtimeRunningRequestsDrainRate1m)
+			require.Equal(t, dto.MetricType_GAUGE, family.GetType())
+
+			wantLabels := map[string]string{
+				"namespace":   testNamespace,
+				"pod":         pod.Name,
+				"model":       tt.wantModel,
+				"gateway_pod": metrics.GatewayPodName(),
+			}
+			value, ok := gaugeValueForLabels(family, wantLabels)
+			require.True(t, ok, "series with labels %v must be exported", wantLabels)
+			require.InDelta(t, 1.0, value, 0.05, "30 completions over the seeded ~30s window")
+		})
+	}
+}
+
+// A later update that computes a zero rate must report zero on the same series,
+// not keep the last non-zero value (#3501).
+func TestUpdateRealtimeRunningRequestsDrainRate1m_ZeroRateReportsZeroOnSameSeries(t *testing.T) {
+	store := &Store{}
+	pod := namespacedTestPod(testNamespace, "drain-gauge-zero")
+	pod.Labels = map[string]string{constants.ModelLabelName: "test-model-zero"}
+
+	wantLabels := map[string]string{
+		"namespace":   testNamespace,
+		"pod":         pod.Name,
+		"model":       "test-model-zero",
+		"gateway_pod": metrics.GatewayPodName(),
+	}
+
+	// 30 completions over the ~30s window: the gauge reports ~1 request per second.
+	seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedRequests, 30)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+	family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	value, ok := gaugeValueForLabels(family, wantLabels)
+	require.True(t, ok, "the series must be exported before the rate reaches zero")
+	require.InDelta(t, 1.0, value, 0.05)
+
+	// A later window with no further completions computes a zero rate.
+	seedCompletedRequestsHistory(t, pod, 30, 30*time.Second)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+	family = metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	value, ok = gaugeValueForLabels(family, wantLabels)
+	require.True(t, ok, "the series must stay exported when the rate reaches zero")
+	require.Equal(t, 0.0, value)
 }

@@ -1032,6 +1032,40 @@ func TestPodBlacklist_SweepStale_KeepsCountingWhatStillExcludes(t *testing.T) {
 	assert.False(t, b.Allow(loaded))
 }
 
+func TestPodBlacklist_HasExcluded(t *testing.T) {
+	var b PodBlacklist
+	pod := blacklistTestPod("p1")
+
+	assert.False(t, b.HasExcluded(), "empty blacklist has no exclusions")
+
+	// A single failed probe creates an entry without excluding the pod.
+	b.RecordProbeResult(pod, ProbeDegraded, "503")
+	assert.False(t, b.HasExcluded(), "tracked entry that does not exclude must stay on the fast path")
+
+	// Tripping the breaker flips HasExcluded on.
+	tripBreaker(&b, pod)
+	assert.True(t, b.HasExcluded())
+
+	// Master switch off forces HasExcluded false even with an open entry.
+	prev := Enabled
+	Enabled = false
+	assert.False(t, b.HasExcluded(), "disabled blacklist reports no exclusions")
+	Enabled = prev
+	assert.True(t, b.HasExcluded())
+
+	// Lifting the block via healthy sweeps clears HasExcluded.
+	for i := 0; i < podProbeRecoveryIterations; i++ {
+		b.RecordProbeResult(pod, ProbeHealthy, "")
+	}
+	assert.False(t, b.HasExcluded(), "recovered pod returns to the fast path")
+
+	// Load exclusion also flips HasExcluded on and off.
+	require.True(t, b.SetLoadExcluded(pod, true))
+	assert.True(t, b.HasExcluded())
+	require.True(t, b.SetLoadExcluded(pod, false))
+	assert.False(t, b.HasExcluded())
+}
+
 func TestHTTPHealthCheckWithin(t *testing.T) {
 	t.Run("2xx response is healthy", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

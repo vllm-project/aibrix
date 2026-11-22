@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 var (
@@ -53,12 +54,15 @@ const (
 	PodMetricsEnqueueDroppedTotal = "aibrix_pod_metrics_enqueue_dropped_total"
 	PodMetricsFetchFailuresTotal  = "aibrix_pod_metrics_fetch_failures_total"
 
+	MetricsEmitDroppedTotal = "aibrix_metrics_emit_dropped_total"
+
 	PodMetricsDropReasonQueueFull            = "queue_full"
 	PodMetricsDropReasonBackoff              = "backoff"
 	PodMetricsDropReasonAlreadyQueued        = "already_queued"
 	PodMetricsFetchFailureReasonFetchError   = "fetch_error"
 	podMetricsEnqueueDroppedTotalDescription = "Total number of pod metrics enqueue attempts dropped by the gateway cache."
 	podMetricsFetchFailuresTotalDescription  = "Total number of pod metrics fetch failures observed by the gateway cache."
+	metricsEmitDroppedTotalDescription       = "Total number of metric emits dropped by EmitMetricToPrometheus because the metric had no definition entry."
 )
 
 // GatewayPodName returns the gateway pod name used as the gateway_pod metric label.
@@ -84,6 +88,22 @@ func IncrementPodMetricsFetchFailure(engineType, reason string) {
 		[]string{"engine_type", "reason"},
 		engineType,
 		reason,
+	)
+}
+
+// IncrementMetricsEmitDropped counts an emit that EmitMetricToPrometheus dropped
+// because the metric had no definition entry. The metric label names the dropped
+// series, so a misregistered metric shows up here instead of vanishing silently
+// (#3506). Emitted metrics never call this for themselves: the dropped-emit
+// counter goes through IncrementCounterMetric directly, not through
+// EmitMetricToPrometheus, so it cannot recurse.
+func IncrementMetricsEmitDropped(metricName string) {
+	IncrementCounterMetric(
+		MetricsEmitDroppedTotal,
+		metricsEmitDroppedTotalDescription,
+		1,
+		[]string{"metric"},
+		metricName,
 	)
 }
 
@@ -441,6 +461,12 @@ func projectLabelValues(wantNames, gotNames, gotValues []string) []string {
 func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metricName string, metricValue MetricValue, extra map[string]string) {
 	metricDef, exists := Metrics[metricName]
 	if !exists {
+		// Count and log the drop instead of returning silently: an emit for a
+		// name without a definition entry otherwise vanishes, and the next
+		// missing gateway gauge is found by an operator rather than by CI
+		// (#3498, #3501, #3506).
+		IncrementMetricsEmitDropped(metricName)
+		klog.V(4).InfoS("dropping metric emit: metric has no definition entry", "metric", metricName)
 		return
 	}
 
