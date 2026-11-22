@@ -356,14 +356,15 @@ func TestRelocationCleanupRechecksOwnershipBeforeStopping(t *testing.T) {
 	}
 }
 
-func TestRelocatedFromRequiresClaimAndAuthoritativeList(t *testing.T) {
+func TestRelocatedFromRequiresAuthoritativeList(t *testing.T) {
 	owner := claimWithCost(300, 100)
 	owner.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "warm-target"}}
 	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*owner}}
 
 	assert.True(t, relocatedFrom(owner, "warm-source", servedModelName(owner), claims))
 	assert.False(t, relocatedFrom(owner, "warm-source", servedModelName(owner), nil))
-	assert.False(t, relocatedFrom(nil, "warm-source", servedModelName(owner), claims))
+	assert.True(t, relocatedFrom(nil, "warm-source", servedModelName(owner), claims))
+	assert.False(t, relocatedFrom(nil, "warm-target", servedModelName(owner), claims))
 }
 
 func TestPendingClaimCanCleanItsOwnRelocatedEngine(t *testing.T) {
@@ -401,6 +402,93 @@ func TestPendingClaimCanCleanItsOwnRelocatedEngine(t *testing.T) {
 	placed := getModel(t, r, pm.Name)
 	require.Len(t, placed.Status.Instances, 1)
 	assert.Equal(t, source.Name, placed.Status.Instances[0].Pod)
+}
+
+func TestRelocationCleanupRetriesSourceAfterClaimDeletion(t *testing.T) {
+	ctx := context.Background()
+	owner := claimWithCost(300, 100)
+	owner.UID = "old-claim-uid"
+	source, sourceSnapshot := sizedWarmPod("warm-source", "10.0.0.1", 1000)
+	target, targetSnapshot := sizedWarmPod("warm-target", testPeerIP, 1000)
+	source.UID, target.UID = "source-uid", "target-uid"
+	source.Labels["cleanup-test-source"] = "true"
+	owner.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: target.Name, Port: 9002, Phase: modelv1alpha1.ModelClaimActivating,
+	}}
+	sourceSnapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(owner), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
+		ClaimRef: &ModelClaimRef{Namespace: owner.Namespace, Name: owner.Name, UID: string(owner.UID)},
+	}}
+	r, runtime := newReconciler(t, owner, source, target)
+	runtime.snapshots = map[string]*RuntimeSnapshot{source.Status.PodIP: sourceSnapshot, target.Status.PodIP: targetSnapshot}
+	runtime.deactivateErrOn = map[string]error{source.Status.PodIP: fmt.Errorf("source stop unavailable")}
+	now := time.Now()
+	r.Now = func() time.Time { return now }
+	r.Backoff = newPlacementBackoff(r.Now)
+	for range 2 {
+		r.reconcileRelocationCleanup(ctx, owner.Namespace, []corev1.Pod{*source}, newRuntimeReadings(runtime))
+		now = now.Add(time.Minute)
+	}
+	require.Equal(t, []string{source.Status.PodIP}, runtime.deactivatedOn)
+
+	require.NoError(t, r.Delete(ctx, getModel(t, r, owner.Name)))
+	reconcileOnce(t, r, owner.Name)
+	require.True(t, apierrors.IsNotFound(r.Get(ctx, client.ObjectKeyFromObject(owner), &modelv1alpha1.ModelClaim{})))
+	require.Equal(t, []string{source.Status.PodIP, target.Status.PodIP}, runtime.deactivatedOn)
+	delete(runtime.deactivateErrOn, source.Status.PodIP)
+	r.relocationChecks = relocationChecks{} // simulate a controller restart
+
+	waiting := claimWithCost(300, 100)
+	waiting.Name = "waiting"
+	waiting.Spec.ModelName = nil
+	waiting.Spec.PodSelector.MatchLabels["cleanup-test-source"] = "true"
+	require.NoError(t, r.Create(ctx, waiting))
+	reconcileOnce(t, r, waiting.Name)
+	require.Empty(t, getModel(t, r, waiting.Name).Status.Instances)
+	require.Equal(t, []string{source.Status.PodIP, target.Status.PodIP}, runtime.deactivatedOn)
+	now = now.Add(time.Minute)
+	reconcileOnce(t, r, waiting.Name)
+	require.Equal(t, []string{source.Status.PodIP, target.Status.PodIP, source.Status.PodIP}, runtime.deactivatedOn)
+
+	// The accepted stop still leaves the source occupied until the runtime
+	// reports that the engine has exited.
+	require.Empty(t, getModel(t, r, waiting.Name).Status.Instances)
+	sourceSnapshot.Models = nil
+	now = now.Add(time.Minute)
+	reconcileOnce(t, r, waiting.Name)
+	placed := getModel(t, r, waiting.Name)
+	require.Len(t, placed.Status.Instances, 1)
+	assert.Equal(t, source.Name, placed.Status.Instances[0].Pod)
+}
+
+func TestRelocationCleanupPreservesAnnotationsForRecreatedClaim(t *testing.T) {
+	ctx := context.Background()
+	claim := claimWithCost(300, 100)
+	claim.UID = "new-claim-uid"
+	oldModel, newModel := servedModelName(claim), "new-model"
+	claim.Spec.ModelName = &newModel
+	pod, snapshot := sizedWarmPod("warm-source", "10.0.0.1", 1000)
+	pod.UID = "source-uid"
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Port: 9002, Phase: modelv1alpha1.ModelClaimActive}}
+	snapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: oldModel, Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
+		ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: "old-claim-uid"},
+	}}
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + claim.Name:  `{"model":"new-model","port":9002,"state":"active"}`,
+		constants.ModelClaimWakeAnnotationPrefix + claim.Name: "2026-10-01T08:00:00Z",
+	}
+	r, runtime := newReconciler(t, claim, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	for range 2 {
+		r.reconcileRelocationCleanup(ctx, pod.Namespace, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+		now = now.Add(time.Minute)
+	}
+	require.Len(t, runtime.deactivateCalls, 1)
+	assert.Equal(t, oldModel, runtime.deactivateCalls[0].ModelName)
+	assert.Equal(t, pod.Annotations, podNamed(t, r, pod.Name).Annotations)
 }
 
 func TestReconcileSaysWakingOnlyForTheCallThatWokeTheEngine(t *testing.T) {

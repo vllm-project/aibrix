@@ -161,8 +161,11 @@ func (r *ModelClaimReconciler) reconcileRelocationCleanup(
 		previous := checks.pods[key]
 		current := relocationObservation{at: now, podUID: pod.UID, podIP: pod.Status.PodIP}
 		for _, model := range ledgers[pod.Name].unclaimed {
-			if model.ClaimRef == nil || model.ClaimRef.UID == "" {
+			if model.ClaimRef == nil || model.ClaimRef.UID == "" || model.ClaimRef.Name == "" {
 				recordRelocationSkip(pod, model.ModelName, "missing_claim_ref")
+				continue
+			}
+			if model.ClaimRef.Namespace != pod.Namespace {
 				continue
 			}
 			owner := claimForRuntimeSnapshot(claims, model)
@@ -329,11 +332,11 @@ func nextRelocationProbe(candidate, current, last string) bool {
 	return candidate < current
 }
 
-// Require a live owner, including a claim that lost its replacement Pod.
-// Protect any same-name instance recorded here, even if the runtime
-// attributes it to a different Claim UID.
+// Protect any same-name instance on this Pod, even if the runtime attributes
+// the engine to a different or deleted Claim UID. Finalization owns stops for
+// instances of a Claim that is still being deleted.
 func relocatedFrom(owner *modelv1alpha1.ModelClaim, podName, modelName string, claims *modelv1alpha1.ModelClaimList) bool {
-	if owner == nil || claims == nil || !owner.DeletionTimestamp.IsZero() || servedModelName(owner) != modelName {
+	if claims == nil || (owner != nil && (!owner.DeletionTimestamp.IsZero() || servedModelName(owner) != modelName)) {
 		return false
 	}
 	for i := range claims.Items {
@@ -385,9 +388,15 @@ func (r *ModelClaimReconciler) tryRelocationStop(ctx context.Context, candidate 
 		return false
 	}
 
-	routeKey := constants.ModelClaimPodAnnotationPrefix + owner.Name
-	wakeKey := constants.ModelClaimWakeAnnotationPrefix + owner.Name
-	if _, routed := current.Annotations[routeKey]; routed || wakeAsked(current, owner.Name) {
+	// Route and wake annotations are keyed by name, so a recreated Claim
+	// may already own them even though it has a different UID.
+	claimName := engine.claim.Name
+	recreated := owner == nil && slices.ContainsFunc(claims.Items, func(claim modelv1alpha1.ModelClaim) bool {
+		return claim.Name == claimName
+	})
+	routeKey := constants.ModelClaimPodAnnotationPrefix + claimName
+	wakeKey := constants.ModelClaimWakeAnnotationPrefix + claimName
+	if _, routed := current.Annotations[routeKey]; !recreated && (routed || wakeAsked(current, claimName)) {
 		patch := client.MergeFromWithOptions(current.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		delete(current.Annotations, routeKey)
 		delete(current.Annotations, wakeKey)
@@ -401,22 +410,27 @@ func (r *ModelClaimReconciler) tryRelocationStop(ctx context.Context, candidate 
 	// The single ModelClaim worker serializes cleanup and placement. An
 	// instance is recorded before any managed start can reuse this name.
 	attempt := candidate.retry.attempts + 1
+	claimRef := klog.KRef(engine.claim.Namespace, claimName)
 	klog.InfoS("requesting stop for unclaimed model engine", "pod", klog.KObj(current),
-		"claim", klog.KObj(owner), "model", engine.model, "port", engine.port, "attempt", attempt)
+		"claim", claimRef, "model", engine.model, "port", engine.port, "attempt", attempt)
 	err = r.Runtime.Deactivate(ctx, current.Status.PodIP, DefaultRuntimePort, &DeactivateRequest{
 		ModelName: engine.model,
 		Mode:      DeactivateStop,
 	})
 	readings.forget(current.Name)
+	eventObject := client.Object(current)
+	if owner != nil {
+		eventObject = owner
+	}
 	if err != nil {
 		relocationCleanupTotal.WithLabelValues("failed", "stop_failed").Inc()
 		klog.ErrorS(err, "failed to stop relocated model on its old pod", "pod", klog.KObj(current),
-			"claim", klog.KObj(owner), "model", engine.model, "attempt", attempt)
-		r.Recorder.Eventf(owner, corev1.EventTypeWarning, "RelocatedEngineStopFailed",
+			"claim", claimRef, "model", engine.model, "attempt", attempt)
+		r.Recorder.Eventf(eventObject, corev1.EventTypeWarning, "RelocatedEngineStopFailed",
 			"could not stop the old engine on pod %s (attempt %d): %v", current.Name, attempt, err)
 	} else {
 		relocationCleanupTotal.WithLabelValues("requested", "stop_accepted").Inc()
-		r.Recorder.Eventf(owner, corev1.EventTypeNormal, "RelocatedEngineStopRequested",
+		r.Recorder.Eventf(eventObject, corev1.EventTypeNormal, "RelocatedEngineStopRequested",
 			"requested a stop for the old engine on pod %s (attempt %d)", current.Name, attempt)
 	}
 	return true
