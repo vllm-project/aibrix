@@ -188,6 +188,12 @@ func TestFindCandidates_OracleEquivalence(t *testing.T) {
 				assert.Empty(t, r.FindCandidates(missCtx, podList, 8))
 				assert.NotNil(t, missCtx.SeededPrefixMatch())
 				missCtx.Delete()
+
+				// 4. Nil readyPodList returns nil safely without panicking or populating SeededPrefixMatch.
+				nilCtx := newSeededMatchContext(full)
+				assert.Nil(t, r.FindCandidates(nilCtx, nil, 8))
+				assert.Nil(t, nilCtx.SeededPrefixMatch())
+				nilCtx.Delete()
 			})
 		}
 	}

@@ -680,7 +680,7 @@ type matchedCandidate struct {
 // lookup come from its lazy KeySet/ByKey caches, keeping FindCandidates O(holders log holders)
 // rather than scanning or allocating O(N) over the entire fleet.
 func (p prefixCacheRouter) FindCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
-	if max <= 0 {
+	if max <= 0 || readyPodList == nil {
 		return nil
 	}
 	matchedPods, err := p.matchForCandidates(ctx, readyPodList)
