@@ -36,14 +36,26 @@ func IsEncoder(pod *v1.Pod) bool {
 }
 
 // SplitEncoders returns the pods that can serve requests and the encoders,
-// keeping the order of pods in each.
+// keeping the order of pods in each. When no pod is an encoder, serving is
+// pods itself (no allocation) and encoders is nil; callers must not mutate the
+// returned slice in place if pods is shared.
 func SplitEncoders(pods []*v1.Pod) (serving, encoders []*v1.Pod) {
-	for _, pod := range pods {
+	for i, pod := range pods {
 		if IsEncoder(pod) {
+			if encoders == nil && i > 0 {
+				serving = make([]*v1.Pod, i, len(pods)-1)
+				copy(serving, pods[:i])
+			}
 			encoders = append(encoders, pod)
-		} else {
+		} else if encoders != nil {
+			if serving == nil {
+				serving = make([]*v1.Pod, 0, len(pods)-i)
+			}
 			serving = append(serving, pod)
 		}
+	}
+	if encoders == nil {
+		return pods, nil
 	}
 	return serving, encoders
 }
