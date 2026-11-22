@@ -205,6 +205,72 @@ Apply the route only when you intend to expose the plugin's list. Confirm its
 does not change whether the plugin returns ``known`` or ``ready-pods``; that
 choice comes from ``--model-list-mode``.
 
+Gateway Plugin Discovery Staleness
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each gateway replica keeps its own copy of the Pod list, fed by a Kubernetes
+watch. If one replica loses its connection to the API server, the watch is
+retried in the background and the replica keeps routing on the Pod list it had,
+including Pods that have since been deleted. Its health status does not change,
+and at the default log level nothing is logged.
+
+To make this visible, every replica checks the API server on a ticker,
+independently of watch events:
+
+- **Reachability** (always on): one ``LIST pods`` with ``limit=1``, read from
+  etcd. It costs one small request per interval per replica and needs no
+  permission beyond what the gateway role already has.
+- **Consistency** (only with ``--model-list-discovery-max-age``): the
+  verification described in the previous section, run on the same ticker
+  instead of only when ``/v1/models`` is called. It still makes a full LIST at
+  most once per max age, but it now does so even when nobody calls
+  ``/v1/models``. In exchange, list requests rarely wait for a verification.
+
+Each check is bounded by half the interval, so checks never overlap. With the
+consistency check on, that half interval must be long enough for a full,
+paginated LIST of every Pod and ModelAdapter; on a large cluster, raise
+``--discovery-check-interval`` so a slow LIST is not reported as a failure.
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --discovery-check-interval=10s   # default; 0 disables the check
+          - --discovery-stale-threshold=30s  # default; must exceed the interval
+
+The check exports three metrics:
+
+- ``aibrix_gateway_discovery_last_verified_age_seconds``: seconds since every
+  enabled check last succeeded.
+- ``aibrix_gateway_discovery_stale``: 1 once that age reaches
+  ``--discovery-stale-threshold``, otherwise 0.
+- ``aibrix_gateway_discovery_verification_failures_total``: failed checks, by
+  ``check`` (``reachability`` or ``consistency``).
+
+Alert on the stale gauge. A replica that is stale while others are not has
+lost its own connection; every replica stale at once points at the API server:
+
+.. code-block:: yaml
+
+    - alert: AIBrixGatewayDiscoveryStale
+      expr: max by (pod) (aibrix_gateway_discovery_stale) == 1
+      for: 1m
+
+Keep the threshold above the time a normal watch reconnect takes, so a brief
+API server restart does not fire the alert.
+
+What the check does not prove:
+
+- Reachability proves the API server answers this replica. It does not prove
+  the watch is delivering events. A watch that is connected but stuck is caught
+  only by the consistency check.
+- Being stale does not change readiness or routing. The replica stays in the
+  Service endpoints and keeps routing on its last known Pod list.
+
+In standalone mode there is no API server, so no check runs and no discovery
+metric is reported.
+
 Envoy Proxy
 ~~~~~~~~~~~
 

@@ -55,8 +55,11 @@ type sourceVersions struct {
 // them against a current Kubernetes snapshot when the last proof expires.
 // Its lock also makes the health decision and model-list read one snapshot.
 type ModelListHealth struct {
-	mu           sync.RWMutex
-	verifyMu     sync.Mutex
+	mu sync.RWMutex
+	// verifySem allows one verification at a time. It is a channel rather
+	// than a mutex so a caller with a deadline can stop waiting for another
+	// caller's verification.
+	verifySem    chan struct{}
 	applied      sourceVersions
 	lastVerified time.Time
 	retryAfter   time.Time
@@ -67,7 +70,8 @@ type ModelListHealth struct {
 
 func newModelListHealth(maxAge time.Duration) *ModelListHealth {
 	return &ModelListHealth{
-		maxAge: maxAge,
+		maxAge:    maxAge,
+		verifySem: make(chan struct{}, 1),
 		applied: sourceVersions{
 			pods:     make(map[string]objectVersion),
 			adapters: make(map[string]objectVersion),
@@ -163,8 +167,12 @@ func (h *ModelListHealth) EnsureVerified(ctx context.Context) error {
 		return ErrModelListDiscoveryUnavailable
 	}
 
-	h.verifyMu.Lock()
-	defer h.verifyMu.Unlock()
+	select {
+	case h.verifySem <- struct{}{}:
+		defer func() { <-h.verifySem }()
+	case <-ctx.Done():
+		return fmt.Errorf("verify model discovery: %w", ctx.Err())
+	}
 	if fresh, retryLater, _ := h.verificationState(time.Now()); fresh {
 		return nil
 	} else if retryLater {

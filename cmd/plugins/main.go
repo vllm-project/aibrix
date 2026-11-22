@@ -105,6 +105,36 @@ func (o modelDiscoveryOptions) validate() error {
 	return nil
 }
 
+type discoveryCheckOptions struct {
+	interval       time.Duration
+	staleThreshold time.Duration
+}
+
+func (o *discoveryCheckOptions) addFlags(fs *flag.FlagSet) {
+	fs.DurationVar(&o.interval, "discovery-check-interval", 10*time.Second,
+		"Interval of the check that this replica can still read Pods from the Kubernetes API server; "+
+			"each check is bounded by half of it. 0 disables the check; otherwise at least 1s. Ignored in standalone mode.")
+	fs.DurationVar(&o.staleThreshold, "discovery-stale-threshold", 30*time.Second,
+		"Age of the last successful discovery check at which aibrix_gateway_discovery_stale becomes 1. "+
+			"Keep it above normal watch reconnect delays; it must be greater than --discovery-check-interval.")
+}
+
+func (o discoveryCheckOptions) validate() error {
+	if o.interval < 0 {
+		return fmt.Errorf("--discovery-check-interval must be nonnegative, got %v", o.interval)
+	}
+	// Each check gets half the interval; below a second that leaves too little
+	// for a LIST through a loaded API server, and adds load for no benefit.
+	if o.interval > 0 && o.interval < time.Second {
+		return fmt.Errorf("--discovery-check-interval must be 0 or at least 1s, got %v", o.interval)
+	}
+	if o.interval > 0 && o.staleThreshold <= o.interval {
+		return fmt.Errorf("--discovery-stale-threshold (%v) must be greater than --discovery-check-interval (%v)",
+			o.staleThreshold, o.interval)
+	}
+	return nil
+}
+
 func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config) *discovery.KubernetesProvider {
 	provider := discovery.NewKubernetesProvider(config).WithModelAdapters(o.watchModelAdapters)
 	if o.watchModelClaims {
@@ -169,6 +199,17 @@ func (o kubeAPIOptions) applyTo(config *rest.Config) {
 	config.Burst = o.burst
 }
 
+// firstError returns the first non-nil error, so flag groups are validated in
+// the order they are listed.
+func firstError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "prestop" {
 		os.Exit(drain.Run(os.Args[2:]))
@@ -182,6 +223,8 @@ func runGateway() {
 	kubeAPI.addFlags(flag.CommandLine)
 	var modelDiscovery modelDiscoveryOptions
 	modelDiscovery.addFlags(flag.CommandLine)
+	var discoveryCheck discoveryCheckOptions
+	discoveryCheck.addFlags(flag.CommandLine)
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "", "[Deprecated] Use --http-bind-address instead.")
@@ -198,10 +241,7 @@ func runGateway() {
 	if gracefulShutdownTimeout <= 0 {
 		klog.Fatal("--graceful-shutdown-timeout must be positive")
 	}
-	if err := kubeAPI.validate(); err != nil {
-		klog.Fatal(err)
-	}
-	if err := modelDiscovery.validate(); err != nil {
+	if err := firstError(kubeAPI.validate(), modelDiscovery.validate(), discoveryCheck.validate()); err != nil {
 		klog.Fatal(err)
 	}
 
@@ -297,6 +337,8 @@ func runGateway() {
 		DiscoveryProvider:            discoveryProvider,
 		DisableModelClaimPodBindings: !standalone && !modelDiscovery.watchModelClaims,
 		ModelListMaxAge:              modelDiscovery.maxAge,
+		DiscoveryCheckInterval:       discoveryCheck.interval,
+		DiscoveryStaleThreshold:      discoveryCheck.staleThreshold,
 	})
 
 	lis, err := net.Listen("tcp", grpcAddr)

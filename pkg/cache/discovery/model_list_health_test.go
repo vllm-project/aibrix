@@ -250,3 +250,29 @@ func TestModelListHealthSnapshotWaitsForAppliedEvent(t *testing.T) {
 		t.Fatal("event handler did not resume after model-list read")
 	}
 }
+
+func TestModelListHealthWaitForVerificationHonorsDeadline(t *testing.T) {
+	h := newModelListHealth(time.Minute)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h.snapshot = func(context.Context) (sourceVersions, error) {
+		close(started)
+		<-release
+		return sourceVersions{pods: map[string]objectVersion{}, adapters: map[string]objectVersion{}}, nil
+	}
+	first := make(chan error, 1)
+	go func() { first <- h.EnsureVerified(context.Background()) }()
+	<-started
+
+	// A second caller with a deadline stops waiting for the first one's
+	// verification instead of blocking until that verification ends.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	waitStarted := time.Now()
+	require.ErrorIs(t, h.EnsureVerified(ctx), context.DeadlineExceeded)
+	assert.Less(t, time.Since(waitStarted), time.Second)
+
+	close(release)
+	require.NoError(t, <-first)
+	require.NoError(t, h.EnsureVerified(context.Background()), "the waiter's timeout leaves the first proof intact")
+}

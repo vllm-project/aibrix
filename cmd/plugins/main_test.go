@@ -286,3 +286,46 @@ func TestStartPprofServer(t *testing.T) {
 		require.Nil(t, startPprofServer(held.Addr().String()))
 	})
 }
+
+func TestDiscoveryCheckFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		args          []string
+		wantInterval  time.Duration
+		wantThreshold time.Duration
+		wantError     string
+	}{
+		{name: "defaults", wantInterval: 10 * time.Second, wantThreshold: 30 * time.Second},
+		{name: "disabled", args: []string{"--discovery-check-interval=0", "--discovery-stale-threshold=0"}},
+		{
+			name: "custom", args: []string{"--discovery-check-interval=5s", "--discovery-stale-threshold=1m"},
+			wantInterval: 5 * time.Second, wantThreshold: time.Minute,
+		},
+		{
+			name: "negative interval", args: []string{"--discovery-check-interval=-1s"},
+			wantError: "--discovery-check-interval must be nonnegative",
+		},
+		{
+			name: "interval below a second", args: []string{"--discovery-check-interval=500ms"},
+			wantError: "--discovery-check-interval must be 0 or at least 1s",
+		},
+		{
+			name: "threshold equal to interval", args: []string{"--discovery-check-interval=30s"},
+			wantError: "--discovery-stale-threshold (30s) must be greater than --discovery-check-interval (30s)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var options discoveryCheckOptions
+			fs := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+			options.addFlags(fs)
+			require.NoError(t, fs.Parse(tc.args))
+			if tc.wantError != "" {
+				require.ErrorContains(t, options.validate(), tc.wantError)
+				return
+			}
+			require.NoError(t, options.validate())
+			require.Equal(t, tc.wantInterval, options.interval)
+			require.Equal(t, tc.wantThreshold, options.staleThreshold)
+		})
+	}
+}
