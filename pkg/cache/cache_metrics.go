@@ -407,6 +407,17 @@ func (c *Store) worker(jobs <-chan podMetricsJob) {
 			engineType := metrics.GetEngineType(*pod.Pod)
 			identifier := pod.Name
 			result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
+			if !c.disableModelClaimBindings && pod.Labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue {
+				// A pool-labelled serving Pod can enter ModelClaim scrape mode
+				// while an ordinary scrape is in flight. Serialize publication
+				// with the informer update, leaving the HTTP request outside the lock.
+				c.mu.RLock()
+				defer c.mu.RUnlock()
+				current, ok := c.metaPods.Load(podMetricsBackoffKey(pod))
+				if !ok || current != pod {
+					return
+				}
+			}
 			if err != nil {
 				metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
 				c.recordPodMetricsFetchFailure(pod, time.Now())

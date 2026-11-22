@@ -509,6 +509,7 @@ func (c *Store) addPodLocked(pod *v1.Pod, claimMetrics map[string]*modelClaimMet
 		// be reused for an unrelated pod on some future call -- clear any
 		// counters just seeded onto it so they don't leak into that pod.
 		// lastPodReadySince is not rolled back: it reflects a genuine add attempt either way.
+		c.bufferPod.claimMetrics = nil
 		c.bufferPod.runningRequests = 0
 		c.bufferPod.completedRequests = 0
 		c.bufferPod.completedOutputTokens = 0

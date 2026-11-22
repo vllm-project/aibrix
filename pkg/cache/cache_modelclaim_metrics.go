@@ -59,15 +59,18 @@ func (c *Store) isModelClaimMetricsPod(pod *v1.Pod) bool {
 	if pod == nil || c.disableModelClaimBindings {
 		return false
 	}
-	if pod.Labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue {
-		return true
-	}
 	for key := range pod.Annotations {
 		if strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
 			return true
 		}
 	}
-	return false
+	if pod.Labels[constants.ModelPoolLabelEnabled] != constants.ModelPoolLabelEnabledValue {
+		return false
+	}
+	// Pool membership alone does not replace a statically advertised model's
+	// metrics endpoint.
+	_, hasServingModel := getModelNameFromPod(pod)
+	return !hasServingModel
 }
 
 // reconcileModelClaimMetrics runs under the informer lock before publishing the
@@ -141,8 +144,24 @@ func (target *modelClaimMetricsTarget) clearMetrics() {
 
 func (target *modelClaimMetricsTarget) emitMetric(name string, value metrics.MetricValue, labels map[string]string) {
 	ctx := &types.RoutingContext{Model: target.binding.Model}
-	if previous, ok := target.emitted[name]; ok && !maps.Equal(previous, labels) {
-		metrics.DeleteEngineMetricFromPrometheus(ctx, target.metricPod, name, previous)
+	previousLabels, emitted := target.emitted[name]
+	sameSeries := emitted && maps.Equal(previousLabels, labels)
+	if emitted && !sameSeries {
+		metrics.DeleteEngineMetricFromPrometheus(ctx, target.metricPod, name, previousLabels)
+	}
+	if metrics.Metrics[name].MetricType.Raw == metrics.Counter {
+		// Engine counters are snapshots. The exporter adds increments, so use
+		// the previous raw sample from this binding before the cache is updated.
+		increment := value.GetSimpleValue()
+		previous, sampled := target.records.Load(target.binding.Model + "/" + name)
+		if sameSeries && sampled && increment >= previous.Value.GetSimpleValue() {
+			increment -= previous.Value.GetSimpleValue()
+		} else {
+			// Start the series at the current value after a counter reset or
+			// when the binding first publishes this series.
+			metrics.DeleteEngineMetricFromPrometheus(ctx, target.metricPod, name, labels)
+		}
+		value = &metrics.SimpleMetricValue{Value: increment}
 	}
 	metrics.EmitMetricToPrometheus(ctx, target.metricPod, name, value, labels)
 	target.emitted[name] = labels
@@ -222,6 +241,9 @@ func (c *Store) scrapeModelClaimMetrics(queuedPod *Pod, target *modelClaimMetric
 		target.metricPod.Labels[constants.ModelLabelEngine] = result.EngineType
 	}
 
+	// Binding lifecycle events retire claim metrics as soon as the route stops
+	// serving. The ordinary worker's KV-event sleep backstop uses the model
+	// identity in Pod metadata, which does not identify a bound engine.
 	for key, value := range result.ModelMetrics {
 		model, name := parseModelMetricKey(key)
 		sanitizeMetricValueLabels(pod, value)

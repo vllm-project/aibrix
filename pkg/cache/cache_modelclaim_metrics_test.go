@@ -28,9 +28,11 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -90,12 +92,12 @@ func writeMetricsTestGauge(w http.ResponseWriter, model string, value float64) {
 	_, _ = fmt.Fprintf(w, "# TYPE vllm:kv_cache_usage_perc gauge\nvllm:kv_cache_usage_perc{model_name=%q} %g\n", model, value)
 }
 
-func assertMetricsTestGauge(t *testing.T, pod *v1.Pod, model string, want *float64, engineType ...string) {
+func findMetricsTestSample(t *testing.T, pod *v1.Pod, model, metric string) *dto.Metric {
 	t.Helper()
 	families, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
 	for _, family := range families {
-		if family.GetName() != metrics.KVCacheUsagePerc {
+		if family.GetName() != metric {
 			continue
 		}
 		for _, sample := range family.Metric {
@@ -104,16 +106,27 @@ func assertMetricsTestGauge(t *testing.T, pod *v1.Pod, model string, want *float
 				labels[pair.GetName()] = pair.GetValue()
 			}
 			if labels["namespace"] == pod.Namespace && labels["pod"] == pod.Name && labels["model"] == model {
-				require.NotNil(t, want, "retired binding still exports a gauge")
-				require.InDelta(t, *want, sample.GetGauge().GetValue(), 0.0001)
-				if len(engineType) != 0 {
-					require.Equal(t, engineType[0], labels["engine_type"])
-				}
-				return
+				return sample
 			}
 		}
 	}
-	require.Nil(t, want, "active binding never exported its gauge")
+	return nil
+}
+
+func assertMetricsTestGauge(t *testing.T, pod *v1.Pod, model string, want *float64, engineType ...string) {
+	t.Helper()
+	sample := findMetricsTestSample(t, pod, model, metrics.KVCacheUsagePerc)
+	if want == nil {
+		require.Nil(t, sample, "retired binding still exports a gauge")
+		return
+	}
+	require.NotNil(t, sample, "active binding never exported its gauge")
+	require.InDelta(t, *want, sample.GetGauge().GetValue(), 0.0001)
+	if len(engineType) != 0 {
+		got, err := metrics.GetLabelValueForKey(sample, "engine_type")
+		require.NoError(t, err)
+		require.Equal(t, engineType[0], got)
+	}
 }
 
 func waitForMetricsTestValue(t *testing.T, store *Store, pod *v1.Pod, model string, want float64) {
@@ -320,4 +333,235 @@ func TestModelClaimMetricsDetectsMixedEngines(t *testing.T) {
 	waitForMetricsTestValue(t, store, pod, "sglang-model", 0.8)
 	usage := 0.8
 	assertMetricsTestGauge(t, pod, "sglang-model", &usage, metrics.EngineNameSGLang)
+}
+
+func TestModelClaimMetricsPublishesCounterSnapshots(t *testing.T) {
+	var count atomic.Int64
+	port := modelClaimMetricsTestPort(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = fmt.Fprintf(w, "# TYPE vllm:prompt_tokens_total counter\nvllm:prompt_tokens_total{model_name=\"model\"} %d\n", count.Load())
+	})
+	store := newModelClaimMetricsTestStore()
+	pod := newModelClaimMetricsTestPod("claim-metrics-counter")
+	setMetricsTestBinding(pod, "claim", "model", port, constants.ModelClaimRoutingStateActive)
+	store.addPod(pod)
+	defer store.deletePod(pod)
+
+	for _, sample := range []int64{100, 100, 130, 5, 9} {
+		count.Store(sample)
+		store.podMetricsJobs = make(chan podMetricsJob, 1)
+		store.updatePodMetrics()
+		require.Len(t, store.podMetricsJobs, 1)
+		close(store.podMetricsJobs)
+		store.worker(store.podMetricsJobs)
+
+		record, err := store.GetMetricRecordByPodModel(pod.Name, pod.Namespace, "model", metrics.PromptTokenTotal)
+		require.NoError(t, err)
+		require.EqualValues(t, sample, record.Value.GetSimpleValue())
+		exported := findMetricsTestSample(t, pod, "model", metrics.PromptTokenTotal)
+		require.NotNil(t, exported)
+		require.EqualValues(t, sample, exported.GetCounter().GetValue())
+	}
+}
+
+func TestModelClaimMetricsScrapeMode(t *testing.T) {
+	tests := []struct {
+		name         string
+		servingModel bool
+		bindingState string
+		bindingPort  int
+		ignoreClaims bool
+		wantLegacy   bool
+	}{
+		{name: "serving-pod-with-pool-label", servingModel: true, wantLegacy: true},
+		{name: "empty-warm-pod"},
+		{name: "sleeping-binding", servingModel: true, bindingState: constants.ModelClaimRoutingStateSleeping},
+		{name: "discovery-disabled", servingModel: true, bindingState: constants.ModelClaimRoutingStateActive, bindingPort: 20000, ignoreClaims: true, wantLegacy: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			port := modelClaimMetricsTestPort(t, func(w http.ResponseWriter, _ *http.Request) {
+				writeMetricsTestGauge(w, "resident", 0.25)
+			})
+			pod := newModelClaimMetricsTestPod(tt.name)
+			pod.Labels[MetricPortLabel] = strconv.Itoa(port)
+			if tt.servingModel {
+				pod.Labels[constants.ModelLabelName] = "resident"
+			}
+			if tt.bindingState != "" {
+				setMetricsTestBinding(pod, "claim", "resident", tt.bindingPort, tt.bindingState)
+			}
+			store := newModelClaimMetricsTestStore()
+			store.disableModelClaimBindings = tt.ignoreClaims
+			store.addPod(pod)
+			defer store.deletePod(pod)
+
+			store.updatePodMetrics()
+			if !tt.wantLegacy {
+				require.Empty(t, store.podMetricsJobs)
+				return
+			}
+			require.Len(t, store.podMetricsJobs, 1)
+			close(store.podMetricsJobs)
+			store.worker(store.podMetricsJobs)
+			waitForMetricsTestValue(t, store, pod, "resident", 0.25)
+		})
+	}
+}
+
+func TestModelClaimMetricsDiscardsInFlightResultOnPodChange(t *testing.T) {
+	tests := []struct {
+		name         string
+		change       func(*Store, *v1.Pod)
+		wantRetired  bool
+		wantEligible bool
+	}{
+		{
+			name: "delete", wantRetired: true,
+			change: func(store *Store, pod *v1.Pod) { store.deletePod(pod) },
+		},
+		{
+			name: "new-uid", wantRetired: true, wantEligible: true,
+			change: func(store *Store, pod *v1.Pod) {
+				replacement := pod.DeepCopy()
+				replacement.UID = "replacement-uid"
+				store.updatePod(pod, replacement)
+			},
+		},
+		{
+			name: "new-ip", wantRetired: true, wantEligible: true,
+			change: func(store *Store, pod *v1.Pod) {
+				replacement := pod.DeepCopy()
+				replacement.Status.PodIP = "127.0.0.2"
+				store.updatePod(pod, replacement)
+			},
+		},
+		{
+			name: "not-ready",
+			change: func(store *Store, pod *v1.Pod) {
+				unready := pod.DeepCopy()
+				for i := range unready.Status.Conditions {
+					if unready.Status.Conditions[i].Type == v1.PodReady {
+						unready.Status.Conditions[i].Status = v1.ConditionFalse
+					}
+				}
+				store.updatePod(pod, unready)
+			},
+		},
+		{
+			name: "quarantined",
+			change: func(store *Store, pod *v1.Pod) {
+				store.SetPodQuarantineChecker(fakeQuarantine{pod.Name: true})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inFlight := make(chan struct{})
+			release := make(chan struct{})
+			releaseScrape := sync.OnceFunc(func() { close(release) })
+			var hits atomic.Int32
+			port := modelClaimMetricsTestPort(t, func(w http.ResponseWriter, r *http.Request) {
+				if hits.Add(1) == 1 {
+					writeMetricsTestGauge(w, "model", 0.25)
+					return
+				}
+				close(inFlight)
+				select {
+				case <-release:
+					writeMetricsTestGauge(w, "model", 0.75)
+				case <-r.Context().Done():
+				}
+			})
+			defer releaseScrape()
+			store := newModelClaimMetricsTestStore()
+			pod := newModelClaimMetricsTestPod("claim-metrics-" + tt.name)
+			setMetricsTestBinding(pod, "claim", "model", port, constants.ModelClaimRoutingStateActive)
+			store.addPod(pod)
+			defer store.deletePod(pod)
+
+			store.updatePodMetrics()
+			close(store.podMetricsJobs)
+			store.worker(store.podMetricsJobs)
+			record, err := store.GetMetricRecordByPodModel(pod.Name, pod.Namespace, "model", metrics.KVCacheUsagePerc)
+			require.NoError(t, err)
+			require.Equal(t, 0.25, record.Value.GetSimpleValue())
+			meta, ok := store.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+			require.True(t, ok)
+			historyKey := rateHistoryKey(meta, "model", metrics.PromptTokenTotal)
+			rateCalculator.mu.Lock()
+			rateCalculator.history[historyKey] = []MetricSnapshot{{Value: 100, Timestamp: time.Now()}}
+			rateCalculator.mu.Unlock()
+
+			store.podMetricsJobs = make(chan podMetricsJob, 1)
+			stop := startMetricsTestWorkers(t, store)
+			store.updatePodMetrics()
+			select {
+			case <-inFlight:
+			case <-time.After(2 * time.Second):
+				t.Fatal("second scrape did not reach the engine")
+			}
+			tt.change(store, pod)
+			releaseScrape()
+			stop()
+
+			newRecord, err := store.GetMetricRecordByPodModel(pod.Name, pod.Namespace, "model", metrics.KVCacheUsagePerc)
+			if tt.wantRetired {
+				require.Error(t, err)
+				assertMetricsTestGauge(t, pod, "model", nil)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, record, newRecord)
+				value := 0.25
+				assertMetricsTestGauge(t, pod, "model", &value)
+			}
+			rateCalculator.mu.Lock()
+			_, historyFound := rateCalculator.history[historyKey]
+			rateCalculator.mu.Unlock()
+			require.Equal(t, !tt.wantRetired, historyFound)
+
+			store.podMetricsJobs = make(chan podMetricsJob, 1)
+			store.updatePodMetrics()
+			require.Equal(t, tt.wantEligible, len(store.podMetricsJobs) == 1)
+		})
+	}
+}
+
+func TestModelClaimMetricsRejectsOrdinaryResultAfterBindingAppears(t *testing.T) {
+	inFlight := make(chan struct{})
+	release := make(chan struct{})
+	releaseScrape := sync.OnceFunc(func() { close(release) })
+	port := modelClaimMetricsTestPort(t, func(w http.ResponseWriter, r *http.Request) {
+		close(inFlight)
+		select {
+		case <-release:
+			writeMetricsTestGauge(w, "resident", 0.25)
+		case <-r.Context().Done():
+		}
+	})
+	defer releaseScrape()
+
+	store := newModelClaimMetricsTestStore()
+	pod := newModelClaimMetricsTestPod("claim-metrics-from-ordinary")
+	pod.Labels[constants.ModelLabelName] = "resident"
+	pod.Labels[MetricPortLabel] = strconv.Itoa(port)
+	store.addPod(pod)
+	defer store.deletePod(pod)
+	stop := startMetricsTestWorkers(t, store)
+	store.updatePodMetrics()
+	select {
+	case <-inFlight:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ordinary scrape did not reach the engine")
+	}
+
+	sleeping := pod.DeepCopy()
+	setMetricsTestBinding(sleeping, "claim", "resident", 0, constants.ModelClaimRoutingStateSleeping)
+	store.updatePod(pod, sleeping)
+	releaseScrape()
+	stop()
+
+	_, err := store.GetMetricRecordByPodModel(pod.Name, pod.Namespace, "resident", metrics.KVCacheUsagePerc)
+	require.Error(t, err)
+	assertMetricsTestGauge(t, pod, "resident", nil)
 }
