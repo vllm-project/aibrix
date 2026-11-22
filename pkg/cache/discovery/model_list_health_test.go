@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,4 +276,21 @@ func TestModelListHealthWaitForVerificationHonorsDeadline(t *testing.T) {
 	close(release)
 	require.NoError(t, <-first)
 	require.NoError(t, h.EnsureVerified(context.Background()), "the waiter's timeout leaves the first proof intact")
+}
+
+func TestModelListHealthCancelledCallerDoesNotVerify(t *testing.T) {
+	h := newModelListHealth(time.Minute)
+	var calls atomic.Int32
+	h.snapshot = func(context.Context) (sourceVersions, error) {
+		calls.Add(1)
+		return sourceVersions{pods: map[string]objectVersion{}, adapters: map[string]objectVersion{}}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// With the semaphore free, select would pick at random between taking it
+	// and the done context; repeat so a random pick cannot hide the bug.
+	for i := 0; i < 100; i++ {
+		require.ErrorIs(t, h.EnsureVerified(ctx), context.Canceled)
+	}
+	assert.Zero(t, calls.Load(), "a caller that already gave up must not start a verification")
 }

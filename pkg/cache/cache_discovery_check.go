@@ -167,6 +167,10 @@ func (c *DiscoveryChecker) Run(stopCh <-chan struct{}) {
 		case <-ctx.Done():
 		}
 	}()
+	// The first check runs after one interval, not at once: the checker is
+	// created right after the informers synced, which was itself a successful
+	// read, so the starting age is already accurate. Staleness is measured
+	// from the last success, so an earlier check would not detect it sooner.
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 	for {
@@ -236,7 +240,9 @@ func (c *DiscoveryChecker) recordFailure(ctx context.Context, check string, err 
 		return
 	}
 	c.failures.WithLabelValues(check).Inc()
-	klog.V(2).InfoS("Discovery check failed", "check", check, "age", c.Age(), "err", err)
+	if logger := klog.V(2); logger.Enabled() {
+		logger.InfoS("Discovery check failed", "check", check, "age", c.Age(), "err", err)
+	}
 }
 
 // PodListReachability returns a reachability check: one LIST of Pods with

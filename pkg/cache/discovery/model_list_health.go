@@ -167,6 +167,11 @@ func (h *ModelListHealth) EnsureVerified(ctx context.Context) error {
 		return ErrModelListDiscoveryUnavailable
 	}
 
+	// select picks at random among ready cases, so a done context must be
+	// checked first or it could still take the free semaphore and verify.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("verify model discovery: %w", err)
+	}
 	select {
 	case h.verifySem <- struct{}{}:
 		defer func() { <-h.verifySem }()
