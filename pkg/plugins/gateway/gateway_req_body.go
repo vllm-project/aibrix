@@ -108,7 +108,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	// Resolve the model config profile and apply overrides. A config that
 	// discovery supplied for the model is used ahead of pod annotations.
 	routingCtx.ModelConfig = modelConfigFromCache(s.cache, model)
-	applyConfigProfile(routingCtx, podsArr.All())
+	applyConfigProfileFromPodList(routingCtx, podsArr)
 
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
@@ -463,7 +463,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 	}
 
 	podsArr, err := s.cache.ListPodsByModel(model)
-	if err != nil || podsArr == nil || utils.CountRoutablePods(podsArr.All()) == 0 {
+	if err != nil || podsArr == nil || countRoutablePodsFromList(podsArr) == 0 {
 		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
 		return nil, generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{

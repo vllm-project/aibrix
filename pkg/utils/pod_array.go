@@ -37,6 +37,12 @@ type PodArray struct {
 	// ListByIndex or Indexes call re-panics with it, instead of the Once leaving
 	// the index silently empty.
 	indexPanic any
+
+	routable     *PodArray
+	routableOnce sync.Once
+	// routablePanic keeps a panic raised while filtering so that every later
+	// Routable call re-panics with it, matching buildIndex.
+	routablePanic any
 }
 
 func (arr *PodArray) Len() int {
@@ -121,6 +127,82 @@ func (arr *PodArray) initDeployments() {
 
 	arr.deployments = deployments
 	arr.podsByDeployment = podsByDeployment
+}
+
+// Routable returns a cached *PodArray containing only the pods in arr that pass
+// FilterReadyPod, preserving snapshot order. Callers must treat the returned
+// slice as read-only: when every pod in arr is routable and arr.Pods has no
+// spare capacity, Routable returns arr itself; otherwise it returns a clipped
+// *PodArray whose Pods slice is shared across concurrent callers.
+//
+// Immutability invariant: the cached result is valid only while arr.Pods and
+// the published *v1.Pod objects it references are not mutated in place (the
+// per-model CustomizedRegistry enforces this by publishing a fresh *PodArray
+// on every informer update).
+func (arr *PodArray) Routable() *PodArray {
+	if arr == nil {
+		return nil
+	}
+	if len(arr.Pods) == 0 && cap(arr.Pods) == 0 {
+		return arr
+	}
+	arr.routableOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.routablePanic = r
+			}
+		}()
+		arr.initRoutable()
+	})
+	if arr.routablePanic != nil {
+		panic(arr.routablePanic)
+	}
+	return arr.routable
+}
+
+// initRoutable computes and caches arr's routable subset once, through
+// Routable, so concurrent readers share a fully built, clipped *PodArray.
+func (arr *PodArray) initRoutable() {
+	firstUnready := -1
+	for i, pod := range arr.Pods {
+		if !FilterReadyPod(pod) {
+			firstUnready = i
+			break
+		}
+	}
+	if firstUnready == -1 {
+		if cap(arr.Pods) == len(arr.Pods) {
+			arr.routable = arr
+			return
+		}
+		var clipped []*v1.Pod
+		if len(arr.Pods) > 0 {
+			clipped = slices.Clip(arr.Pods)
+		}
+		r := &PodArray{Pods: clipped}
+		r.routableOnce.Do(func() { r.routable = r })
+		arr.routable = r
+		return
+	}
+
+	var ready []*v1.Pod
+	if firstUnready > 0 {
+		ready = make([]*v1.Pod, firstUnready, len(arr.Pods)-1)
+		copy(ready, arr.Pods[:firstUnready])
+	}
+	for i := firstUnready + 1; i < len(arr.Pods); i++ {
+		pod := arr.Pods[i]
+		if !FilterReadyPod(pod) {
+			continue
+		}
+		if ready == nil {
+			ready = make([]*v1.Pod, 0, len(arr.Pods)-i)
+		}
+		ready = append(ready, pod)
+	}
+	r := &PodArray{Pods: slices.Clip(ready)}
+	r.routableOnce.Do(func() { r.routable = r })
+	arr.routable = r
 }
 
 // ListPortsForPod returns each pod's ports keyed by pod key (namespace/name, see

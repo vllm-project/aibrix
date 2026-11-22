@@ -25,10 +25,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/google/uuid"
@@ -951,7 +953,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// with Redis it costs one pipelined read of the ready pods instead of up to four (#3322).
 	routeCtx.StartRunningRequestsSnapshot()
 	defer routeCtx.StopRunningRequestsSnapshot()
-	readyPods := utils.FilterRoutablePods(pods.All())
+	sharedReady, isShared := routablePodsFromList(pods)
+	readyPods := sharedReady
 
 	// Resolve the model config profile's routing knobs once per request: the
 	// load-imbalance gate below and every strategy on the routing path read the
@@ -1094,6 +1097,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 		return routeCtx.TargetAddress(), nil
 	}
+	readyPods = cloneIfAliased(readyPods, sharedReady, isShared, pods.All())
 	// The order only breaks ties between equally scored pods, so it needs to be unbiased, not
 	// unpredictable: crypto/rand here cost a syscall per pod on every request.
 	utils.Shuffle(readyPods)
@@ -1112,6 +1116,59 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 	}
 	return addr, err
+}
+
+// routablePodsFromList returns the routable pods from pods and whether the
+// returned slice may alias a shared snapshot. For *utils.PodArray it reuses
+// the lazily cached Routable view; other PodList implementations fall back to
+// FilterRoutablePods, which returns a fresh private slice.
+func routablePodsFromList(pods types.PodList) ([]*v1.Pod, bool) {
+	if pods == nil {
+		return nil, false
+	}
+	if arr, ok := pods.(*utils.PodArray); ok {
+		return arr.Routable().All(), true
+	}
+	return utils.FilterRoutablePods(pods.All()), false
+}
+
+// countRoutablePodsFromList returns the number of routable pods in pods,
+// reusing PodArray's cached Routable view when available.
+func countRoutablePodsFromList(pods types.PodList) int {
+	if pods == nil {
+		return 0
+	}
+	if arr, ok := pods.(*utils.PodArray); ok {
+		return arr.Routable().Len()
+	}
+	return utils.CountRoutablePods(pods.All())
+}
+
+// cloneIfAliased returns a private copy of readyPods whenever it still aliases
+// the shared routable snapshot or the caller's pod snapshot. utils.Shuffle and
+// some routers (such as session-affinity's fallbackPod) reorder the slice in
+// place; keying on backing-array overlap avoids enumerating which upstream
+// stages allocated a fresh slice.
+func cloneIfAliased(readyPods, sharedReady []*v1.Pod, isShared bool, allPods []*v1.Pod) []*v1.Pod {
+	if (isShared && sharesBackingArray(readyPods, sharedReady)) || sharesBackingArray(readyPods, allPods) {
+		return slices.Clone(readyPods)
+	}
+	return readyPods
+}
+
+// sharesBackingArray reports whether a and b have overlapping backing arrays
+// across their capacities, including three-index clipped sub-slices.
+func sharesBackingArray(a, b []*v1.Pod) bool {
+	if cap(a) == 0 || cap(b) == 0 {
+		return false
+	}
+	aFull := a[:cap(a)]
+	bFull := b[:cap(b)]
+	aStart := uintptr(unsafe.Pointer(&aFull[0]))
+	aEnd := uintptr(unsafe.Pointer(&aFull[len(aFull)-1]))
+	bStart := uintptr(unsafe.Pointer(&bFull[0]))
+	bEnd := uintptr(unsafe.Pointer(&bFull[len(bFull)-1]))
+	return aStart <= bEnd && bStart <= aEnd
 }
 
 func newEncodeExecutor() *encode.Executor {
