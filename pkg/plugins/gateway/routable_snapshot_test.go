@@ -62,63 +62,6 @@ func makeRoutableSnapshotPods(n int, extraLabels map[string]string) []*v1.Pod {
 	return pods
 }
 
-func TestSharesBackingArray(t *testing.T) {
-	base := makeRoutableSnapshotPods(6, nil)
-
-	assert.False(t, sharesBackingArray(nil, base))
-	assert.False(t, sharesBackingArray(base, nil))
-	assert.False(t, sharesBackingArray([]*v1.Pod{}, base))
-	assert.True(t, sharesBackingArray(base[:0], base), "zero-len slice with shared spare capacity aliases")
-	assert.False(t, sharesBackingArray(base[len(base):], base), "zero-cap tail sub-slice cannot alias")
-	assert.True(t, sharesBackingArray(base, base))
-	assert.True(t, sharesBackingArray(base[1:4], base))
-	assert.True(t, sharesBackingArray(base[2:4:4], base), "clipped interior sub-slice still aliases")
-	assert.True(t, sharesBackingArray(base[:2:2], base), "clipped prefix sub-slice still aliases")
-	assert.True(t, sharesBackingArray(base[:2], base[2:4]), "unclipped prefix cap overlaps suffix")
-	assert.False(t, sharesBackingArray(base[:2:2], base[2:4:4]), "disjoint clipped halves do not overlap")
-	assert.False(t, sharesBackingArray(slices.Clone(base), base), "cloned slice has distinct backing array")
-	assert.False(t, sharesBackingArray(makeRoutableSnapshotPods(6, nil), base), "separate allocation")
-}
-
-func TestCloneIfAliased(t *testing.T) {
-	allPods := makeRoutableSnapshotPods(6, nil)
-	sharedReady := slices.Clone(allPods[:4]) // simulates mixed snapshot where Routable() has its own slice
-	fresh := makeRoutableSnapshotPods(3, nil)
-
-	t.Run("clones when aliasing sharedReady", func(t *testing.T) {
-		got := cloneIfAliased(sharedReady, sharedReady, true, allPods)
-		assert.Equal(t, sharedReady, got)
-		assert.False(t, sharesBackingArray(got, sharedReady))
-	})
-
-	t.Run("clones when aliasing allPods", func(t *testing.T) {
-		got := cloneIfAliased(allPods[1:4:4], sharedReady, true, allPods)
-		assert.Equal(t, allPods[1:4], got)
-		assert.False(t, sharesBackingArray(got, allPods))
-	})
-
-	t.Run("no clone when upstream already allocated fresh slice", func(t *testing.T) {
-		got := cloneIfAliased(fresh, sharedReady, true, allPods)
-		assert.True(t, sharesBackingArray(got, fresh), "expected fresh slice to be reused without copying")
-		assert.Zero(t, testing.AllocsPerRun(100, func() {
-			_ = cloneIfAliased(fresh, sharedReady, true, allPods)
-		}))
-	})
-
-	t.Run("no double clone for non-shared PodList fallback", func(t *testing.T) {
-		// When isShared is false, routablePodsFromList fell back to FilterRoutablePods
-		// and returned a fresh private slice, so cloneIfAliased must not clone it again.
-		got := cloneIfAliased(sharedReady, sharedReady, false, allPods)
-		assert.True(t, sharesBackingArray(got, sharedReady), "non-shared fallback slice must not be cloned twice")
-	})
-
-	t.Run("non-shared fallback still clones if aliasing allPods", func(t *testing.T) {
-		got := cloneIfAliased(allPods, sharedReady, false, allPods)
-		assert.Equal(t, allPods, got)
-		assert.False(t, sharesBackingArray(got, allPods))
-	})
-}
-
 // TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent drives
 // selectTargetPod concurrently across all paths where upstream stages may
 // return the shared snapshot slice unchanged (K=0, N<=K, exclusive strategies,

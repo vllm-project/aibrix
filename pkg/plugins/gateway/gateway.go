@@ -30,7 +30,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/google/uuid"
@@ -953,8 +952,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// with Redis it costs one pipelined read of the ready pods instead of up to four (#3322).
 	routeCtx.StartRunningRequestsSnapshot()
 	defer routeCtx.StopRunningRequestsSnapshot()
-	sharedReady, isShared := routablePodsFromList(pods)
-	readyPods := sharedReady
+	readyPods := routablePodsFromList(pods)
 
 	// Resolve the model config profile's routing knobs once per request: the
 	// load-imbalance gate below and every strategy on the routing path read the
@@ -1099,7 +1097,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 		return routeCtx.TargetAddress(), nil
 	}
-	readyPods = cloneIfAliased(readyPods, sharedReady, isShared, pods.All())
+	// Clone unconditionally before shuffling and routing so that every
+	// downstream mutator (utils.Shuffle and routers such as session-affinity's
+	// fallbackPod) owns a private slice, regardless of which upstream stage
+	// returned a shared snapshot.
+	readyPods = slices.Clone(readyPods)
 	// The order only breaks ties between equally scored pods, so it needs to be unbiased, not
 	// unpredictable: crypto/rand here cost a syscall per pod on every request.
 	utils.Shuffle(readyPods)
@@ -1120,18 +1122,18 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	return addr, err
 }
 
-// routablePodsFromList returns the routable pods from pods and whether the
-// returned slice may alias a shared snapshot. For *utils.PodArray it reuses
-// the lazily cached Routable view; other PodList implementations fall back to
-// FilterRoutablePods, which returns a fresh private slice.
-func routablePodsFromList(pods types.PodList) ([]*v1.Pod, bool) {
+// routablePodsFromList returns the routable pods from pods, reusing
+// PodArray's lazily cached Routable view when available and falling back to
+// FilterRoutablePods for other PodList implementations. Callers must treat the
+// returned slice as read-only because it may alias a shared snapshot.
+func routablePodsFromList(pods types.PodList) []*v1.Pod {
 	if pods == nil {
-		return nil, false
+		return nil
 	}
 	if arr, ok := pods.(*utils.PodArray); ok {
-		return arr.Routable().All(), true
+		return arr.Routable().All()
 	}
-	return utils.FilterRoutablePods(pods.All()), false
+	return utils.FilterRoutablePods(pods.All())
 }
 
 // countRoutablePodsFromList returns the number of routable pods in pods,
@@ -1144,36 +1146,6 @@ func countRoutablePodsFromList(pods types.PodList) int {
 		return arr.Routable().Len()
 	}
 	return utils.CountRoutablePods(pods.All())
-}
-
-// cloneIfAliased returns a private copy of readyPods whenever it still aliases
-// the shared routable snapshot or the caller's pod snapshot. utils.Shuffle and
-// some routers (such as session-affinity's fallbackPod) reorder the slice in
-// place; keying on backing-array overlap avoids enumerating which upstream
-// stages allocated a fresh slice.
-func cloneIfAliased(readyPods, sharedReady []*v1.Pod, isShared bool, allPods []*v1.Pod) []*v1.Pod {
-	if (isShared && sharesBackingArray(readyPods, sharedReady)) || sharesBackingArray(readyPods, allPods) {
-		return slices.Clone(readyPods)
-	}
-	return readyPods
-}
-
-// sharesBackingArray reports whether a and b have overlapping backing arrays
-// across their capacities, including three-index clipped sub-slices.
-// Comparing uintptr endpoints in a single non-allocating expression is safe
-// here: Go's heap is non-moving, no uintptr is converted back to unsafe.Pointer,
-// and no pointer value is held across a call.
-func sharesBackingArray(a, b []*v1.Pod) bool {
-	if cap(a) == 0 || cap(b) == 0 {
-		return false
-	}
-	aFull := a[:cap(a)]
-	bFull := b[:cap(b)]
-	aStart := uintptr(unsafe.Pointer(&aFull[0]))
-	aEnd := uintptr(unsafe.Pointer(&aFull[len(aFull)-1]))
-	bStart := uintptr(unsafe.Pointer(&bFull[0]))
-	bEnd := uintptr(unsafe.Pointer(&bFull[len(bFull)-1]))
-	return aStart <= bEnd && bStart <= aEnd
 }
 
 func newEncodeExecutor() *encode.Executor {
