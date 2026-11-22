@@ -254,7 +254,7 @@ How to configure it
 What clients see when the limit is hit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Once every routable replica is at its inflight cap, the gateway returns:
+Once every routable replica is at its inflight cap, the gateway returns the response below. When ``config-profile`` is ``auto``, the response also carries ``x-aibrix-config-profile``, set to the profile whose cap was hit:
 
 .. code-block:: text
 

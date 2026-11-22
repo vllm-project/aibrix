@@ -663,3 +663,169 @@ func TestHandleRequestBody_ReplicaInflightCoexistsWithReplicaRPS(t *testing.T) {
 	assert.Contains(t, resp.GetImmediateResponse().GetBody(), ErrorCodeRateLimitExceeded,
 		"aggregate replica RPS of 1 should reject the second request even though inflight cap is 2")
 }
+
+// TestHandleRequestBody_ReplicaInflight429RoutingHeaders checks that every requestsInflight
+// 429 carries the routing response headers the other routing errors carry: request-id always,
+// and x-aibrix-config-profile when config-profile: auto picked the profile.
+func TestHandleRequestBody_ReplicaInflight429RoutingHeaders(t *testing.T) {
+	// auto picks batch for this prompt (promptTokensGte 1); batch's cap is 1, default's is 100.
+	const profiles = `"defaultProfile":"default","profiles":{"default":{"requestsInflight":100},` +
+		`"batch":{"requestsInflight":1,"routingConfig":{"promptTokensGte":1}}}`
+	pod := func(name, config string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns",
+				Annotations: map[string]string{constants.ModelAnnoConfig: config}},
+			Status: v1.PodStatus{
+				PodIP:      "10.0.0." + name,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+	}
+	newCache := func(pods ...*v1.Pod) *MockCache {
+		mockCache := &MockCache{}
+		mockCache.On("HasModel", "test-model").Return(true)
+		mockCache.On("ListPodsByModel", "test-model").Return(&utils.PodArray{Pods: pods}, nil)
+		return mockCache
+	}
+	// atCap: the pre-routing filter sees the pod at the cap of either profile, so selection
+	// fails with errReplicaInflightExceeded.
+	atCap := func(config string) func(t *testing.T) (*MockCache, *mockRouter) {
+		return func(t *testing.T) (*MockCache, *mockRouter) {
+			mockCache := newCache(pod("a", config))
+			mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 100}, nil)
+			return mockCache, new(mockRouter)
+		}
+	}
+	twoProfiles := "{" + profiles + "}"
+	authoritative := `{"authoritativeRoutingPolicy":true,` + profiles + "}"
+	// fullAtAdmission: the filter still sees room on the only pod, then admission finds it full.
+	fullAtAdmission := func(t *testing.T) (*MockCache, *mockRouter) {
+		mockCache := newCache(pod("a", twoProfiles))
+		mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil)
+		mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
+		return mockCache, new(mockRouter)
+	}
+
+	cases := []struct {
+		name          string
+		configProfile string
+		setup         func(t *testing.T) (*MockCache, *mockRouter)
+		// leastRequest routes with a manager that resolves least-request, the strategy
+		// requestsInflight forces when the client's routing-strategy header is ignored.
+		leastRequest bool
+		// postRoute routes with a router that has PostRouteUpdate, the only kind the
+		// single-candidate fast path admits itself.
+		postRoute   bool
+		wantProfile string
+	}{
+		{
+			name:          "auto, every replica already at the cap",
+			configProfile: "auto",
+			setup:         atCap(twoProfiles),
+			wantProfile:   "batch",
+		},
+		{
+			// enforceReplicaInflight, after the single-candidate fast path picked the pod: the
+			// filter still sees room, then admission finds the replica full.
+			name:          "auto, selected replica fills up before admission",
+			configProfile: "auto",
+			setup:         fullAtAdmission,
+			wantProfile:   "batch",
+		},
+		{
+			// types.ErrTargetReplicaInflightExceeded from a router that admits its target
+			// while routing.
+			name:          "auto, router's early admission refuses the target",
+			configProfile: "auto",
+			setup: func(t *testing.T) (*MockCache, *mockRouter) {
+				router := new(mockRouter)
+				router.On("Route", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+					ctx := args.Get(0).(*types.RoutingContext)
+					target := args.Get(1).(types.PodList).All()[0]
+					require.True(t, errors.Is(ctx.AdmitTarget(target), types.ErrTargetReplicaInflightExceeded))
+				}).Return("", types.ErrTargetReplicaInflightExceeded).Once()
+				mockCache := newCache(pod("a", twoProfiles), pod("b", twoProfiles))
+				mockCache.On("AdmitPodRunningRequest", mock.Anything, "ns", int64(1)).Return(false, false, nil).Once()
+				return mockCache, router
+			},
+			wantProfile: "batch",
+		},
+		{
+			// types.ErrTargetReplicaInflightExceeded from the single-candidate fast path,
+			// which admits the pod before it runs the router's PostRouteUpdate.
+			name:          "auto, single-candidate fast path refuses the pod before PostRouteUpdate",
+			configProfile: "auto",
+			setup:         fullAtAdmission,
+			postRoute:     true,
+			wantProfile:   "batch",
+		},
+		{
+			name:          "explicit profile gets no profile header",
+			configProfile: "batch",
+			setup:         atCap(twoProfiles),
+		},
+		{
+			name:          "authoritativeRoutingPolicy ignores auto and gets no profile header",
+			configProfile: "auto",
+			setup:         atCap(authoritative),
+			leastRequest:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockCache, router := tc.setup(t)
+			registerTestRouter(router)
+			s := &Server{cache: mockCache, modelRateLimiter: ratelimiter.NewNoopRateLimiter()}
+			if tc.leastRequest {
+				s.routerManager = routing.NewRouterManagerWithCache(mockCache)
+				s.routerManager.Init()
+			}
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "req-1", "u")
+			routingCtx.ReqPath = PathChatCompletions
+			routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(TestRouterAlgorithm)
+			var updater *postRouteFunc
+			if tc.postRoute {
+				updater = &postRouteFunc{routeFunc: func(*types.RoutingContext, types.PodList) (string, error) {
+					t.Fatal("the single-candidate fast path must not call Route")
+					return "", nil
+				}}
+				s.routerManager = prefixCacheManager(updater)
+				routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routing.RouterPrefixCache)
+			}
+			routingCtx.ReqConfigProfile = tc.configProfile
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+					},
+				},
+			}
+
+			resp, _, _, _ := s.HandleRequestBody(context.Background(), routingCtx, "req-1", req, utils.User{Name: "u"})
+			refused := resp.GetImmediateResponse()
+			require.NotNil(t, refused)
+			require.Equal(t, envoyTypePb.StatusCode_TooManyRequests, refused.GetStatus().GetCode())
+			require.Contains(t, refused.GetBody(), ErrorCodeReplicaInflightExceeded)
+			mockCache.AssertExpectations(t)
+			router.AssertExpectations(t)
+			if updater != nil {
+				assert.Empty(t, updater.updated, "a refused request must not reach PostRouteUpdate")
+				assert.True(t, routingCtx.ReplicaInflightChecked, "the fast path, not enforceReplicaInflight, must refuse the pod")
+			}
+
+			headers := map[string]string{}
+			for _, h := range refused.GetHeaders().GetSetHeaders() {
+				key := h.GetHeader().GetKey()
+				require.NotContains(t, headers, key, "duplicate header %s", key)
+				headers[key] = string(h.GetHeader().GetRawValue())
+			}
+			assert.Equal(t, "req-1", headers[HeaderRequestID])
+			assert.Equal(t, "true", headers[HeaderErrorReplicaInflightExceeded])
+			if tc.wantProfile == "" {
+				assert.NotContains(t, headers, HeaderAIBrixConfigProfile)
+			} else {
+				assert.Equal(t, tc.wantProfile, headers[HeaderAIBrixConfigProfile])
+			}
+		})
+	}
+}

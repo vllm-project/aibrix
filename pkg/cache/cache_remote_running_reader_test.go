@@ -191,10 +191,11 @@ func addTestReadyMetaPod(t *testing.T, store *Store, name string) *v1.Pod {
 	return pod
 }
 
-// Switch off (the default): no reader exists, so GetPodsRunningRequestsApprox and the gauge take
-// the other gateways' counts from the snapshot, the request path sends the same commands and
+// Explicit opt-out: no reader exists, so GetPodsRunningRequestsApprox and the gauge take the
+// other gateways' counts from the snapshot, the request path sends the same commands and
 // publishes nothing, and nothing reads aibrix:rrq in the background.
 func TestRemoteRunningReader_OffKeepsSnapshotPath(t *testing.T) {
+	t.Setenv(remoteRunningReaderEnabledEnv, "false")
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
@@ -241,6 +242,60 @@ func TestRemoteRunningReader_OffKeepsSnapshotPath(t *testing.T) {
 	counts := store.readPodsRunningRequests([]*v1.Pod{pod})
 	require.Equal(t, int64(41), counts[utils.GeneratePodKey(testNamespace, testPodName)])
 	require.Equal(t, map[string]int{"zrangebyscore": 1, "hgetall": 1}, counter.since(before))
+}
+
+// Default (env unset/empty): initRemoteRunningReader starts the reader whenever Redis is
+// configured, stays a no-op without Redis, and still fails closed on opt-out aliases or invalid
+// values.
+func TestRemoteRunningReader_DefaultEnablesReader(t *testing.T) {
+	t.Run("starts with default interval when unset", func(t *testing.T) {
+		t.Setenv(remoteRunningReaderEnabledEnv, "")
+		t.Setenv(remoteRunningReaderIntervalEnv, "")
+
+		mr := miniredis.RunT(t)
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = client.Close() })
+		store := &Store{redisClient: client}
+
+		pod := addTestReadyMetaPod(t, store, testPodName)
+		metaPod, _ := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+		atomic.StoreInt32(&metaPod.runningRequests, 1)
+
+		require.NoError(t, client.ZAdd(context.Background(), runningRequestsGatewaysKey,
+			redis.Z{Score: float64(time.Now().UnixMilli()), Member: "gw-a"}).Err())
+		require.NoError(t, client.HSet(context.Background(), runningRequestsKey(testNamespace, testPodName), "gw-a", "40").Err())
+
+		stopCh := make(chan struct{})
+		t.Cleanup(func() { close(stopCh) })
+		initRemoteRunningReader(store, stopCh)
+
+		r := store.remoteRunningReader.Load()
+		require.NotNil(t, r, "the reader must start by default when Redis is configured")
+		require.Equal(t, defaultRemoteRunningReaderInterval, r.interval)
+		require.Equal(t, remoteRunningReaderMaxAgeIntervals*defaultRemoteRunningReaderInterval, r.maxAge)
+
+		require.Eventually(t, func() bool {
+			return approxRunning(store, pod) == 41
+		}, 2*time.Second, 20*time.Millisecond, "default reader must populate remote running counts from aibrix:rrq")
+	})
+
+	t.Run("no-op without redis", func(t *testing.T) {
+		t.Setenv(remoteRunningReaderEnabledEnv, "")
+		store := &Store{}
+		initRemoteRunningReader(store, nil)
+		require.Nil(t, store.remoteRunningReader.Load())
+	})
+
+	for _, raw := range []string{"off", "no", "disabled", "invalid", "   "} {
+		t.Run("opt-out or invalid "+raw, func(t *testing.T) {
+			t.Setenv(remoteRunningReaderEnabledEnv, raw)
+			store := &Store{redisClient: newTestRunningRequestsClient(t)}
+			stopCh := make(chan struct{})
+			t.Cleanup(func() { close(stopCh) })
+			initRemoteRunningReader(store, stopCh)
+			require.Nil(t, store.remoteRunningReader.Load(), "raw=%q must leave reader disabled", raw)
+		})
+	}
 }
 
 // The interval is read from the environment at startup when the switch is enabled.

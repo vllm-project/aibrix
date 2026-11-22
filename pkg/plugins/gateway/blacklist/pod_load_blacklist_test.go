@@ -19,6 +19,7 @@ package blacklist
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -383,6 +384,41 @@ func TestSweepLoadOutliers_DepartedPodsLoadExclusionIsLifted(t *testing.T) {
 	state.mu.RLock()
 	defer state.mu.RUnlock()
 	assert.Equal(t, updated, state.lastUpdated, "the entry still ages out on its own")
+}
+
+// A pod recreated under the name of a quarantined, load-excluded one is a new pod: the sweep
+// scores it, and its first verdict takes the old pod's exclusion off the count without
+// reporting a recovery.
+func TestSweepLoadOutliers_RecreatedPodIsScoredAndTheOldExclusionCleared(t *testing.T) {
+	var b PodBlacklist
+	oldPod := blacklistTestPodWithUID("4", "uid-old")
+	b.SetLoadExcluded(oldPod, true)
+	failDead(&b, oldPod, podProbeFailureIterations)
+	require.True(t, b.IsQuarantined(oldPod))
+	newPod := blacklistTestPodWithUID("4", "uid-new")
+	src := fakePods{"test-model": {blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3"), newPod}}
+	loads := loadTable{"test-model/1": 20, "test-model/2": 20, "test-model/3": 20, "test-model/4": 20}
+	var recovered []string
+
+	b.sweepLoadOutliers(src, loads.depth, func(pod *v1.Pod) { recovered = append(recovered, pod.Name) })
+
+	assert.True(t, b.Allow(newPod))
+	assert.Zero(t, b.excluded.Load())
+	assert.Zero(t, b.countExcludedNow(time.Now()))
+	assert.Empty(t, recovered, "the old pod did not recover")
+}
+
+// A one-replica StatefulSet. The sweep does not score too few pods, but it
+// still gives each one a verdict, which adopts the recreated pod's entry.
+func TestSweepLoadOutliers_RecreatedSingleReplicaIsAdopted(t *testing.T) {
+	var b PodBlacklist
+	failDead(&b, blacklistTestPodWithUID("1", "uid-old"), podProbeFailureIterations)
+	require.Equal(t, int64(1), b.excluded.Load())
+
+	newPod := blacklistTestPodWithUID("1", "uid-new")
+	b.sweepLoadOutliers(fakePods{"test-model": {newPod}}, loadTable{"test-model/1": 0}.depth, nil)
+
+	assert.Zero(t, b.excluded.Load())
 }
 
 // The same when the pod's last model leaves the cache: the sweep no longer lists it anywhere.

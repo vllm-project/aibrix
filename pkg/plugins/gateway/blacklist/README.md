@@ -99,13 +99,16 @@ Which pods it is given depends on the candidate stage (`AIBRIX_ROUTING_CANDIDATE
 | Pod state | `Allow` returns |
 |---|---|
 | No entry, or closed | true |
-| `loadExcluded` set | false (checked first) |
+| Entry for another pod UID | true (checked first) |
+| `loadExcluded` set | false (checked before the breaker) |
 | Open, before its deadline | false |
 | Open, deadline passed | true |
 | Blocked by request failures, before its deadline | false |
 | Blocked by request failures, deadline passed | true (on probation, section 5) |
 
 `IsBlacklisted` is the read-only variant. It reports a pod only while it is load-excluded, open before its deadline, or blocked by request failures before its deadline.
+
+An entry belongs to the pod UID it was observed on. A pod deleted and recreated under the same name (a StatefulSet replica, or a pod recreated by hand) has a new UID and is a new pod: `Allow`, `IsBlacklisted`, `IsQuarantined` and `BlacklistReason` ignore the old pod's entry for it. The first sweep result, load verdict, failing response (when the request-failure source is on) or flaky re-add for the new pod starts the entry over, which takes the old pod's exclusion off `excluded` and the excluded-pods gauge (within one 30 s load sweep for a ready pod). That is not reported as a recovery.
 
 **The exclusion cap.** The blacklist may exclude at most `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` (default 50) of the pods a request considers. Past that, `selectTargetPod` routes the request across all of them as if none were excluded, and counts it (`gateway_pod_blacklist_fallback_total{reason="over_cap"}`, with a throttled `too many pods are blacklisted` log line). It is the same fallback as for a model with every pod excluded, extended to most of them: the few pods left would carry all the model's traffic, and a verdict wrong for many pods at once (a network fault on the gateway's side, a probe path that something changed) is more likely than most of a fleet failing together. At the default one pod of two, two of four and three of eight may be excluded; two of three may not. A model with a single pod therefore never excludes it. `100` turns the cap off: only a model with every pod excluded falls back. With the candidate stage the cap is judged on the K candidates a request is given. When they are over it but the ready pods as a whole are not, the stage runs again over the pods that are not excluded; when the ready pods are over it too, the request goes across the candidates. Near the cap a sample can fall either side by chance, so some requests keep their exclusions and some do not.
 
@@ -201,7 +204,7 @@ stateDiagram-v2
 - **Independent of the probe breaker.** The block has its own deadline (`requestBlockedUntil`), trip count and reason, so a healthy sweep neither lifts it nor shortens its backoff, and a request block does not escalate the sweep's backoff. A pod that passes `/health` and `/v1/models` but fails every request is what this source is for. It is **not** quarantined: it answers, so the cache keeps scraping it. Healthy sweeps do not lift a request block even for the 8 and 10 minute steps, which are longer than two sweeps.
 - **It cannot take the fleet out.** The block is a soft preference like the others: the exclusion cap (section 2) applies, so when more than `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` of a model's pods are excluded, or all of them, or the model has one pod, requests are routed across all of them. A fleet-wide failure, such as an upstream dependency that every replica shares, therefore does not become an outage of the gateway's own making.
 - **Only a failure creates an entry**, and the entry ages out like any other (`podBlacklistEntryTTL` after the later of its last update and the end of its last request block), so probation state does not outlive its use.
-- **State is keyed by namespace/name**, like every entry here. A pod recreated under the same name (a StatefulSet pod, say) inherits an active request block and its trip count until the block ends or the probation decays, at most 10 and 20 minutes. This is the keying the breaker has had since the probe sweep, which the flaky re-add relies on; it is bounded, and not changed here.
+- **State is keyed by namespace/name** and belongs to the pod UID it was observed on (section 2). A pod recreated under the same name (a StatefulSet pod, say) starts with no request block, trip count or probation.
 - **Ignored pods** (see above) are never recorded: prefill, decode and encode pods, StormService pods and ModelClaim pods. A PD request's target is its decode pod, so a 5xx from it would otherwise blame a pod for what may be the prefill leg's failure.
 
 ## Constants
