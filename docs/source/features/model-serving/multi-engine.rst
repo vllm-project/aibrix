@@ -145,7 +145,7 @@ Only a limited set of metrics is mapped for each engine, and more will be added 
      - N/A
    * - ``num_prefill_prealloc_queue_reqs``
      - N/A
-     - ``sglang:num_prefill_prealloc_queue_reqs``
+     - ``sglang:num_prefill_bootstrap_queue_reqs`` on v0.5.12 and later, ``sglang:num_prefill_prealloc_queue_reqs`` earlier [2]_
      - N/A
      - N/A
    * - ``num_decode_prealloc_queue_reqs``
@@ -362,6 +362,8 @@ Only a limited set of metrics is mapped for each engine, and more will be added 
 The SGLang entries for ``gpu_cache_usage_perc`` and ``kv_cache_usage_perc`` map to ``sglang:token_usage`` [1]_. The xLLM names have no engine prefix: both cache metrics map to ``kv_cache_utilization``, and ``engine_utilization`` maps to itself.
 
 .. [1] `https://github.com/sgl-project/sglang/issues/5979 <https://github.com/sgl-project/sglang/issues/5979>`_
+
+.. [2] SGLang renamed this gauge at v0.5.12 without changing what it reports: the prefill preallocation queue became the prefill bootstrap queue, in the same position in the collector, fed by the same queue count. The reader accepts either name, and prefers the new name when the exposition carries both.
 
 The table lists metrics read directly from each engine. AIBrix also defines query-based metrics that Prometheus computes, such as ``avg_prompt_toks_per_req``, ``avg_generation_toks_per_req``, ``p95_ttft_5m`` and ``avg_e2e_latency_pod``. Their PromQL is written against vLLM metric names, so they are available for vLLM only. ``drain_rate_1m`` is the exception: it is written against SGLang metric names.
 
