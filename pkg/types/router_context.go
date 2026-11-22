@@ -105,6 +105,8 @@ type PodScorer interface {
 
 // PostRouteUpdater defines the interface for strategies that need to update
 // internal state after a target pod has been selected.
+// readyPodList may wrap a shared read-only snapshot (for example on the
+// single-candidate fast path); implementations must not mutate or append to it.
 type PostRouteUpdater interface {
 	PostRouteUpdate(ctx *RoutingContext, readyPodList PodList, targetPod *v1.Pod) error
 }

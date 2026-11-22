@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -951,7 +952,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// with Redis it costs one pipelined read of the ready pods instead of up to four (#3322).
 	routeCtx.StartRunningRequestsSnapshot()
 	defer routeCtx.StopRunningRequestsSnapshot()
-	readyPods := utils.FilterRoutablePods(pods.All())
+	readyPods := routablePodsFromList(pods)
 
 	// Resolve the model config profile's routing knobs once per request: the
 	// load-imbalance gate below and every strategy on the routing path read the
@@ -1086,6 +1087,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 					return "", types.ErrTargetReplicaInflightExceeded
 				}
 			}
+			// readyPods may alias the shared snapshot here (the clone guard runs below);
+			// PostRouteUpdate must treat readyPodList as read-only.
 			podList := &utils.PodArray{Pods: readyPods}
 			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
 				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
@@ -1094,6 +1097,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 		return routeCtx.TargetAddress(), nil
 	}
+	// Clone unconditionally before shuffling and routing so that every
+	// downstream mutator (utils.Shuffle and routers such as session-affinity's
+	// fallbackPod) owns a private slice, regardless of which upstream stage
+	// returned a shared snapshot.
+	readyPods = slices.Clone(readyPods)
 	// The order only breaks ties between equally scored pods, so it needs to be unbiased, not
 	// unpredictable: crypto/rand here cost a syscall per pod on every request.
 	utils.Shuffle(readyPods)
@@ -1112,6 +1120,32 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 	}
 	return addr, err
+}
+
+// routablePodsFromList returns the routable pods from pods, reusing
+// PodArray's lazily cached Routable view when available and falling back to
+// FilterRoutablePods for other PodList implementations. Callers must treat the
+// returned slice as read-only because it may alias a shared snapshot.
+func routablePodsFromList(pods types.PodList) []*v1.Pod {
+	if pods == nil {
+		return nil
+	}
+	if arr, ok := pods.(*utils.PodArray); ok {
+		return arr.Routable().All()
+	}
+	return utils.FilterRoutablePods(pods.All())
+}
+
+// countRoutablePodsFromList returns the number of routable pods in pods,
+// reusing PodArray's cached Routable view when available.
+func countRoutablePodsFromList(pods types.PodList) int {
+	if pods == nil {
+		return 0
+	}
+	if arr, ok := pods.(*utils.PodArray); ok {
+		return arr.Routable().Len()
+	}
+	return utils.CountRoutablePods(pods.All())
 }
 
 func newEncodeExecutor() *encode.Executor {

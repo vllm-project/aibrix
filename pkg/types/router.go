@@ -43,6 +43,7 @@ type CandidateScorer interface {
 	// and whether each pod was scored. It must not read per-pod state from Redis, because the
 	// candidate stage exists to avoid reads over every ready pod. A stale but local signal (a
 	// scraped metric, this gateway's own counts plus the last gateway snapshot) is expected.
+	// readyPods may wrap a shared read-only snapshot; implementations must not mutate or append to it.
 	CandidateScores(ctx *RoutingContext, readyPods PodList) (scores []float64, scored []bool, err error)
 }
 
@@ -54,7 +55,8 @@ type CandidateScorer interface {
 type CandidateFinder interface {
 	CandidateScorer
 	// FindCandidates returns at most max pods of readyPods, best first. Like CandidateScores it
-	// must not read per-pod state from Redis.
+	// must not read per-pod state from Redis, and readyPods may wrap a shared read-only snapshot
+	// that must not be mutated or appended to.
 	FindCandidates(ctx *RoutingContext, readyPods PodList, max int) []*v1.Pod
 }
 
