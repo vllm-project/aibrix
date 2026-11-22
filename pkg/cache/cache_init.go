@@ -154,8 +154,8 @@ type Store struct {
 	// Number of concurrent workers used to update Pod metrics
 	podMetricsWorkerCount int
 
-	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
-	podMetricsJobs chan *Pod
+	// podMetricsJobs shares the bounded worker pool between pods and ModelClaim endpoints.
+	podMetricsJobs chan podMetricsJob
 
 	// podMetricsBackoff tracks per-pod fetch failure backoff for metrics collection.
 	podMetricsBackoff utils.SyncMap[string, *podMetricsBackoffState]
@@ -280,7 +280,7 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
 		modelRouterProvider:   modelRouterProvider,
 		podMetricsWorkerCount: podMetricsWorkerCount,
-		podMetricsJobs:        make(chan *Pod, podMetricsJobQueueSize),
+		podMetricsJobs:        make(chan podMetricsJob, podMetricsJobQueueSize),
 		engineMetricsFetcher:  metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
 		enableProfileCaching:  enableModelGPUProfileCaching,
 	}

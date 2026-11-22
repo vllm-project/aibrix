@@ -706,7 +706,7 @@ func TestUpdatePodMetricsNonBlocking(t *testing.T) {
 	defer restore()
 
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 2),
+		podMetricsJobs: make(chan podMetricsJob, 2),
 	}
 
 	for i := range 5 {
@@ -779,7 +779,7 @@ func TestUpdatePodMetricsDedupesQueuedPods(t *testing.T) {
 	defer restore()
 
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 10),
+		podMetricsJobs: make(chan podMetricsJob, 10),
 	}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
 	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
@@ -794,7 +794,7 @@ func TestUpdatePodMetricsDedupesQueuedPods(t *testing.T) {
 
 func TestPodMetricsSchedulingUIDChangeClearsState(t *testing.T) {
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 10),
+		podMetricsJobs: make(chan podMetricsJob, 10),
 	}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
 	recreated := newReadyMetricsPod("pod-0", "uid-1")
@@ -807,7 +807,7 @@ func TestPodMetricsSchedulingUIDChangeClearsState(t *testing.T) {
 
 func TestPodMetricsSchedulingCompletesAndAllowsRequeue(t *testing.T) {
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 10),
+		podMetricsJobs: make(chan podMetricsJob, 10),
 	}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
 
@@ -904,7 +904,7 @@ func TestUpdatePodMetricsSkipsBackoffPods(t *testing.T) {
 	defer restore()
 
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 2),
+		podMetricsJobs: make(chan podMetricsJob, 2),
 	}
 	backoffPod := newReadyMetricsPod("pod-backoff", "uid-backoff")
 	readyPod := newReadyMetricsPod("pod-ready", "uid-ready")
@@ -1025,7 +1025,7 @@ func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
 			defer restore()
 
 			store := &Store{
-				podMetricsJobs: make(chan *Pod, scenario.queueSize),
+				podMetricsJobs: make(chan podMetricsJob, scenario.queueSize),
 			}
 			now := time.Now()
 			for i := range scenario.pods {
@@ -1040,11 +1040,11 @@ func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
 			b.ResetTimer()
 			var enqueuedTotal int
 			for range b.N {
-				store.podMetricsJobs = make(chan *Pod, scenario.queueSize)
+				store.podMetricsJobs = make(chan podMetricsJob, scenario.queueSize)
 				store.updatePodMetrics()
 				enqueuedTotal += len(store.podMetricsJobs)
 				for len(store.podMetricsJobs) > 0 {
-					store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+					store.finishPodMetricsScheduling((<-store.podMetricsJobs).Pod)
 				}
 			}
 			b.StopTimer()
@@ -1847,7 +1847,7 @@ func TestUpdatePodMetricsSkipsQuarantinedPods(t *testing.T) {
 	restore := captureCounterCalls(&counters)
 	defer restore()
 
-	store := &Store{podMetricsJobs: make(chan *Pod, 10)}
+	store := &Store{podMetricsJobs: make(chan podMetricsJob, 10)}
 	for _, name := range []string{"pod-0", "pod-1"} {
 		pod := newReadyMetricsPod(name, "uid-"+name)
 		store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
@@ -1856,7 +1856,7 @@ func TestUpdatePodMetricsSkipsQuarantinedPods(t *testing.T) {
 	store.updatePodMetrics()
 	require.Equal(t, 2, len(store.podMetricsJobs), "without a checker every ready pod is scraped")
 	for len(store.podMetricsJobs) > 0 {
-		store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+		store.finishPodMetricsScheduling((<-store.podMetricsJobs).Pod)
 	}
 
 	var checker PodQuarantineChecker = fakeQuarantine{"pod-1": true}

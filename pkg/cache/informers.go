@@ -147,7 +147,7 @@ func (c *Store) addPod(obj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	metaPod, flakyReAdd := c.addPodLocked(pod)
+	metaPod, flakyReAdd := c.addPodLocked(pod, c.reconcileModelClaimMetrics(nil, pod, modelClaims))
 	if flakyReAdd {
 		listeners = c.podLifecycleListenersLocked()
 	}
@@ -219,11 +219,12 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 			c.dropModelIfEmptyLocked(modelName)
 		}
 	}()
+	var oldMetaPod *Pod
 	if oldOk || existed {
-		odlMetaPod := c.deletePodLocked(oldPod.Name, oldPod.Namespace)
-		if odlMetaPod != nil {
-			for _, modelName := range odlMetaPod.Models.Array() {
-				if c.removePodModelMappingLocked(odlMetaPod.Name, odlMetaPod.Namespace, modelName, 1) {
+		oldMetaPod = c.deletePodLocked(oldPod.Name, oldPod.Namespace)
+		if oldMetaPod != nil {
+			for _, modelName := range oldMetaPod.Models.Array() {
+				if c.removePodModelMappingLocked(oldMetaPod.Name, oldMetaPod.Namespace, modelName, 1) {
 					emptiedModels = append(emptiedModels, modelName)
 				}
 			}
@@ -235,6 +236,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldNodeType := oldPod.Labels[nodeType]
 	newNodeType := newPod.Labels[nodeType]
 	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
+		c.reconcileModelClaimMetrics(oldMetaPod, nil, nil)
 		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
 		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
@@ -243,7 +245,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 	// Add new mappings if present
 	if newHasModelInfo && !newIsWorker {
-		metaPod, flakyReAdd := c.addPodLocked(newPod)
+		metaPod, flakyReAdd := c.addPodLocked(newPod, c.reconcileModelClaimMetrics(oldMetaPod, newPod, newModelClaims))
 		if flakyReAdd {
 			listeners = c.podLifecycleListenersLocked()
 		}
@@ -258,6 +260,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 			}
 		}
 	} else {
+		c.reconcileModelClaimMetrics(oldMetaPod, nil, nil)
 		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
 		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 	}
@@ -315,6 +318,7 @@ func (c *Store) deletePod(obj interface{}) {
 
 	// delete base model and associated lora models on this pod
 	metaPod := c.deletePodLocked(name, namespace)
+	c.reconcileModelClaimMetrics(metaPod, nil, nil)
 	if metaPod != nil {
 		for _, modelName := range metaPod.Models.Array() {
 			c.deletePodAndModelMappingLocked(name, namespace, modelName, 1)
@@ -426,7 +430,7 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 // a genuine flaky re-add (see flakyReAddMinObservedGap) worth notifying
 // PodLifecycleListeners about; callers fire that notification themselves, after
 // releasing c.mu -- see addPod/updatePod.
-func (c *Store) addPodLocked(pod *v1.Pod) (metaPod *Pod, flakyReAdd bool) {
+func (c *Store) addPodLocked(pod *v1.Pod, claimMetrics map[string]*modelClaimMetricsTarget) (metaPod *Pod, flakyReAdd bool) {
 	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	if c.bufferPod == nil {
 		c.bufferPod = &Pod{
@@ -436,6 +440,8 @@ func (c *Store) addPodLocked(pod *v1.Pod) (metaPod *Pod, flakyReAdd bool) {
 	} else {
 		c.bufferPod.Pod = pod
 	}
+
+	c.bufferPod.claimMetrics = claimMetrics
 
 	// A pod key that was deleted moments ago (a transient health-check flap on a
 	// busy pod, or the delete+re-add updatePod does for every in-place K8s pod
@@ -503,6 +509,7 @@ func (c *Store) addPodLocked(pod *v1.Pod) (metaPod *Pod, flakyReAdd bool) {
 		// be reused for an unrelated pod on some future call -- clear any
 		// counters just seeded onto it so they don't leak into that pod.
 		// lastPodReadySince is not rolled back: it reflects a genuine add attempt either way.
+		c.bufferPod.claimMetrics = nil
 		c.bufferPod.runningRequests = 0
 		c.bufferPod.completedRequests = 0
 		c.bufferPod.completedOutputTokens = 0

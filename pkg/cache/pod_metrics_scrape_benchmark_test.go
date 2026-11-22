@@ -47,8 +47,8 @@ func BenchmarkPodMetricsScrape(b *testing.B) {
 	c := &Store{engineMetricsFetcher: metrics.NewEngineMetricsFetcher()}
 	c.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 	scrape := func() {
-		jobs := make(chan *Pod, 1)
-		jobs <- pod
+		jobs := make(chan podMetricsJob, 1)
+		jobs <- podMetricsJob{Pod: pod}
 		close(jobs)
 		c.worker(jobs)
 	}

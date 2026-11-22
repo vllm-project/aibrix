@@ -673,7 +673,7 @@ func TestEngineMetricsFetcher_SGLangPriorityQueueTotals(t *testing.T) {
 						assert.Equal(t, tt.expectedFirst, value.GetSimpleValue())
 					})
 					t.Run("ModelMetrics", func(t *testing.T) {
-						values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+						values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric, "")
 						require.NoError(t, err)
 						require.Contains(t, values, "model-a")
 						assert.Equal(t, tt.expectedModel, values["model-a"].GetSimpleValue())
@@ -704,7 +704,7 @@ func TestEngineMetricsFetcher_SGLangPriorityTotalsPerModel(t *testing.T) {
 		series("model-b", "1", 3) + series("model-b", "5", 4)))
 	require.NoError(t, err)
 
-	values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+	values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric, "")
 	require.NoError(t, err)
 	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
 	require.Contains(t, values, "model-b")
@@ -724,7 +724,7 @@ func TestEngineMetricsFetcher_SGLangPriorityLabelOutsideQueues(t *testing.T) {
 		"%[1]s{model_name=\"model-a\",priority=\"\"} 4\n"+
 		"%[1]s{model_name=\"model-a\",priority=\"1\"} 6\n", counterName)))
 	require.NoError(t, err)
-	values, err := fetcher.parseModelMetricsFromFamily(families, counterName, counter)
+	values, err := fetcher.parseModelMetricsFromFamily(families, counterName, counter, "")
 	require.NoError(t, err)
 	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
 
@@ -738,7 +738,7 @@ func TestEngineMetricsFetcher_SGLangPriorityLabelOutsideQueues(t *testing.T) {
 	families, err = ParseMetricsFromReader(strings.NewReader("# TYPE " + histogramName + " histogram\n" +
 		series("", 4) + series("1", 6)))
 	require.NoError(t, err)
-	values, err = fetcher.parseModelMetricsFromFamily(families, histogramName, histogram)
+	values, err = fetcher.parseModelMetricsFromFamily(families, histogramName, histogram, "")
 	require.NoError(t, err)
 	hist := values["model-a"].GetHistogramValue()
 	require.NotNil(t, hist)
@@ -758,7 +758,7 @@ func TestEngineMetricsFetcher_ParseVllmSleepState(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 0.0, value.GetSimpleValue())
 
-		values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+		values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric, "")
 		require.NoError(t, err)
 		require.Contains(t, values, "meta-llama/Llama-2-7b-chat-hf")
 		assert.Equal(t, 0.0, values["meta-llama/Llama-2-7b-chat-hf"].GetSimpleValue())
@@ -1131,7 +1131,7 @@ sglang:gen_throughput{model_name="m",dp_rank="3",tp_rank="0"} 90
 
 	ef := &EngineMetricsFetcher{}
 	metric := Metrics[AvgGenerationThroughputToksPerS]
-	perModel, err := ef.parseModelMetricsFromFamily(families, "sglang:gen_throughput", metric)
+	perModel, err := ef.parseModelMetricsFromFamily(families, "sglang:gen_throughput", metric, "")
 	require.NoError(t, err)
 	assert.Equal(t, 390.0, perModel["m"].GetSimpleValue())
 	podScoped, err := ef.parseMetricFromFamily(families, "sglang:gen_throughput", metric)

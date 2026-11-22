@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -304,6 +305,11 @@ func SetHistogramMetric(name string, help string, value *HistogramMetricValue, l
 		customHistogramsMu.Unlock()
 	}
 
+	// Different engines can expose the same histogram family with different
+	// extra labels. Reuse the label schema registered for the family.
+	if !slices.Equal(collector.labelNames, labelNames) {
+		labelValues = orderedGaugeLabelValues(collector.labelNames, labelNames, labelValues)
+	}
 	collector.Set(value, labelValues...)
 }
 
@@ -487,6 +493,41 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 				}
 				SetGaugeMetric(metricName+q.suffix, GetMetricHelp(metricName), value, labelNames, labelValues...)
 			}
+		}
+	}
+}
+
+// DeleteEngineMetricFromPrometheus removes one retired engine series and any
+// percentile gauges emitted alongside it.
+func DeleteEngineMetricFromPrometheus(ctx *types.RoutingContext, pod *v1.Pod, name string, extra map[string]string) {
+	def, ok := Metrics[name]
+	if !ok {
+		return
+	}
+	labelNames, labelValues := buildMetricLabels(pod, ctx, extra)
+	switch def.MetricType.Raw {
+	case Gauge:
+		DeleteGaugeMetric(name, labelNames, labelValues...)
+	case Counter:
+		customCountersMu.RLock()
+		counter := customCounters[name]
+		canonicalNames := customCounterLabelNames[name]
+		customCountersMu.RUnlock()
+		if counter != nil {
+			counter.DeleteLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...)
+		}
+	case Histogram:
+		customHistogramsMu.RLock()
+		collector := customHistograms[name]
+		customHistogramsMu.RUnlock()
+		if collector != nil {
+			values := orderedGaugeLabelValues(collector.labelNames, labelNames, labelValues)
+			collector.mu.Lock()
+			delete(collector.data, strings.Join(values, "\xff"))
+			collector.mu.Unlock()
+		}
+		for _, suffix := range []string{"_p50", "_p90", "_p99"} {
+			DeleteGaugeMetric(name+suffix, labelNames, labelValues...)
 		}
 	}
 }

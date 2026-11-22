@@ -32,6 +32,10 @@ type Pod struct {
 	Metrics      utils.SyncMap[string, MetricRecord] // Pod metrics (metric_name -> record)
 	ModelMetrics utils.SyncMap[string, MetricRecord] // Pod-model metrics (model_name/metric_name -> record)
 
+	// claimMetrics is immutable after publication. A non-nil map marks a warm Pod,
+	// including when it has no active engines. Unchanged targets survive Pod updates.
+	claimMetrics map[string]*modelClaimMetricsTarget
+
 	// Shared gateway labels are immutable for this Pod object and rebuilt on update.
 	gatewayMetricLabelsOnce sync.Once
 	gatewayMetricLabels     []string
