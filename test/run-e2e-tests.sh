@@ -31,6 +31,9 @@ INSTALL_AIBRIX=${INSTALL_AIBRIX:-}
 AIBRIX_ROLESET_INPLACE_E2E=${AIBRIX_ROLESET_INPLACE_E2E:-}
 AIBRIX_E2E_SUITE=${AIBRIX_E2E_SUITE:-all}
 AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=${AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE:-false}
+# The go test output of the e2e suite, set once the suite runs, so a failed test can be named again at
+# the end of the log (see report_failed_tests).
+E2E_TEST_LOG=
 
 # setup kind cluster
 if [ -n "$KIND_E2E" ]; then
@@ -127,9 +130,25 @@ start_port_forwards() {
   fi
 }
 
+# Name the failed e2e tests. The suite prints every test with -v, and collect_logs then dumps the log of
+# every aibrix-system pod after it, so a failed test ends up thousands of lines from the end of the log
+# and out of reach of anyone reading only its tail.
+report_failed_tests() {
+  if [ -n "$E2E_TEST_LOG" ] && [ -s "$E2E_TEST_LOG" ]; then
+    echo "Failed e2e tests:"
+    grep -E '^[[:space:]]*(--- FAIL:|FAIL([[:space:]]|$)|panic:)' "$E2E_TEST_LOG" || true
+  fi
+}
+
 # Comprehensive cleanup function that handles both k8s resources and port forwards
 function cleanup {
   exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    report_failed_tests
+  fi
+  if [ -n "$E2E_TEST_LOG" ]; then
+    rm -f "$E2E_TEST_LOG"
+  fi
   echo "Running cleanup..."
   # Always kill port forwards when exiting
   kill_existing_port_forwards
@@ -199,9 +218,12 @@ echo "Building $AIBRIX_E2E_SUITE e2e test binaries..."
 go test -count=1 -run='^$' "${E2E_PACKAGES[@]}"
 
 echo "Running $AIBRIX_E2E_SUITE e2e suite..."
+E2E_TEST_LOG=$(mktemp "${TMPDIR:-/tmp}/aibrix-e2e-go-test.XXXXXX")
+# pipefail keeps go test's exit status through tee, so a failed suite still runs collect_logs.
+set -o pipefail
 # E2E packages share one cluster, fixed mock resources, and Redis state. Keep package
 # execution serial even when a suite grows new subdirectories.
-go test -p 1 "${E2E_PACKAGES[@]}" -v -timeout 0
+go test -p 1 "${E2E_PACKAGES[@]}" -v -timeout 0 2>&1 | tee "$E2E_TEST_LOG"
 TEST_EXIT_CODE=$?
 
 # Exit with the test's exit code
