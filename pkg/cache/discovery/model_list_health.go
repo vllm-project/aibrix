@@ -65,13 +65,17 @@ type ModelListHealth struct {
 	retryAfter   time.Time
 	errorEpoch   uint64
 	maxAge       time.Duration
-	snapshot     func(context.Context) (sourceVersions, error)
+	// verifyTimeout bounds one verification, independently of the caller's
+	// context; tests shorten it.
+	verifyTimeout time.Duration
+	snapshot      func(context.Context) (sourceVersions, error)
 }
 
 func newModelListHealth(maxAge time.Duration) *ModelListHealth {
 	return &ModelListHealth{
-		maxAge:    maxAge,
-		verifySem: make(chan struct{}, 1),
+		maxAge:        maxAge,
+		verifySem:     make(chan struct{}, 1),
+		verifyTimeout: modelListVerificationTimeout,
 		applied: sourceVersions{
 			pods:     make(map[string]objectVersion),
 			adapters: make(map[string]objectVersion),
@@ -187,7 +191,7 @@ func (h *ModelListHealth) EnsureVerified(ctx context.Context) error {
 	if h.snapshot == nil {
 		return ErrModelListDiscoveryUnavailable
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, modelListVerificationTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, h.verifyTimeout)
 	defer cancel()
 	started := time.Now()
 	current, err := h.snapshot(checkCtx)

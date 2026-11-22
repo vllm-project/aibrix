@@ -294,3 +294,74 @@ func TestModelListHealthCancelledCallerDoesNotVerify(t *testing.T) {
 	}
 	assert.Zero(t, calls.Load(), "a caller that already gave up must not start a verification")
 }
+
+// slowSnapshot blocks until its context ends, like a full LIST on a cluster
+// too large for the verification budget, and counts how often it starts.
+func slowSnapshot(calls *atomic.Int32) func(context.Context) (sourceVersions, error) {
+	return func(ctx context.Context) (sourceVersions, error) {
+		calls.Add(1)
+		<-ctx.Done()
+		return sourceVersions{}, ctx.Err()
+	}
+}
+
+func TestModelListHealthSlowVerificationBacksOffWithoutCallerDeadline(t *testing.T) {
+	// Review D1 on #3555: under a caller deadline shorter than the
+	// verification budget, every call started a new full snapshot and
+	// retryAfter was never set. The discovery checker now calls without a
+	// deadline, so the verification's own budget expires instead, and the
+	// backoff must hold.
+	h := newModelListHealth(time.Minute)
+	h.verifyTimeout = 20 * time.Millisecond
+	var calls atomic.Int32
+	h.snapshot = slowSnapshot(&calls)
+
+	for i := 0; i < 5; i++ {
+		require.Error(t, h.EnsureVerified(context.Background()))
+	}
+	assert.Equal(t, int32(1), calls.Load(), "calls within the retry delay must not start new snapshots")
+	_, retryLater, _ := h.verificationState(time.Now())
+	assert.True(t, retryLater, "a verification that ran out of its own budget sets retryAfter")
+}
+
+func TestModelListHealthCallerDeadlineSkipsBackoff(t *testing.T) {
+	// The contrast case, and the reason the checker must not pass a deadline:
+	// a caller that gives up is treated as gone, so no backoff applies.
+	h := newModelListHealth(time.Minute)
+	var calls atomic.Int32
+	h.snapshot = slowSnapshot(&calls)
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		require.Error(t, h.EnsureVerified(ctx))
+		cancel()
+	}
+	assert.Equal(t, int32(3), calls.Load())
+}
+
+func TestModelListHealthWaiterReusesInFlightVerification(t *testing.T) {
+	// Review contention case: the discovery checker calling while a
+	// /v1/models verification runs waits for it and reuses its proof, with
+	// no second snapshot and no error.
+	h := newModelListHealth(time.Minute)
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h.snapshot = func(context.Context) (sourceVersions, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return sourceVersions{pods: map[string]objectVersion{}, adapters: map[string]objectVersion{}}, nil
+	}
+	first := make(chan error, 1)
+	go func() { first <- h.EnsureVerified(context.Background()) }()
+	<-started
+
+	second := make(chan error, 1)
+	go func() { second <- h.EnsureVerified(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	require.NoError(t, <-first)
+	require.NoError(t, <-second)
+	assert.Equal(t, int32(1), calls.Load())
+}

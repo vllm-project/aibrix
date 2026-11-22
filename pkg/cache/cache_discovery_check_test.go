@@ -86,6 +86,7 @@ func newTestDiscoveryChecker(t *testing.T, opts DiscoveryCheckOptions) (*Discove
 	clock := &discoveryTestClock{now: time.Unix(1_700_000_000, 0)}
 	checker.now = clock.Now
 	checker.lastVerified = clock.Now()
+	checker.consistencyVerified = clock.Now()
 	return checker, clock
 }
 
@@ -132,7 +133,10 @@ func TestDiscoveryCheckerAgeGrowsWithoutChecks(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(checker.stale))
 }
 
-func TestDiscoveryCheckerConsistency(t *testing.T) {
+func TestDiscoveryCheckerConsistencyDoesNotDriveStale(t *testing.T) {
+	// The consistency check is exact equality, so churn during its LIST can
+	// fail it on a healthy replica. It is reported on its own gauge and must
+	// not make the replica stale while reachability succeeds.
 	reach := &switchableCheck{}
 	consistency := &switchableCheck{}
 	checker, clock := newTestDiscoveryChecker(t, DiscoveryCheckOptions{
@@ -142,24 +146,100 @@ func TestDiscoveryCheckerConsistency(t *testing.T) {
 	ctx := context.Background()
 
 	consistency.set(discovery.ErrModelListDiscoveryUnavailable)
-	clock.Advance(10 * time.Second)
-	require.False(t, checker.CheckOnce(ctx), "a reachable API server is not enough when the cache disagrees")
-	assert.Equal(t, 10*time.Second, checker.Age())
-	assert.Equal(t, 1.0, testutil.ToFloat64(checker.failures.WithLabelValues(DiscoveryCheckConsistency)))
+	for i := 0; i < 6; i++ {
+		clock.Advance(10 * time.Second)
+		require.True(t, checker.CheckOnce(ctx))
+		require.False(t, checker.CheckConsistencyOnce(ctx))
+	}
+	assert.False(t, checker.Stale(), "a minute of consistency failures with reachability fine is not stale")
+	assert.Zero(t, checker.Age())
+	assert.Equal(t, 60*time.Second, checker.ConsistencyAge())
+	assert.Equal(t, 60.0, testutil.ToFloat64(checker.consistencyAge))
+	assert.Equal(t, 6.0, testutil.ToFloat64(checker.failures.WithLabelValues(DiscoveryCheckConsistency)))
 	assert.Equal(t, 0.0, testutil.ToFloat64(checker.failures.WithLabelValues(DiscoveryCheckReachability)))
 
-	reach.set(errors.New("connection refused"))
-	calls := consistency.callCount()
-	clock.Advance(10 * time.Second)
-	require.False(t, checker.CheckOnce(ctx))
-	assert.Equal(t, calls, consistency.callCount(), "consistency is skipped while the API server is unreachable")
-	assert.Equal(t, 1.0, testutil.ToFloat64(checker.failures.WithLabelValues(DiscoveryCheckReachability)))
-
-	reach.set(nil)
 	consistency.set(nil)
 	clock.Advance(10 * time.Second)
-	require.True(t, checker.CheckOnce(ctx))
-	assert.Zero(t, checker.Age())
+	require.True(t, checker.CheckConsistencyOnce(ctx))
+	assert.Zero(t, checker.ConsistencyAge())
+}
+
+func TestDiscoveryCheckerConsistencyHasNoCheckerDeadline(t *testing.T) {
+	// A checker deadline would end a slow LIST as if its caller had gone
+	// away, and ModelListHealth skips its backoff for that case (review D1).
+	var hadDeadline bool
+	checker, err := NewDiscoveryChecker(DiscoveryCheckOptions{
+		Interval: time.Second, StaleThreshold: 3 * time.Second,
+		Reachability: (&switchableCheck{}).check,
+		Consistency: func(ctx context.Context) error {
+			_, hadDeadline = ctx.Deadline()
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, checker.CheckConsistencyOnce(context.Background()))
+	assert.False(t, hadDeadline, "the consistency check must bound itself")
+}
+
+func TestDiscoveryCheckerConsistencyBacksOff(t *testing.T) {
+	// A consistency check that keeps failing (for example a full LIST slower
+	// than its budget on a large cluster) must not run every interval.
+	var mu sync.Mutex
+	var calls []time.Time
+	fail := true
+	checker, err := NewDiscoveryChecker(DiscoveryCheckOptions{
+		Interval: 10 * time.Millisecond, StaleThreshold: time.Hour,
+		Reachability: (&switchableCheck{}).check,
+		Consistency: func(context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, time.Now())
+			if fail {
+				return discovery.ErrModelListDiscoveryUnavailable
+			}
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	checker.maxBackoff = 80 * time.Millisecond
+
+	stopCh := make(chan struct{})
+	go checker.Run(stopCh)
+	time.Sleep(500 * time.Millisecond)
+	mu.Lock()
+	failing := len(calls)
+	fail = false
+	mu.Unlock()
+	// Waits of 10, 20, 40, 80, 80... ms give about 8 calls in 500 ms; without
+	// backoff it would be about 50.
+	assert.LessOrEqual(t, failing, 12, "failures back off")
+	assert.GreaterOrEqual(t, failing, 4, "failures are still retried")
+
+	time.Sleep(300 * time.Millisecond)
+	close(stopCh)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.GreaterOrEqual(t, len(calls)-failing, 5, "after a success the interval resets")
+}
+
+func TestDiscoveryCheckerFreshnessCountsFromCheckStart(t *testing.T) {
+	// A LIST may answer from the moment it started, so a check that takes
+	// 15 s and succeeds leaves the age at 15 s, not 0.
+	var clock *discoveryTestClock
+	slow := func(context.Context) error {
+		clock.Advance(15 * time.Second)
+		return nil
+	}
+	checker, c := newTestDiscoveryChecker(t, DiscoveryCheckOptions{
+		Interval: 10 * time.Second, StaleThreshold: 30 * time.Second,
+		Reachability: slow, Consistency: slow,
+	})
+	clock = c
+	clock.Advance(10 * time.Second)
+	require.True(t, checker.CheckOnce(context.Background()))
+	assert.Equal(t, 15*time.Second, checker.Age())
+	require.True(t, checker.CheckConsistencyOnce(context.Background()))
+	assert.Equal(t, 15*time.Second, checker.ConsistencyAge())
 }
 
 func TestDiscoveryCheckerBoundsEachCheck(t *testing.T) {
@@ -332,4 +412,54 @@ func TestStartDiscoveryCheckerOnlyForKubernetes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDiscoveryCheckerConsistencyMetrics(t *testing.T) {
+	checker, err := NewDiscoveryChecker(DiscoveryCheckOptions{
+		Interval: time.Second, StaleThreshold: 3 * time.Second,
+		Reachability: (&switchableCheck{}).check, Consistency: (&switchableCheck{}).check,
+	})
+	require.NoError(t, err)
+	reg := prometheus.NewRegistry()
+	require.NoError(t, checker.Register(reg))
+	n, err := testutil.GatherAndCount(reg, "aibrix_gateway_discovery_consistency_last_verified_age_seconds")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	n, err = testutil.GatherAndCount(reg, "aibrix_gateway_discovery_verification_failures_total")
+	require.NoError(t, err)
+	assert.Equal(t, 2, n, "both check series exist while consistency is on")
+}
+
+func TestDiscoveryCheckerConsistencyRunsWhenReachabilityRecovers(t *testing.T) {
+	// Consistency failures during an outage grow its backoff. Once the API
+	// server answers again, the consistency gauge must not lag by that
+	// backoff: the loop checks at once and resets its wait.
+	reach := &switchableCheck{}
+	consistency := &switchableCheck{}
+	consistency.set(discovery.ErrModelListDiscoveryUnavailable)
+	checker, err := NewDiscoveryChecker(DiscoveryCheckOptions{
+		Interval: 20 * time.Millisecond, StaleThreshold: time.Hour,
+		Reachability: reach.check, Consistency: consistency.check,
+	})
+	require.NoError(t, err)
+	checker.maxBackoff = time.Hour
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	go checker.Run(stopCh)
+
+	// Waits of 20, 40, 80, 160 ms: after 400 ms the next one is 320 ms away.
+	time.Sleep(400 * time.Millisecond)
+	reach.set(errors.New("connection refused"))
+	time.Sleep(60 * time.Millisecond)
+	consistency.set(nil)
+	before := consistency.callCount()
+	reach.set(nil)
+	recoveredAt := time.Now()
+
+	require.Eventually(t, func() bool { return consistency.callCount() > before },
+		150*time.Millisecond, 5*time.Millisecond, "consistency did not run soon after reachability recovered")
+	assert.Less(t, time.Since(recoveredAt), 200*time.Millisecond)
+	require.Eventually(t, func() bool { return checker.ConsistencyAge() < 100*time.Millisecond },
+		time.Second, 5*time.Millisecond)
 }

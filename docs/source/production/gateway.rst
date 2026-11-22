@@ -214,22 +214,22 @@ retried in the background and the replica keeps routing on the Pod list it had,
 including Pods that have since been deleted. Its health status does not change,
 and at the default log level nothing is logged.
 
-To make this visible, every replica checks the API server on a ticker,
-independently of watch events:
+To make this visible, every replica checks the API server independently of
+watch events:
 
-- **Reachability** (always on): one ``LIST pods`` with ``limit=1``, read from
-  etcd. It costs one small request per interval per replica and needs no
+- **Reachability** (always on): one ``LIST pods`` with ``limit=1`` every
+  interval, as a consistent read (the API server confirms etcd's current
+  revision). Each check is bounded by half the interval, so checks never
+  overlap. It costs one small request per interval per replica and needs no
   permission beyond what the gateway role already has.
 - **Consistency** (only with ``--model-list-discovery-max-age``): the
-  verification described in the previous section, run on the same ticker
-  instead of only when ``/v1/models`` is called. It still makes a full LIST at
-  most once per max age, but it now does so even when nobody calls
-  ``/v1/models``. In exchange, list requests rarely wait for a verification.
-
-Each check is bounded by half the interval, so checks never overlap. With the
-consistency check on, that half interval must be long enough for a full,
-paginated LIST of every Pod and ModelAdapter; on a large cluster, raise
-``--discovery-check-interval`` so a slow LIST is not reported as a failure.
+  verification described in the previous section, run on its own schedule
+  instead of only when ``/v1/models`` is called. It makes a full LIST at most
+  once per max age, now even when nobody calls ``/v1/models``, and keeps that
+  verification's ten-second timeout. After a failure it waits twice as long
+  before the next attempt, up to five minutes, so a LIST that is too slow for a
+  large cluster is not repeated every interval. When reachability recovers
+  after a failure, it runs at once and the wait starts over.
 
 .. code-block:: yaml
 
@@ -239,14 +239,22 @@ paginated LIST of every Pod and ModelAdapter; on a large cluster, raise
           - --discovery-check-interval=10s   # default; 0 disables the check
           - --discovery-stale-threshold=30s  # default; must exceed the interval
 
-The check exports three metrics:
+The check exports these metrics:
 
-- ``aibrix_gateway_discovery_last_verified_age_seconds``: seconds since every
-  enabled check last succeeded.
+- ``aibrix_gateway_discovery_last_verified_age_seconds``: seconds since the
+  reachability check last succeeded.
 - ``aibrix_gateway_discovery_stale``: 1 once that age reaches
   ``--discovery-stale-threshold``, otherwise 0.
+- ``aibrix_gateway_discovery_consistency_last_verified_age_seconds``: seconds
+  since the cache last matched a full LIST. Only with the consistency check.
 - ``aibrix_gateway_discovery_verification_failures_total``: failed checks, by
   ``check`` (``reachability`` or ``consistency``).
+
+Only reachability drives the stale gauge. The consistency check requires an
+exact match, so a Pod or ModelAdapter change during its LIST fails it on a
+healthy replica; a single failure is expected during rollouts. A consistency
+age that keeps rising, while reachability succeeds, means the cache is not
+converging.
 
 Alert on the stale gauge. A replica that is stale while others are not has
 lost its own connection; every replica stale at once points at the API server:
@@ -257,14 +265,15 @@ lost its own connection; every replica stale at once points at the API server:
       expr: max by (pod) (aibrix_gateway_discovery_stale) == 1
       for: 1m
 
-Keep the threshold above the time a normal watch reconnect takes, so a brief
-API server restart does not fire the alert.
+The threshold absorbs a normal watch reconnect, so keep it above the time one
+takes. The ``for`` clause then requires the replica to stay stale, so with the
+defaults the alert fires after about 90 seconds without a successful check.
 
 What the check does not prove:
 
 - Reachability proves the API server answers this replica. It does not prove
-  the watch is delivering events. A watch that is connected but stuck is caught
-  only by the consistency check.
+  the watch is delivering events. A watch that is connected but stuck shows
+  only in the consistency age.
 - Being stale does not change readiness or routing. The replica stays in the
   Service endpoints and keeps routing on its last known Pod list.
 

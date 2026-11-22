@@ -34,26 +34,34 @@ import (
 // Values of the check label of aibrix_gateway_discovery_verification_failures_total.
 const (
 	// DiscoveryCheckReachability is a one-item consistent LIST of Pods. It
-	// proves the API server and etcd answer this replica, not that the
-	// informer watch is still delivering events.
+	// proves the API server answers this replica, not that the informer watch
+	// is still delivering events. It alone drives aibrix_gateway_discovery_stale.
 	DiscoveryCheckReachability = "reachability"
 	// DiscoveryCheckConsistency compares the cached Pods and ModelAdapters
 	// with a full LIST (see discovery.ModelListHealth). It runs only when
-	// --model-list-discovery-max-age is set.
+	// --model-list-discovery-max-age is set, and is reported separately.
 	DiscoveryCheckConsistency = "consistency"
 )
 
+// discoveryConsistencyMaxBackoff caps the wait between consistency checks
+// after repeated failures, so a LIST that keeps failing on a large cluster is
+// retried rarely instead of every interval.
+const discoveryConsistencyMaxBackoff = 5 * time.Minute
+
 // DiscoveryCheckOptions configures a DiscoveryChecker.
 type DiscoveryCheckOptions struct {
-	// Interval between checks. Each check is bounded by half of it, so a slow
-	// check ends before the next one is due and checks never overlap.
+	// Interval between reachability checks. Each one is bounded by half of
+	// it, so a slow check ends before the next one is due.
 	Interval time.Duration
-	// StaleThreshold is the age of the last successful check at which the
-	// replica reports itself stale. It must be greater than Interval.
+	// StaleThreshold is the age of the last successful reachability check at
+	// which the replica reports itself stale. It must be greater than Interval.
 	StaleThreshold time.Duration
 	// Reachability is required.
 	Reachability func(context.Context) error
-	// Consistency is optional. It runs after a successful Reachability check.
+	// Consistency is optional. It runs on its own goroutine, once per
+	// Interval and backing off after failures, and never under the
+	// reachability deadline: a full LIST must bound itself, as
+	// ModelListHealth.EnsureVerified does. Its result does not affect Stale.
 	Consistency func(context.Context) error
 }
 
@@ -66,19 +74,27 @@ type DiscoveryChecker struct {
 	interval     time.Duration
 	timeout      time.Duration
 	threshold    time.Duration
+	maxBackoff   time.Duration
 	reachability func(context.Context) error
 	consistency  func(context.Context) error
 	now          func() time.Time
 
-	mu           sync.Mutex
-	lastVerified time.Time
+	mu                  sync.Mutex
+	lastVerified        time.Time
+	consistencyVerified time.Time
 	// reportedStale is the stale state last logged, so each change of state
 	// is logged once.
 	reportedStale bool
+	// reachabilityFailed records that the last reachability check failed, so
+	// the next success can wake the consistency loop out of its backoff.
+	reachabilityFailed bool
+	// reconnected wakes the consistency loop when reachability recovers.
+	reconnected chan struct{}
 
-	failures *prometheus.CounterVec
-	age      prometheus.GaugeFunc
-	stale    prometheus.GaugeFunc
+	failures       *prometheus.CounterVec
+	age            prometheus.GaugeFunc
+	stale          prometheus.GaugeFunc
+	consistencyAge prometheus.GaugeFunc
 }
 
 // NewDiscoveryChecker returns a checker whose last success is now, because it
@@ -98,24 +114,24 @@ func NewDiscoveryChecker(opts DiscoveryCheckOptions) (*DiscoveryChecker, error) 
 		interval:     opts.Interval,
 		timeout:      opts.Interval / 2,
 		threshold:    opts.StaleThreshold,
+		maxBackoff:   max(opts.Interval, discoveryConsistencyMaxBackoff),
 		reachability: opts.Reachability,
 		consistency:  opts.Consistency,
 		now:          time.Now,
+		reconnected:  make(chan struct{}, 1),
 	}
 	c.lastVerified = c.now()
+	c.consistencyVerified = c.lastVerified
 	c.failures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: constants.AibrixSubsystemName,
 		Name:      "gateway_discovery_verification_failures_total",
 		Help:      "Failed discovery checks of this gateway replica against the Kubernetes API server, by check (reachability: a one-item Pod LIST; consistency: the cached Pods and ModelAdapters against a full LIST, only with --model-list-discovery-max-age)",
 	}, []string{"check"})
 	c.failures.WithLabelValues(DiscoveryCheckReachability)
-	if c.consistency != nil {
-		c.failures.WithLabelValues(DiscoveryCheckConsistency)
-	}
 	c.age = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Subsystem: constants.AibrixSubsystemName,
 		Name:      "gateway_discovery_last_verified_age_seconds",
-		Help:      "Seconds since every enabled discovery check last succeeded, counted from the start of that check, or from informer sync if none has succeeded since",
+		Help:      "Seconds since the reachability check last succeeded, counted from the start of that check, or from informer sync if none has succeeded since",
 	}, func() float64 { return c.Age().Seconds() })
 	c.stale = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Subsystem: constants.AibrixSubsystemName,
@@ -127,12 +143,24 @@ func NewDiscoveryChecker(opts DiscoveryCheckOptions) (*DiscoveryChecker, error) 
 		}
 		return 0
 	})
+	if c.consistency != nil {
+		c.failures.WithLabelValues(DiscoveryCheckConsistency)
+		c.consistencyAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "gateway_discovery_consistency_last_verified_age_seconds",
+			Help:      "Seconds since the cached Pods and ModelAdapters last matched a full LIST, counted from the start of that check; only with --model-list-discovery-max-age. A single failure can be churn during the LIST; a steady rise means the cache is not converging",
+		}, func() float64 { return c.ConsistencyAge().Seconds() })
+	}
 	return c, nil
 }
 
 // Register adds the checker's metrics to reg.
 func (c *DiscoveryChecker) Register(reg prometheus.Registerer) error {
-	for _, collector := range []prometheus.Collector{c.failures, c.age, c.stale} {
+	collectors := []prometheus.Collector{c.failures, c.age, c.stale}
+	if c.consistencyAge != nil {
+		collectors = append(collectors, c.consistencyAge)
+	}
+	for _, collector := range collectors {
 		if err := reg.Register(collector); err != nil {
 			return err
 		}
@@ -140,23 +168,31 @@ func (c *DiscoveryChecker) Register(reg prometheus.Registerer) error {
 	return nil
 }
 
-// Age is the time since every enabled check last succeeded.
+// Age is the time since the reachability check last succeeded.
 func (c *DiscoveryChecker) Age() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.now().Sub(c.lastVerified)
 }
 
-// Stale reports whether Age has reached the stale threshold.
+// ConsistencyAge is the time since the consistency check last succeeded.
+func (c *DiscoveryChecker) ConsistencyAge() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now().Sub(c.consistencyVerified)
+}
+
+// Stale reports whether Age has reached the stale threshold. It depends on
+// reachability alone: the consistency check is exact, so churn during its
+// LIST can fail it on a healthy replica.
 func (c *DiscoveryChecker) Stale() bool {
 	return c.Age() >= c.threshold
 }
 
-// Run checks once per interval until stopCh closes. Checks run one at a time
-// on this goroutine, and each ends within half the interval, so a check never
-// overlaps the next tick. That includes waiting for a model-list verification
-// that a /v1/models request started (ModelListHealth.EnsureVerified honors the
-// deadline while it waits).
+// Run checks reachability once per interval until stopCh closes, and runs the
+// consistency check, if enabled, on its own goroutine. Reachability checks run
+// one at a time and each ends within half the interval, so a check never
+// overlaps the next tick, and a slow full LIST cannot delay them.
 func (c *DiscoveryChecker) Run(stopCh <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -167,6 +203,9 @@ func (c *DiscoveryChecker) Run(stopCh <-chan struct{}) {
 		case <-ctx.Done():
 		}
 	}()
+	if c.consistency != nil {
+		go c.runConsistency(ctx)
+	}
 	// The first check runs after one interval, not at once: the checker is
 	// created right after the informers synced, which was itself a successful
 	// read, so the starting age is already accurate. Staleness is measured
@@ -183,37 +222,89 @@ func (c *DiscoveryChecker) Run(stopCh <-chan struct{}) {
 	}
 }
 
-// CheckOnce runs every enabled check under one deadline and returns whether
-// all of them succeeded. The consistency check is skipped when the API server
-// is unreachable, because it would fail for the same reason.
-func (c *DiscoveryChecker) CheckOnce(ctx context.Context) bool {
-	ok := c.check(ctx)
-	c.logStaleChange()
-	return ok
+// runConsistency checks consistency every interval while it succeeds. After a
+// failure it doubles the wait, up to maxBackoff, so a full LIST that keeps
+// failing is not repeated every interval by every replica. When reachability
+// recovers from a failure, it checks at once and resets the wait: failures
+// during an outage say nothing about the cache once the API server is back.
+func (c *DiscoveryChecker) runConsistency(ctx context.Context) {
+	wait := c.interval
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		case <-c.reconnected:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			wait = c.interval
+		}
+		if c.CheckConsistencyOnce(ctx) {
+			wait = c.interval
+		} else {
+			wait = min(2*wait, c.maxBackoff)
+		}
+		timer.Reset(wait)
+	}
 }
 
-func (c *DiscoveryChecker) check(ctx context.Context) bool {
+// CheckOnce runs the reachability check under a deadline of half the interval
+// and returns whether it succeeded.
+func (c *DiscoveryChecker) CheckOnce(ctx context.Context) bool {
 	started := c.now()
 	checkCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	if err := c.reachability(checkCtx); err != nil {
+	err := c.reachability(checkCtx)
+	if err != nil {
 		c.recordFailure(ctx, DiscoveryCheckReachability, err)
-		return false
-	}
-	if c.consistency != nil {
-		if err := c.consistency(checkCtx); err != nil {
-			c.recordFailure(ctx, DiscoveryCheckConsistency, err)
-			return false
-		}
+	} else {
+		c.markVerified(&c.lastVerified, started)
 	}
 	c.mu.Lock()
-	// A LIST may answer from the moment the request started, so freshness is
-	// counted from then, as ModelListHealth does.
-	if started.After(c.lastVerified) {
-		c.lastVerified = started
+	recovered := err == nil && c.reachabilityFailed
+	c.reachabilityFailed = err != nil
+	c.mu.Unlock()
+	if recovered {
+		select {
+		case c.reconnected <- struct{}{}:
+		default:
+		}
+	}
+	c.logStaleChange()
+	return err == nil
+}
+
+// CheckConsistencyOnce runs the consistency check and returns whether it
+// succeeded. The checker sets no deadline: the check bounds itself, and a
+// deadline here would end a slow LIST as if its caller had gone away, which
+// ModelListHealth does not back off from.
+func (c *DiscoveryChecker) CheckConsistencyOnce(ctx context.Context) bool {
+	if c.consistency == nil {
+		return false
+	}
+	started := c.now()
+	if err := c.consistency(ctx); err != nil {
+		c.recordFailure(ctx, DiscoveryCheckConsistency, err)
+		return false
+	}
+	c.markVerified(&c.consistencyVerified, started)
+	return true
+}
+
+// markVerified records a success. A LIST may answer from the moment the
+// request started, so freshness is counted from then, as ModelListHealth does.
+func (c *DiscoveryChecker) markVerified(verified *time.Time, started time.Time) {
+	c.mu.Lock()
+	if started.After(*verified) {
+		*verified = started
 	}
 	c.mu.Unlock()
-	return true
 }
 
 func (c *DiscoveryChecker) logStaleChange() {
@@ -240,9 +331,7 @@ func (c *DiscoveryChecker) recordFailure(ctx context.Context, check string, err 
 		return
 	}
 	c.failures.WithLabelValues(check).Inc()
-	if logger := klog.V(2); logger.Enabled() {
-		logger.InfoS("Discovery check failed", "check", check, "age", c.Age(), "err", err)
-	}
+	klog.V(2).InfoS("Discovery check failed", "check", check, "err", err)
 }
 
 // PodListReachability returns a reachability check: one LIST of Pods with
