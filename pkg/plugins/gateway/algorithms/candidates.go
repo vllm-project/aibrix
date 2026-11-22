@@ -120,7 +120,21 @@ func candidateStageApplies(ctx *types.RoutingContext) bool {
 // Redis filter is about to drop. That read is process memory only and bounded by the scout; the
 // Redis filter stays the source of truth for the 429 (see excludeInflightSaturated).
 func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
-	return selectCandidatesWithMetric(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K, filterScout, true)
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, nil, ctx.RoutingOverrides().Candidate.K, filterScout, true)
+}
+
+// SelectCandidatesFromPodList behaves like SelectCandidates while preserving
+// readyPodList (for example a cached *utils.PodArray snapshot) for
+// CandidateFinder.FindCandidates and full-fleet CandidateScores calls so they
+// can reuse snapshot-level indexes such as PodArray.KeySet and PodArray.ByKey.
+// Callers must pass readyPodList only when its pods are the exact ready set
+// entering the stage (no external filter, encoder split, or blacklist
+// narrowing has modified the set).
+func SelectCandidatesFromPodList(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPodList types.PodList, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
+	if readyPodList == nil {
+		return nil
+	}
+	return selectCandidatesWithMetric(ctx, c, router, readyPodList.All(), readyPodList, ctx.RoutingOverrides().Candidate.K, filterScout, true)
 }
 
 // ReselectCandidates is SelectCandidates for a second pass over the same decision, such as the
@@ -128,16 +142,23 @@ func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Rou
 // way, but does not count the decision again: aibrix_routing_candidate_selections_total counts
 // one narrowing per request.
 func ReselectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
-	return selectCandidatesWithMetric(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K, nil, false)
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, nil, ctx.RoutingOverrides().Candidate.K, nil, false)
 }
 
 func selectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int) []*v1.Pod {
-	return selectCandidatesWithMetric(ctx, c, router, readyPods, k, nil, true)
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, nil, k, nil, true)
+}
+
+func selectCandidatesFromPodList(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPodList types.PodList, k int) []*v1.Pod {
+	if readyPodList == nil {
+		return nil
+	}
+	return selectCandidatesWithMetric(ctx, c, router, readyPodList.All(), readyPodList, k, nil, true)
 }
 
 // selectCandidatesWithMetric is the stage itself. countDecision says whether a decision it
 // narrows is added to aibrix_routing_candidate_selections_total.
-func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int, filterScout func([]*v1.Pod) []*v1.Pod, countDecision bool) []*v1.Pod {
+func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, readyPodList types.PodList, k int, filterScout func([]*v1.Pod) []*v1.Pod, countDecision bool) []*v1.Pod {
 	if k <= 0 || len(readyPods) <= k || !candidateStageApplies(ctx) {
 		return readyPods
 	}
@@ -152,7 +173,7 @@ func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router
 		path = candidatePathNoRankedSlot
 	} else if hasEstimate(parts) {
 		path = candidatePathEstimateFailed
-		scout := candidateScout(ctx, parts, readyPods, k)
+		scout, scoutIsFullReady := candidateScout(ctx, parts, readyPods, readyPodList, k)
 		scouted = len(scout)
 		// Run the caller's scout filter (e.g. cap-aware pod blacklist) before
 		// excludeInflightSaturated: inflight filtering drops loaded healthy pods, not drained
@@ -165,7 +186,11 @@ func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router
 			}
 		}
 		scout, excluded = excludeInflightSaturated(ctx, c, scout)
-		if estimates, ok := candidateEstimates(ctx, parts, scout); ok {
+		var scoutPodList types.PodList
+		if scoutIsFullReady && excludedByFilter == 0 && excluded == 0 {
+			scoutPodList = readyPodList
+		}
+		if estimates, ok := candidateEstimates(ctx, parts, scout, scoutPodList); ok {
 			path = candidatePathRanked
 			ranked = candidateRankedSlots(k)
 			for _, i := range bestIndices(estimates, ranked) {
@@ -266,15 +291,19 @@ func hasEstimate(parts []weightedScorer) bool {
 
 // candidateScout returns the ready pods the stage estimates: up to K pods each finder among
 // parts returns, best first, then candidateScoutFactor*K pods drawn at random, without
-// duplicates. When that would cover most of the fleet, it is the whole fleet.
-func candidateScout(ctx *types.RoutingContext, parts []weightedScorer, readyPods []*v1.Pod, k int) []*v1.Pod {
+// duplicates. When that would cover most of the fleet, it returns the whole fleet and
+// fullReady=true.
+func candidateScout(ctx *types.RoutingContext, parts []weightedScorer, readyPods []*v1.Pod, readyPodList types.PodList, k int) ([]*v1.Pod, bool) {
 	size := candidateScoutFactor * k
 	if 2*size >= len(readyPods) {
-		return readyPods
+		return readyPods, true
 	}
 	scout := make([]*v1.Pod, 0, size+k)
 	seen := make(map[*v1.Pod]struct{}, size+k)
-	podList := &utils.PodArray{Pods: readyPods}
+	podList := readyPodList
+	if podList == nil {
+		podList = &utils.PodArray{Pods: readyPods}
+	}
 	for _, part := range parts {
 		finder, ok := part.scorer.(types.CandidateFinder)
 		if !ok {
@@ -292,7 +321,7 @@ func candidateScout(ctx *types.RoutingContext, parts []weightedScorer, readyPods
 		}
 	}
 	sampleCandidates(readyPods, len(scout)+size, seen, &scout)
-	return scout
+	return scout, false
 }
 
 // candidateEstimates blends the in-memory estimates of the strategies in parts into one score
@@ -301,7 +330,7 @@ func candidateScout(ctx *types.RoutingContext, parts []weightedScorer, readyPods
 // share of the total weight. A strategy without an estimate (no types.CandidateScorer, or an
 // error) counts as 0 for every pod, so it shifts no pod ahead of another. ok is false when no
 // strategy has an estimate.
-func candidateEstimates(ctx *types.RoutingContext, parts []weightedScorer, pods []*v1.Pod) ([]float64, bool) {
+func candidateEstimates(ctx *types.RoutingContext, parts []weightedScorer, pods []*v1.Pod, podList types.PodList) ([]float64, bool) {
 	total := 0.0
 	for _, part := range parts {
 		total += part.weight
@@ -309,7 +338,9 @@ func candidateEstimates(ctx *types.RoutingContext, parts []weightedScorer, pods 
 	if total <= 0 {
 		return nil, false
 	}
-	podList := &utils.PodArray{Pods: pods}
+	if podList == nil {
+		podList = &utils.PodArray{Pods: pods}
+	}
 	var blended []float64
 	for _, part := range parts {
 		estimator, ok := part.scorer.(types.CandidateScorer)
