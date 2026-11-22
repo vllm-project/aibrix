@@ -82,20 +82,23 @@ prepare the image and model caches; they do not start an inference server.
 Start with two or more authorized workers in the same resource pool. Install
 Dragonfly separately and check that the nodes can reach its scheduler and
 other peers. The platform operator owns the Dragonfly deployment and any
-registry mirror configuration.
+registry mirror configuration. Apply the sample label to workers that meet
+the prerequisites for the sample you run.
+
+```sh
+kubectl label node <worker1> <worker2> samples.aibrix.ai/dragonfly=true
+```
 
 ### Prepare model weights
 
 Use [dragonfly-model-download.yaml](dragonfly-model-download.yaml) on workers
 with a running `dfdaemon` and its socket at
 `/var/run/dragonfly/dfdaemon.sock`. The Job needs permission to use this
-node-local socket and to write to `/var/lib/aibrix/models`. Limit the extra
-sample label to workers that meet these prerequisites.
+node-local socket and to write to `/var/lib/aibrix/models`.
 
 ```sh
-kubectl label node <worker1> <worker2> samples.aibrix.ai/dragonfly=true
 kubectl apply -f samples/modelwarmup/dragonfly-model-download.yaml
-kubectl wait --for=condition=Complete modelwarmup/dragonfly-model-download --timeout=15m
+kubectl get modelwarmup dragonfly-model-download -w
 ```
 
 The sample uses Dragonfly Client v1.5.14. It downloads and checks a fixed
@@ -105,6 +108,13 @@ model's files through peer scheduling. Under the default `auto` policy,
 small files may go directly to the source. A fresh run with an unavailable
 node peer fails the download Job. Source fallback within Dragonfly follows
 the platform's Dragonfly configuration.
+
+If checksum validation fails for a published model directory, move it aside
+on the affected node once no workload is using it. Then apply a copy of the
+sample with a new `metadata.name` to start a new `Once` run. A forced Job
+termination can leave `.dragonfly-model.*` staging directories under
+`/var/lib/aibrix/models`. Clean up those directories after confirming that no
+active Job is using them.
 
 To load the prepared weights, schedule the serving workload on a worker
 where the Job completed. Mount the same node directory read-only and pass the
@@ -131,21 +141,46 @@ volumes:
 ### Preload a container image
 
 Configure the [containerd registry mirror](https://d7y.io/docs/operations/integrations/container-runtime/containerd/)
-on the workers that will pull the image. Use the existing image-preload
-sample with a digest for an image that provides its `sh -c "exit 0"` command.
-Replace the placeholder with a BusyBox digest from the registry configured on
-the nodes.
+on the workers that will pull the image. Copy the existing image-preload
+sample.
 
 ```sh
-IMAGE_REF='docker.io/library/busybox@sha256:<digest>'
-kubectl patch --local -f samples/modelwarmup/modelwarmup.yaml --type=json \
-  -p "$(printf '[{"op":"replace","path":"/metadata/name","value":"dragonfly-image-warmup"},{"op":"replace","path":"/spec/imagePreload/images/0/image","value":"%s"},{"op":"add","path":"/spec/targets/0/nodeSelector/matchLabels/samples.aibrix.ai~1dragonfly","value":"true"}]' "$IMAGE_REF")" \
-  -o yaml | kubectl apply -f -
-kubectl wait --for=condition=Complete modelwarmup/dragonfly-image-warmup --timeout=30m
+cp samples/modelwarmup/modelwarmup.yaml /tmp/dragonfly-image-warmup.yaml
+```
+
+Edit the copy.
+
+1. Set `metadata.name` to `dragonfly-image-warmup`.
+2. Set `spec.imagePreload.images[0].image` to a BusyBox image pinned by
+   digest, such as `docker.io/library/busybox@sha256:<digest>`. Use the
+   registry configured for the mirror and keep the sample's
+   `sh -c "exit 0"` command.
+3. Add `samples.aibrix.ai/dragonfly: "true"` to
+   `spec.targets[0].nodeSelector.matchLabels` and keep the resource-pool label.
+
+```sh
+kubectl apply -f /tmp/dragonfly-image-warmup.yaml
+kubectl get modelwarmup dragonfly-image-warmup -w
 ```
 
 Kubelet asks the container runtime to pull the image. The runtime mirror
 determines the transport and any registry fallback.
+
+### Inspect failed warmups
+
+Watch the ModelWarmup phase until it reaches `Succeeded`. If it reaches
+`Failed` or `Degraded`, inspect the resource status and the Jobs owned by it.
+
+```sh
+warmup=dragonfly-model-download   # or dragonfly-image-warmup
+kubectl describe modelwarmup "$warmup"
+uid=$(kubectl get modelwarmup "$warmup" -o jsonpath='{.metadata.uid}')
+kubectl get jobs -l "model.aibrix.ai/warmup=$uid"
+kubectl logs job/JOB_NAME
+```
+
+Use the failed Job's name in the last command. Its events are available with
+`kubectl describe job JOB_NAME` if the Pod failed to start.
 
 ### Verify peer traffic
 
@@ -198,6 +233,10 @@ do not set `privileged: true`; do not add privilege, host networking, host PID,
 or broader host mounts merely to make a sample work. Use least-privilege RBAC,
 dedicated target pools, and a namespace admission policy appropriate for the
 container images and host-path access you authorize.
+
+Mounting the Dragonfly socket read-only still allows the Job to call the
+node's `dfdaemon` API. Grant access to the socket and the writable model
+cache only to trusted ModelWarmup authors.
 
 Automatic service-account token mounting is disabled, but explicit projected
 `serviceAccountToken` volumes are allowed. Tokens use the Pod's service account
