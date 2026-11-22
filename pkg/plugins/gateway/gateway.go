@@ -952,7 +952,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// with Redis it costs one pipelined read of the ready pods instead of up to four (#3322).
 	routeCtx.StartRunningRequestsSnapshot()
 	defer routeCtx.StopRunningRequestsSnapshot()
-	readyPods := routablePodsFromList(pods)
+	readyPods, routableSnapshot := routablePodsFromList(pods)
 
 	// Resolve the model config profile's routing knobs once per request: the
 	// load-imbalance gate below and every strategy on the routing path read the
@@ -1044,7 +1044,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// memory only; excludeBlacklistedCandidates and the Redis filter below stay authoritative.
 		allReady := readyPods
 		readyBeforeCandidates := len(readyPods)
-		readyPods = routing.SelectCandidates(routeCtx, s.cache, router, readyPods, s.scoutBlacklistFilter())
+		readyPods = selectStageCandidates(routeCtx, s.cache, router, routableSnapshot, readyPods, s.scoutBlacklistFilter())
 		// The scope is what the filter actually ran on, not which branch ran: with the candidate
 		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
 		// It is read before the blacklist drops pods, which says nothing about what was sampled.
@@ -1122,18 +1122,44 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	return addr, err
 }
 
-// routablePodsFromList returns the routable pods from pods, reusing
-// PodArray's lazily cached Routable view when available and falling back to
-// FilterRoutablePods for other PodList implementations. Callers must treat the
+// routablePodsFromList returns the routable pods from pods and, when pods is a
+// *utils.PodArray, its cached Routable snapshot so downstream stages can reuse
+// snapshot-level indexes (KeySet, ByKey). Other PodList implementations fall
+// back to FilterRoutablePods with a nil snapshot. Callers must treat the
 // returned slice as read-only because it may alias a shared snapshot.
-func routablePodsFromList(pods types.PodList) []*v1.Pod {
+func routablePodsFromList(pods types.PodList) ([]*v1.Pod, *utils.PodArray) {
 	if pods == nil {
-		return nil
+		return nil, nil
 	}
 	if arr, ok := pods.(*utils.PodArray); ok {
-		return arr.Routable().All()
+		routable := arr.Routable()
+		return routable.All(), routable
 	}
-	return utils.FilterRoutablePods(pods.All())
+	return utils.FilterRoutablePods(pods.All()), nil
+}
+
+// isSnapshot reports whether ready is still the exact backing slice of snap
+// (same length and same first element address), meaning no upstream stage
+// narrowed or replaced it. Checking identity directly rather than enumerating
+// upstream filters stays correct if another stage is added before the candidate
+// stage in the future.
+func isSnapshot(ready []*v1.Pod, snap *utils.PodArray) bool {
+	if snap == nil {
+		return false
+	}
+	all := snap.All()
+	return len(ready) == len(all) && (len(all) == 0 || &ready[0] == &all[0])
+}
+
+// selectStageCandidates runs the candidate stage, reusing routableSnapshot only
+// when readyPods still is that exact snapshot. Otherwise it falls back cleanly
+// to readyPods so SeededPrefixMatch.Pods stays strictly scoped to the stage's
+// input.
+func selectStageCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, routableSnapshot *utils.PodArray, readyPods []*v1.Pod, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
+	if isSnapshot(readyPods, routableSnapshot) {
+		return routing.SelectCandidatesFromPodList(ctx, c, router, routableSnapshot, filterScout)
+	}
+	return routing.SelectCandidates(ctx, c, router, readyPods, filterScout)
 }
 
 // countRoutablePodsFromList returns the number of routable pods in pods,
