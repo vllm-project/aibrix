@@ -81,9 +81,13 @@ func init() {
 
 func RegisterSchemas(scheme *runtime.Scheme) error {
 	podAutoscalerEnabled := features.IsControllerEnabled(features.PodAutoscalerController)
+	// The model route controller watches ModelAdapter and RayClusterFleet, so it needs both the
+	// model and orchestration groups.
+	modelRouteEnabled := features.IsControllerEnabled(features.ModelRouteController)
 	modelAPIEnabled := features.IsControllerEnabled(features.ModelAdapterController) ||
 		features.IsControllerEnabled(features.ModelClaimController) ||
-		features.IsControllerEnabled(features.ModelWarmupController)
+		features.IsControllerEnabled(features.ModelWarmupController) ||
+		modelRouteEnabled
 	distributedInferenceEnabled := features.IsControllerEnabled(features.DistributedInferenceController)
 	kvCacheEnabled := features.IsControllerEnabled(features.KVCacheController)
 	stormServiceEnabled := features.IsControllerEnabled(features.StormServiceController)
@@ -102,7 +106,7 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 		utilruntime.Must(rayclusterv1.AddToScheme(scheme))
 	}
 
-	if distributedInferenceEnabled || kvCacheEnabled || stormServiceEnabled {
+	if distributedInferenceEnabled || kvCacheEnabled || stormServiceEnabled || modelRouteEnabled {
 		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
 	}
 

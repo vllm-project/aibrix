@@ -23,7 +23,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	cfg "github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
+	"github.com/vllm-project/aibrix/pkg/controller/modelrouter"
 	"github.com/vllm-project/aibrix/pkg/features"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -126,6 +130,12 @@ func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
 			served:      join(orchestration, deployment),
 			notServed:   join(model, podAutoscaler),
 		},
+		{
+			// ModelRoute watches ModelAdapter and RayClusterFleet, so it needs both groups.
+			controllers: "model-route-controller",
+			served:      join(model, orchestration, deployment),
+			notServed:   podAutoscaler,
+		},
 	}
 
 	for _, tt := range tests {
@@ -138,7 +148,7 @@ func TestSetupWebhooksServesOnlyRegisteredAPIGroups(t *testing.T) {
 			testScheme := runtime.NewScheme()
 			require.NoError(t, clientgoscheme.AddToScheme(testScheme))
 			require.NoError(t, RegisterSchemas(testScheme))
-			mgr := newWebhookTestManager(t, testScheme)
+			mgr := newTestManager(t, testScheme)
 
 			require.NoError(t, setupWebhooks(mgr, webhookRegistrations))
 
@@ -167,20 +177,49 @@ func TestSetupWebhooksReturnsOtherSchemeErrors(t *testing.T) {
 		setup: func(ctrl.Manager) error { setupCalled = true; return nil },
 	}}
 
-	err := setupWebhooks(newWebhookTestManager(t, runtime.NewScheme()), registrations)
+	err := setupWebhooks(newTestManager(t, runtime.NewScheme()), registrations)
 
 	require.True(t, runtime.IsMissingKind(err), "expected a missing-kind error, got %v", err)
 	require.False(t, setupCalled)
 }
 
-// newWebhookTestManager returns a manager that is never started. Registering webhooks makes no
-// API calls, so it never contacts the configured host.
-func newWebhookTestManager(t *testing.T, scheme *runtime.Scheme) ctrl.Manager {
+// TestStartupWithOnlyModelRouteController runs the manager's startup steps for
+// --controllers=model-route-controller: scheme registration, webhook setup and the model route
+// controller's setup. It calls modelrouter.Add directly rather than controller.Initialize, which
+// appends to a package-level list.
+func TestStartupWithOnlyModelRouteController(t *testing.T) {
+	previous := features.EnabledControllers
+	features.EnabledControllers = map[string]bool{}
+	t.Cleanup(func() { features.EnabledControllers = previous })
+	features.InitControllers(features.ModelRouteController)
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
+	require.NoError(t, RegisterSchemas(testScheme))
+	mgr := newTestManager(t, testScheme)
+
+	require.NoError(t, setupWebhooks(mgr, webhookRegistrations))
+	require.NoError(t, modelrouter.Add(mgr,
+		cfg.NewRuntimeConfig(false, false, modeladapter.DefaultModelAdapterSchedulerPolicy)))
+}
+
+// newTestManager returns a manager that is never started. Its REST mapper is built from the scheme
+// instead of discovery, so controllers can create informers, and a type missing from the scheme
+// still fails as it does in the real manager. Anything that calls the API server directly fails
+// fast against the unreachable host.
+func newTestManager(t *testing.T, scheme *runtime.Scheme) ctrl.Manager {
 	t.Helper()
 	mgr, err := ctrl.NewManager(&rest.Config{Host: "https://127.0.0.1:1"}, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
+		MapperProvider: func(*rest.Config, *http.Client) (meta.RESTMapper, error) {
+			mapper := meta.NewDefaultRESTMapper(nil)
+			for gvk := range scheme.AllKnownTypes() {
+				mapper.Add(gvk, meta.RESTScopeNamespace)
+			}
+			return mapper, nil
+		},
 	})
 	require.NoError(t, err)
 	return mgr
