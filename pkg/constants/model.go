@@ -111,9 +111,9 @@ const (
 	ModelClaimReasonMakingRoom = "MakingRoom"
 
 	// ModelClaimReasonModelNameInUse is the reason of a claim's Scheduled
-	// condition while another claim keeps its model name, or an engine of a
-	// deleted claim still runs under it. The gateway answers for the name with
-	// another claim that serves it, if there is one.
+	// condition while another claim in its namespace keeps its model name. The
+	// gateway answers for the name with another claim that serves it, if there
+	// is one.
 	ModelClaimReasonModelNameInUse = "ModelNameInUse"
 )
 
