@@ -1089,6 +1089,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 					return "", types.ErrTargetReplicaInflightExceeded
 				}
 			}
+			// readyPods may alias the shared snapshot here (the clone guard runs below);
+			// PostRouteUpdate must treat readyPodList as read-only.
 			podList := &utils.PodArray{Pods: readyPods}
 			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
 				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
@@ -1158,6 +1160,9 @@ func cloneIfAliased(readyPods, sharedReady []*v1.Pod, isShared bool, allPods []*
 
 // sharesBackingArray reports whether a and b have overlapping backing arrays
 // across their capacities, including three-index clipped sub-slices.
+// Comparing uintptr endpoints in a single non-allocating expression is safe
+// here: Go's heap is non-moving, no uintptr is converted back to unsafe.Pointer,
+// and no pointer value is held across a call.
 func sharesBackingArray(a, b []*v1.Pod) bool {
 	if cap(a) == 0 || cap(b) == 0 {
 		return false

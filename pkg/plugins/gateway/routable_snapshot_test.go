@@ -106,6 +106,8 @@ func TestCloneIfAliased(t *testing.T) {
 	})
 
 	t.Run("no double clone for non-shared PodList fallback", func(t *testing.T) {
+		// When isShared is false, routablePodsFromList fell back to FilterRoutablePods
+		// and returned a fresh private slice, so cloneIfAliased must not clone it again.
 		got := cloneIfAliased(sharedReady, sharedReady, false, allPods)
 		assert.True(t, sharesBackingArray(got, sharedReady), "non-shared fallback slice must not be cloned twice")
 	})
@@ -119,9 +121,11 @@ func TestCloneIfAliased(t *testing.T) {
 
 // TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent drives
 // selectTargetPod concurrently across all paths where upstream stages may
-// return the shared snapshot slice unchanged (K=0, N<=K, non-candidate-safe
-// session-affinity including fallbackPod's rand.Shuffle, external-filter,
-// and K=16 narrowing) on both all-ready and mixed snapshots. Run with -race.
+// return the shared snapshot slice unchanged (K=0, N<=K, exclusive strategies,
+// non-candidate-safe session-affinity including fallbackPod's rand.Shuffle,
+// empty external-filter) as well as fresh-slice paths (non-empty
+// external-filter and K=16 narrowing) on both all-ready and mixed snapshots.
+// Run with -race.
 func TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -151,6 +155,13 @@ func TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent(t *testing.T) {
 			algorithm: least.RouterLeastRequest,
 		},
 		{
+			name:       "exclusive slo-least-load mixed ready/unready",
+			n:          20,
+			addUnready: 4,
+			k:          16,
+			algorithm:  routing.RouterSLOLeastLoad,
+		},
+		{
 			name:      "K=16 non-candidate-safe session-affinity fallbackPod",
 			n:         24,
 			k:         16,
@@ -164,21 +175,23 @@ func TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent(t *testing.T) {
 			algorithm:  routing.RouterSessionAffinity,
 		},
 		{
-			name:           "external-filter matching all with K=0",
+			// FilterPodsByLabelSelector allocates a fresh slice for non-empty
+			// expressions; empty-filter aliasing is exercised by the cases above.
+			name:           "fresh-slice external-filter matching all with K=0",
 			n:              20,
 			k:              0,
 			algorithm:      least.RouterLeastRequest,
 			externalFilter: "tier=gpu",
 		},
 		{
-			name:           "external-filter matching all with K=16",
+			name:           "fresh-slice external-filter matching all with K=16",
 			n:              24,
 			k:              16,
 			algorithm:      least.RouterLeastRequest,
 			externalFilter: "tier=gpu",
 		},
 		{
-			name:           "external-filter matching subset with K=0",
+			name:           "fresh-slice external-filter matching subset with K=0",
 			n:              20,
 			k:              0,
 			algorithm:      least.RouterLeastRequest,
@@ -200,12 +213,19 @@ func TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent(t *testing.T) {
 					pod.Labels["subset"] = "even"
 				}
 			}
+			unreadyAddrs := make(map[string]struct{}, tc.addUnready)
 			for i := 0; i < tc.addUnready; i++ {
+				ip := fmt.Sprintf("10.99.0.%d", i+1)
+				unreadyAddrs[ip+":8000"] = struct{}{}
 				pods = append(pods, &v1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      fmt.Sprintf("unready-%02d", i),
 						Namespace: "ns",
-						Labels:    map[string]string{"tier": "gpu"},
+						Labels:    map[string]string{constants.ModelLabelPort: "8000", "tier": "gpu"},
+					},
+					Status: v1.PodStatus{
+						PodIP:      ip,
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}},
 					},
 				})
 			}
@@ -213,6 +233,14 @@ func TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent(t *testing.T) {
 			store := cache.InitWithPods(cache.New(nil, nil, nil), pods, "m")
 			rm := routing.NewRouterManagerWithCache(store)
 			rm.Init()
+			if tc.algorithm == routing.RouterSLOLeastLoad {
+				// Register an exclusive router that reorders readyPodList.All() in
+				// place, mirroring PD's subset shuffles, on the local RouterManager.
+				rm.Register(routing.RouterSLOLeastLoad, func() (types.Router, error) {
+					return mutatingExclusiveRouter{}, nil
+				})
+				rm.Init()
+			}
 			s := &Server{cache: store, routerManager: rm}
 
 			podsArr, err := store.ListPodsByModel("m")
@@ -256,6 +284,10 @@ func TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent(t *testing.T) {
 							t.Errorf("selectTargetPod returned empty target address")
 							return
 						}
+						if _, bad := unreadyAddrs[addr]; bad {
+							t.Errorf("selectTargetPod routed to unready pod %s", addr)
+							return
+						}
 					}
 				}(w)
 			}
@@ -266,6 +298,15 @@ func TestSelectTargetPod_PreservesSharedSnapshotOrderConcurrent(t *testing.T) {
 			assert.True(t, slices.Equal(arr.Routable().All(), wantRoutable), "shared PodArray.Routable().All() order was mutated")
 		})
 	}
+}
+
+type mutatingExclusiveRouter struct{}
+
+func (mutatingExclusiveRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	pods := readyPodList.All()
+	slices.Reverse(pods)
+	ctx.SetTargetPod(pods[0])
+	return ctx.TargetAddress(), nil
 }
 
 type customPodList struct {

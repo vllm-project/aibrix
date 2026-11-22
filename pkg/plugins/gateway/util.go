@@ -1506,7 +1506,7 @@ func modelConfigFromCache(c cache.Cache, model string) string {
 //     requestsPerSecondPerReplica nor requestsInflight has an env-var form: both are
 //     configured directly in the profile.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
-	applyConfigProfileWithRoutable(routingCtx, pods, nil)
+	applyConfigProfileWithRoutableCount(routingCtx, pods, nil)
 }
 
 // applyConfigProfileFromPodList behaves like applyConfigProfile while taking
@@ -1515,13 +1515,15 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 // pods.All().
 func applyConfigProfileFromPodList(routingCtx *types.RoutingContext, pods types.PodList) {
 	if pods == nil {
-		applyConfigProfileWithRoutable(routingCtx, nil, nil)
+		applyConfigProfileWithRoutableCount(routingCtx, nil, nil)
 		return
 	}
-	applyConfigProfileWithRoutable(routingCtx, pods.All(), pods)
+	applyConfigProfileWithRoutableCount(routingCtx, pods.All(), func() int {
+		return countRoutablePodsFromList(pods)
+	})
 }
 
-func applyConfigProfileWithRoutable(routingCtx *types.RoutingContext, pods []*v1.Pod, podList types.PodList) {
+func applyConfigProfileWithRoutableCount(routingCtx *types.RoutingContext, pods []*v1.Pod, routableCount func() int) {
 	if routingCtx == nil {
 		return
 	}
@@ -1575,8 +1577,8 @@ func applyConfigProfileWithRoutable(routingCtx *types.RoutingContext, pods []*v1
 
 	if replicaRPS > 0 {
 		var replicas int64
-		if podList != nil {
-			replicas = int64(countRoutablePodsFromList(podList))
+		if routableCount != nil {
+			replicas = int64(routableCount())
 		} else {
 			replicas = int64(utils.CountRoutablePods(pods))
 		}

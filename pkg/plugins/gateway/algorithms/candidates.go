@@ -105,7 +105,9 @@ func candidateStageApplies(ctx *types.RoutingContext) bool {
 // SelectCandidates returns the pods the gate and router should consider for this request: all of
 // readyPods when the candidate stage is off, does not apply to the strategy, or would not shrink
 // the set; otherwise K of them (see routingCandidateK). It reads no per-pod state from Redis.
-// router is the one Select returned for ctx.
+// router is the one Select returned for ctx. readyPods may alias a shared read-only snapshot, so
+// neither the stage nor its hooks (filterScout, CandidateScorer, CandidateFinder) may write or
+// append to it.
 //
 // filterScout, when non-nil, is applied to the bounded scout before inflight filtering and
 // estimation (for example, the gateway's cap-aware pod blacklist filter) so excluded pods that
