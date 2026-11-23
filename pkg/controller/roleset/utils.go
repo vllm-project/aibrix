@@ -454,7 +454,16 @@ func sortPodsByActive(pods []*v1.Pod) {
 		} else if !podutil.IsPodReady(pods[j]) {
 			return false
 		}
-		return !pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp)
+		if pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp) {
+			return false
+		}
+		if pods[j].CreationTimestamp.Before(&pods[i].CreationTimestamp) {
+			return true
+		}
+		// Deterministic tie-break: pods created in the same second would
+		// otherwise let the informer cache's list order decide which one is
+		// picked, so a later pass could pick a different pod. Break ties by name.
+		return pods[i].Name < pods[j].Name
 	})
 }
 

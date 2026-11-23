@@ -591,6 +591,41 @@ func deletePodsForRollout(ctx context.Context, cli client.Client, recorder recor
 	return result, nil
 }
 
+// outdatedPodsToDelete chooses the outdated pods that a rollout pass deletes,
+// given the pass's delete budget. outdated must be in sortPodsByActive order.
+//
+// Pods that are already draining come first. Each one stays selected until its
+// drain completes, and a ready one counts against the budget: a draining pod
+// stays Ready, so the budget computed from ready pods doesn't account for it,
+// and each pass could otherwise start draining one more pod. The other pods
+// follow as before: not-ready pods are always deleted, ready ones only while
+// the budget lasts.
+func outdatedPodsToDelete(outdated []*v1.Pod, deleteBudget int32) []*v1.Pod {
+	var toDelete []*v1.Pod
+	for _, pod := range outdated {
+		if !podutil.IsPodDraining(pod) {
+			continue
+		}
+		toDelete = append(toDelete, pod)
+		if podutil.IsPodReady(pod) {
+			deleteBudget--
+		}
+	}
+	for _, pod := range outdated {
+		if podutil.IsPodDraining(pod) {
+			continue
+		}
+		if podutil.IsPodReady(pod) {
+			if deleteBudget <= 0 {
+				break
+			}
+			deleteBudget--
+		}
+		toDelete = append(toDelete, pod)
+	}
+	return toDelete
+}
+
 func splitPodsByReady(pods []*v1.Pod) (readyPods, notReadyPods []*v1.Pod) {
 	for _, pod := range pods {
 		if podutil.IsPodReady(pod) {
@@ -631,15 +666,7 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	}
 	sortPodsByActive(outdated)
 	// 1. delete outdated pods
-	for i := 0; i < len(outdated); i++ {
-		if podutil.IsPodReady(outdated[i]) {
-			if deleteBudget <= 0 {
-				break
-			}
-			deleteBudget--
-		}
-		toDelete = append(toDelete, outdated[i])
-	}
+	toDelete = outdatedPodsToDelete(outdated, deleteBudget)
 	// 2. created new pods
 	terminatingPods, _ := filterTerminatingPods(allPods)
 	terminatingPodCount := len(terminatingPods)
@@ -801,15 +828,7 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
 	// 1. delete outdated pods
-	for i := 0; i < len(outdated); i++ {
-		if podutil.IsPodReady(outdated[i]) {
-			if deleteBudget <= 0 {
-				break
-			}
-			deleteBudget--
-		}
-		toDelete = append(toDelete, outdated[i])
-	}
+	toDelete = outdatedPodsToDelete(outdated, deleteBudget)
 	// 2. created new pods
 	terminatingPods, _ := filterTerminatingPods(allPods)
 	terminatingPodCount := len(terminatingPods)
