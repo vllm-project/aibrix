@@ -194,7 +194,7 @@ func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v
 		if math.IsNaN(kvFree) {
 			scores[i] = math.Inf(1)
 		} else {
-			scores[i] = loadBalanceScore(load, capacities[i], kvFree, kvPressureAlpha, kvCriticalFree)
+			scores[i] = loadBalanceScore(load, capacityDivisor(capacities[i]), kvFree, kvPressureAlpha, kvCriticalFree)
 		}
 		scored[i] = true
 
@@ -204,6 +204,7 @@ func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v
 				"pod", pod.Name,
 				"running_requests", running,
 				"capacity", capacities[i],
+				"capacity_exponent", effectiveCapacityExponent(),
 				"kv_free", formatLoadBalanceScore(kvFree),
 				"score", formatLoadBalanceScore(scores[i]))
 		}
@@ -213,8 +214,8 @@ func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v
 }
 
 // loadBalanceScore is the effective load of a replica: the work already committed to it, divided by
-// how fast it drains work, inflated as its KV cache fills. capacity is in tokens/sec and kvFree in
-// [0, 1]. Below the critical free-KV fraction the replica is unusable and the score is +Inf.
+// how fast it drains work, inflated as its KV cache fills. capacity is the divisor (see
+// capacityDivisor) and kvFree is in [0, 1]. Below the critical free-KV fraction the replica is unusable and the score is +Inf.
 // The penalty strength and that fraction are the environment defaults unless the request's
 // model config profile overrides them (see types.RoutingOverrides).
 //
@@ -375,6 +376,48 @@ var loadBalanceCapacityMaxAge = loadBalanceCapacityMaxAgeDefault
 
 // loadBalanceCapacitySignal selects the metric load-balance divides a pod's load by.
 var loadBalanceCapacitySignal = loadLoadBalanceCapacitySignal()
+
+const (
+	loadBalanceCapacityExponentEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_EXPONENT"
+	// With the per-request rate as capacity, the score is load / capacity^2.
+	//
+	// load / capacity alone sends a slow replica a request whenever the fast one carries
+	// capacity-ratio times as many, which keeps the slow replica busy at its own pace. On a pair
+	// where one replica was about 4.5x faster per request, that cost 16-24% of the throughput
+	// the total-rate signal gave, and put the slow replica's latency into the p95 (#3491).
+	//
+	// The total-rate signal did better there because a pod's total rate is its requests in
+	// flight times its per-request rate: the speed is in it twice, once through how many
+	// requests the pod was sent. Squaring the per-request rate gives the same preference for the
+	// faster replica without the traffic a pod happened to receive in it. Measured on that pair
+	// with 4, 8 and 16 clients, load / capacity^2 completed 22-33% more requests than the total
+	// rate did the same day, and two identical replicas stayed within 47-53% of each other.
+	//
+	// Replicas with equal estimates score by load alone at any exponent.
+	loadBalanceCapacityExponentDefault = 2.0
+)
+
+// loadBalanceCapacityExponent is the exponent applied to the per-request capacity. It is not
+// applied to the total-rate signal (see effectiveCapacityExponent).
+var loadBalanceCapacityExponent = utils.LoadEnvFloat(loadBalanceCapacityExponentEnv, loadBalanceCapacityExponentDefault)
+
+// effectiveCapacityExponent is the exponent in use: loadBalanceCapacityExponent for the
+// per-request signal, and 1 for the total-rate signal, which is scored as it was before #3491.
+func effectiveCapacityExponent() float64 {
+	if loadBalanceCapacitySignal == capacitySignalTotal {
+		return 1
+	}
+	return loadBalanceCapacityExponent
+}
+
+// capacityDivisor is what a pod's load is divided by: its capacity raised to
+// effectiveCapacityExponent.
+func capacityDivisor(capacity float64) float64 {
+	if exponent := effectiveCapacityExponent(); exponent != 1 {
+		return math.Pow(capacity, exponent)
+	}
+	return capacity
+}
 
 // loadLoadBalanceCapacitySignal reads loadBalanceCapacitySignalEnv: capacitySignalPerRequest
 // unless it is set to capacitySignalTotal. Any other value is logged and ignored.

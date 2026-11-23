@@ -798,3 +798,74 @@ func TestLoadLoadBalanceCapacitySignal(t *testing.T) {
 	}
 	assert.Equal(t, 3*time.Minute, loadBalanceCapacityMaxAgeDefault)
 }
+
+// withCapacityExponent sets the capacity exponent for one test.
+func withCapacityExponent(t *testing.T, exponent float64) {
+	t.Helper()
+	orig := loadBalanceCapacityExponent
+	loadBalanceCapacityExponent = exponent
+	t.Cleanup(func() { loadBalanceCapacityExponent = orig })
+}
+
+// TestLoadBalanceCapacityExponent is the mixed pair measured on #3491: one replica about 4.5x
+// faster per request, carrying 5 requests while the slow one carries 1. Dividing by the capacity
+// sends the next request to the slow replica (5/180 > 1/40). Dividing by its square keeps it on
+// the fast one (5/180^2 < 1/40^2), which is what the total-rate signal did there.
+func TestLoadBalanceCapacityExponent(t *testing.T) {
+	assert.Equal(t, 2.0, loadBalanceCapacityExponentDefault)
+
+	pods := []*v1.Pod{makeLBPod("fast", "1.1.1.1"), makeLBPod("slow", "2.2.2.2")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"fast": lbPodMetrics(5, 180, 0),
+		"slow": lbPodMetrics(1, 40, 0),
+	})
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	byName := func() map[string]float64 {
+		list := podsFromCache(c)
+		scores, _, err := r.ScoreAll(ctx, list)
+		assert.NoError(t, err)
+		out := map[string]float64{}
+		for i, pod := range list.All() {
+			out[pod.Name] = scores[i]
+		}
+		return out
+	}
+
+	withCapacityExponent(t, 1)
+	linear := byName()
+	assert.InDelta(t, 5.0/180, linear["fast"], 1e-12)
+	assert.Less(t, linear["slow"], linear["fast"], "exponent 1: the slow replica is chosen")
+
+	withCapacityExponent(t, 2)
+	squared := byName()
+	assert.InDelta(t, 5.0/(180*180), squared["fast"], 1e-12)
+	assert.InDelta(t, 1.0/(40*40), squared["slow"], 1e-12)
+	assert.Less(t, squared["fast"], squared["slow"], "exponent 2: the fast replica is chosen")
+
+	// The total-rate signal is scored as before, whatever the exponent is set to.
+	withCapacitySignal(t, capacitySignalTotal)
+	assert.Equal(t, 1.0, effectiveCapacityExponent())
+	assert.Equal(t, 300.0, capacityDivisor(300))
+}
+
+// Replicas with the same estimate score by load alone at any exponent, and so do replicas
+// without one: the fallback capacity is raised to the same power.
+func TestLoadBalanceCapacityExponent_EqualCapacitiesScoreByLoad(t *testing.T) {
+	withCapacityExponent(t, 2)
+	pods := []*v1.Pod{makeLBPod("p1", "1.1.1.1"), makeLBPod("p2", "2.2.2.2"), makeLBPod("p3", "3.3.3.3")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": lbPodMetrics(3, 46, 0),
+		"p2": lbPodMetrics(2, 46, 0),
+		"p3": lbPodMetrics(1, 0, 0), // no estimate: the mean of the others, 46
+	})
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	list := podsFromCache(c)
+	scores, _, err := r.ScoreAll(ctx, list)
+	assert.NoError(t, err)
+	for i, pod := range list.All() {
+		running := map[string]float64{"p1": 3, "p2": 2, "p3": 1}[pod.Name]
+		assert.InDelta(t, running/(46*46), scores[i], 1e-12, pod.Name)
+	}
+}

@@ -22,9 +22,9 @@ blacklist on or off, and when the blacklist has excluded pods it narrows the pod
 ## Score
 
 ```
-                   running + λ · queued
-score  =  ─────────────────────────────────────  ×  (1 + α · (1 − kvFree)²)
-        EWMA(output tokens per request-second)
+                    running + λ · queued
+score  =  ───────────────────────────────────────────  ×  (1 + α · (1 − kvFree)²)
+           EWMA(output tokens per request-second)^β          β = 2
 
 kvFree < kvCritical   ⇒   score = +Inf
 ```
@@ -34,7 +34,7 @@ purpose only:
 
 | Part | Question | Source |
 |---|---|---|
-| `EWMA(output tokens per request-second)` | How fast does this replica drain work? (**capacity**) | `RealtimeOutputTokensPerRequestSecondEWMA`, derived in the cache from completed output tokens and the time those requests spent on the pod |
+| `EWMA(output tokens per request-second)^β` | How fast does this replica drain work? (**capacity**) | `RealtimeOutputTokensPerRequestSecondEWMA`, derived in the cache from completed output tokens and the time those requests spent on the pod |
 | `running + λ·queued` | How much work is already committed to it? (**load**) | `GetPodsRunningRequests` (live cross-gateway count); `num_requests_waiting` when `λ > 0` |
 | `1 + α(1 − kvFree)²` | How close is it to memory pressure? (**headroom**) | `kv_cache_usage_perc` (`KVCacheUsagePerc`) |
 
@@ -64,6 +64,30 @@ queued inside the engine; adding `num_requests_waiting` on top would count them 
 
 The B40 wins despite carrying the most requests, because it drains them fastest. This example is
 asserted in `TestLoadBalanceScoreAll_HeterogeneousExample`.
+
+## Why the capacity is squared
+
+`running / capacity` alone equalizes each replica's backlog in seconds. On a mixed pool that
+sends a slow replica a request whenever the fast one carries capacity-ratio times as many, so the
+slow replica is kept busy at its own pace and its latency ends up in the p95.
+
+Measured on #3491 with one replica about 4.5x faster per request than the other (one shared GPU,
+32-token answers, closed-loop clients, 180 s):
+
+| clients | `running / capacity` | `running / capacity²` | total-rate signal, same day |
+|---|---|---|---|
+| 4 | 2437, 2524 requests · p95 0.75–0.77 s | 3042, 3085 · 0.72–0.73 s | 2523, 2477 · 0.77 s |
+| 8 | 5448, 5313 · 0.78 s | 6258, 6251 · 0.65 s | 4754, 4667 · 0.80–0.81 s |
+| 16 | 9495, 9419 · 0.85–0.86 s | 11985, 11823 · 0.34–0.35 s | 9024, 9723 · 0.73–0.84 s |
+
+- The total-rate signal used before favoured the fast replica more strongly than its per-request
+  speed, because a pod's total rate is its requests in flight times its per-request rate. Squaring
+  the per-request rate gives that preference without the traffic a pod happened to receive in it.
+  That traffic is also why the total-rate column moves from run to run and from day to day.
+- Two identical replicas score by load alone at any exponent, so the exponent does not bring back
+  the lock-in of #3450: after an idle start, a Ready gap and a restart they stayed at 47–53%.
+- `AIBRIX_LOAD_BALANCE_CAPACITY_EXPONENT` changes β. `1` sends slower replicas more of the load.
+  It is not applied to `AIBRIX_LOAD_BALANCE_CAPACITY_SIGNAL=total`, which is scored as before.
 
 ## Where the capacity signal comes from
 
@@ -181,7 +205,7 @@ as full rather than producing a negative free fraction.
 ## Debugging
 
 At `-v=4` the gateway logs `load_balance_score` once per pod (`running_requests`,
-`capacity`, `kv_free`, and the resulting `score`) and `load_balance_selected` (with the
+`capacity`, `capacity_exponent`, `kv_free`, and the resulting `score`) and `load_balance_selected` (with the
 winning `score`). `+Inf` scores are logged as strings so klog's JSON formatter does not
 fail. The cache logs `Updating per-request output token rate metric` with the window's tokens,
 time on the pod and request count, the 1-minute rate, and the EWMA for each pod. The estimate is
