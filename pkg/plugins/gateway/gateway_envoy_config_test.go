@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -133,6 +134,28 @@ func TestEnvoyConfigExtProcDisabledOnNonInferenceRoutes(t *testing.T) {
 			}
 
 			require.True(t, seen[true] && seen[false], "%s must have both inference and non-inference routes", path)
+		})
+	}
+}
+
+// TestEnvoyConfigNoShadowedPrefixRoutes verifies that no route in the local or
+// standalone Envoy configs is shadowed by an earlier route with a shorter (or
+// equal) prefix. Envoy evaluates routes in declaration order and picks the first
+// match, so placing prefix "/health" before prefix "/healthz" routes "/healthz"
+// to vllm_backend instead of returning Envoy's direct_response (#3536).
+func TestEnvoyConfigNoShadowedPrefixRoutes(t *testing.T) {
+	for _, path := range envoyConfigPaths {
+		t.Run(path, func(t *testing.T) {
+			routes := loadEnvoyRoutes(t, path)
+			for i, later := range routes {
+				require.NotEmpty(t, later.Match.Prefix, "route %d in %s has no prefix match", i, path)
+				for j := 0; j < i; j++ {
+					earlier := routes[j].Match.Prefix
+					assert.Falsef(t, strings.HasPrefix(later.Match.Prefix, earlier),
+						"route %d (prefix %q) in %s is shadowed by earlier route %d (prefix %q)",
+						i, later.Match.Prefix, path, j, earlier)
+				}
+			}
 		})
 	}
 }
