@@ -37,6 +37,20 @@ type PodArray struct {
 	// ListByIndex or Indexes call re-panics with it, instead of the Once leaving
 	// the index silently empty.
 	indexPanic any
+
+	routable     *PodArray
+	routableOnce sync.Once
+	// routablePanic keeps a panic raised while filtering so that every later
+	// Routable call re-panics with it, matching buildIndex.
+	routablePanic any
+
+	keySet      map[string]struct{}
+	keySetOnce  sync.Once
+	keySetPanic any
+
+	byKey      map[string]*v1.Pod
+	byKeyOnce  sync.Once
+	byKeyPanic any
 }
 
 func (arr *PodArray) Len() int {
@@ -121,6 +135,151 @@ func (arr *PodArray) initDeployments() {
 
 	arr.deployments = deployments
 	arr.podsByDeployment = podsByDeployment
+}
+
+// Routable returns a cached *PodArray containing only the pods in arr that pass
+// FilterReadyPod, preserving snapshot order. Callers must treat the returned
+// slice as read-only: when every pod in arr is routable and arr.Pods has no
+// spare capacity, Routable returns arr itself; otherwise it returns a clipped
+// *PodArray whose Pods slice is shared across concurrent callers.
+//
+// Immutability invariant: the cached result is valid only while arr.Pods and
+// the published *v1.Pod objects it references are not mutated in place (the
+// per-model CustomizedRegistry enforces this by publishing a fresh *PodArray
+// on every informer update).
+func (arr *PodArray) Routable() *PodArray {
+	if arr == nil {
+		return nil
+	}
+	if len(arr.Pods) == 0 && cap(arr.Pods) == 0 {
+		return arr
+	}
+	arr.routableOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.routablePanic = r
+			}
+		}()
+		arr.initRoutable()
+	})
+	if arr.routablePanic != nil {
+		panic(arr.routablePanic)
+	}
+	return arr.routable
+}
+
+// initRoutable computes and caches arr's routable subset once, through
+// Routable, so concurrent readers share a fully built, clipped *PodArray.
+func (arr *PodArray) initRoutable() {
+	firstUnready := -1
+	for i, pod := range arr.Pods {
+		if !FilterReadyPod(pod) {
+			firstUnready = i
+			break
+		}
+	}
+	if firstUnready == -1 {
+		if cap(arr.Pods) == len(arr.Pods) {
+			arr.routable = arr
+			return
+		}
+		var clipped []*v1.Pod
+		if len(arr.Pods) > 0 {
+			clipped = slices.Clip(arr.Pods)
+		}
+		r := &PodArray{Pods: clipped}
+		r.routableOnce.Do(func() { r.routable = r })
+		arr.routable = r
+		return
+	}
+
+	var ready []*v1.Pod
+	if firstUnready > 0 {
+		ready = make([]*v1.Pod, firstUnready, len(arr.Pods)-1)
+		copy(ready, arr.Pods[:firstUnready])
+	}
+	for i := firstUnready + 1; i < len(arr.Pods); i++ {
+		pod := arr.Pods[i]
+		if !FilterReadyPod(pod) {
+			continue
+		}
+		if ready == nil {
+			ready = make([]*v1.Pod, 0, len(arr.Pods)-i)
+		}
+		ready = append(ready, pod)
+	}
+	r := &PodArray{Pods: slices.Clip(ready)}
+	r.routableOnce.Do(func() { r.routable = r })
+	arr.routable = r
+}
+
+// KeySet returns a cached read-only set of pod keys (GeneratePodKey(Namespace, Name))
+// for all pods in arr, built lazily on first call. Non-prefix-cache callers that
+// never call KeySet pay zero map builds per snapshot generation.
+//
+// Callers must treat the returned map as read-only: it is shared across
+// concurrent requests. Immutability invariant: valid only while arr.Pods and
+// each referenced *v1.Pod's Namespace and Name are not mutated in place
+// (CustomizedRegistry enforces this by publishing a fresh *PodArray on every
+// informer update).
+func (arr *PodArray) KeySet() map[string]struct{} {
+	if arr == nil || len(arr.Pods) == 0 {
+		return nil
+	}
+	arr.keySetOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.keySetPanic = r
+			}
+		}()
+		arr.initKeySet()
+	})
+	if arr.keySetPanic != nil {
+		panic(arr.keySetPanic)
+	}
+	return arr.keySet
+}
+
+func (arr *PodArray) initKeySet() {
+	keys := make(map[string]struct{}, len(arr.Pods))
+	for _, pod := range arr.Pods {
+		keys[GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
+	}
+	arr.keySet = keys
+}
+
+// ByKey returns a cached read-only map from pod key (GeneratePodKey(Namespace, Name))
+// to *v1.Pod for all pods in arr, built lazily on first call. Built under its
+// own sync.Once so callers that only need KeySet (such as prefix misses or
+// ScoreAll) do not build this map.
+//
+// Callers must treat the returned map as read-only: it is shared across
+// concurrent requests. Immutability invariant: valid only while arr.Pods and
+// each referenced *v1.Pod's Namespace and Name are not mutated in place.
+func (arr *PodArray) ByKey() map[string]*v1.Pod {
+	if arr == nil || len(arr.Pods) == 0 {
+		return nil
+	}
+	arr.byKeyOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.byKeyPanic = r
+			}
+		}()
+		arr.initByKey()
+	})
+	if arr.byKeyPanic != nil {
+		panic(arr.byKeyPanic)
+	}
+	return arr.byKey
+}
+
+func (arr *PodArray) initByKey() {
+	byKey := make(map[string]*v1.Pod, len(arr.Pods))
+	for _, pod := range arr.Pods {
+		byKey[GeneratePodKey(pod.Namespace, pod.Name)] = pod
+	}
+	arr.byKey = byKey
 }
 
 // ListPortsForPod returns each pod's ports keyed by pod key (namespace/name, see

@@ -449,6 +449,8 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 	// was already computed back in addPodStats; only QueueRouter.Route below might
 	// be either, so that alone stays outside).
 	podKey := utils.GeneratePodKey(metaPod.Namespace, metaPod.Name)
+	// Read the clock before taking the lock: the wait for it is not time on the pod.
+	busy := podStats.outputBusyNanos(outputTokens)
 	mu := c.podStatsLockFor(podKey)
 	mu.Lock()
 	target, snap := c.resolvePodOrSnapshotLocked(podKey, metaPod)
@@ -456,7 +458,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 		decrementClamped(&snap.runningRequests, metaPod.Name, requestID)
 		atomic.AddInt64(&snap.completedRequests, 1)
 		atomic.AddInt64(&snap.completedOutputTokens, outputTokens)
-		if busy := podStats.outputBusyNanos(outputTokens); busy > 0 {
+		if busy > 0 {
 			atomic.AddInt64(&snap.completedOutputBusyNanos, busy)
 			atomic.AddInt64(&snap.completedOutputRequests, 1)
 		}
@@ -479,7 +481,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 	requests := decrementClamped(&metaPod.runningRequests, metaPod.Name, requestID)
 	atomic.AddInt64(&metaPod.completedRequests, 1)
 	atomic.AddInt64(&metaPod.completedOutputTokens, outputTokens)
-	if busy := podStats.outputBusyNanos(outputTokens); busy > 0 {
+	if busy > 0 {
 		atomic.AddInt64(&metaPod.completedOutputBusyNanos, busy)
 		atomic.AddInt64(&metaPod.completedOutputRequests, 1)
 	}

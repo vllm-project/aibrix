@@ -36,6 +36,14 @@ between callers in this mode.
 
 ---
 
+## Gateway-Tracked Pod Metrics (`pkg/cache/cache_metrics.go`)
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_OUTPUT_RATE_MIN_SAMPLES` | int | `8` | Requests with known output tokens that must complete on a pod within one ~1-minute rate window before that window updates the pod's per-request output-token rate (`gateway_pod_output_tokens_per_request_second`). A window with fewer keeps the previous value, so a pod that completes fewer requests than this per minute keeps an old estimate; `gateway_pod_output_rate_age_seconds` shows its age. `load-balance` reads the rate as a pod's capacity and ignores an estimate older than 3 minutes. `0` lets a window with one completed request update it. Negative or unparseable values fall back to the default. Environment-only. | [../../cache/cache_metrics.go](../../cache/cache_metrics.go) |
+
+---
+
 ## Response Processing
 
 | Variable | Type | Default | Description | Source |
@@ -43,6 +51,19 @@ between callers in this mode.
 | `AIBRIX_TTFT_THRESHOLD_S` | int (seconds) | `1` | Time-to-first-token threshold in seconds. Requests exceeding this are flagged in response processing. | [gateway_rsp_body.go](gateway_rsp_body.go) |
 
 `AIBRIX_TTFT_THRESHOLD_S` can also be set per model with the top-level `ttftThresholdS` profile field; see [Model Config Profile Overrides](#model-config-profile-overrides).
+
+---
+
+## Pod Blacklist (`blacklist/`)
+
+How the gateway stops routing to a broken or overloaded pod is described in [blacklist/README.md](blacklist/README.md).
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_POD_BLACKLIST_ENABLED` | bool | `false` | Master switch for the whole pod blacklist (background probe sweep, load-outlier sweep, flaky re-add, request failures and quarantine). Unset, empty, `false` or `0` leaves every path a no-op and starts no background work, so healthy-fleet routing matches the pre-blacklist behaviour. Set to `true` (or `1`) to enable. The per-request load-imbalance gate is unaffected and runs with the blacklist on or off (see [Load Balance Router](#load-balance-router-algorithmsload_balancego)). | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go), [gateway_blacklist.go](gateway_blacklist.go) |
+| `AIBRIX_POD_BLACKLIST_REQUEST_FAILURE_THRESHOLD` | int | `0` | Upstream failures in a row that block the pod that served them. **Off by default**: the request-failure source is opt-in, separately from `AIBRIX_POD_BLACKLIST_ENABLED`, which does not turn it on. Set it above `0` (the value is the failures needed, so `5` blocks on the fifth) to enable it; it is only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. A failure is a 502, 503 or 504 in the response headers the gateway receives, sent by the engine or by a proxy in front of it. A bare 500 (which an engine also returns for a request that made it throw), a 4xx, a 429, a 501, a stream that closes early and a client that leaves never count. **A response Envoy generates itself does not count either**: on the pinned Envoy (1.33), ext_proc is skipped for Envoy's own local replies, so a connection refused or reset before any response, and a route timeout, never reach this source; the probe sweep is what finds a pod that refuses connections. The source needs the ext_proc response header mode to be `SEND`, Envoy's default, which the shipped manifests keep. Any other response from the pod, or a pause of more than 1 minute between two failures, starts the count over. The first block lasts 1 minute and each further one doubles it, up to 10 minutes; once a block ends the pod is routable again and its next failure blocks it again at once, until 10 responses in a row that are not failures, or 20 minutes without a block, end that probation. A healthy probe sweep does not lift or shorten a request block. State is kept per gateway replica, so each replica needs the threshold on its own traffic and replicas can disagree while a block runs. `0` leaves the probe sweep, the load-outlier sweep and the flaky re-add as they are. The block is soft, like every other: `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` applies, and a model with one pod keeps routing to it (the block is still recorded and counted). Counted by `gateway_pod_blacklist_exclusions_total{reason="request_failures"}` (first blocks) and `{reason="request_failures_probation"}` (re-blocks on probation), with every failure seen by `gateway_pod_blacklist_request_failures_total{status,outcome}`. | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go), [gateway_blacklist.go](gateway_blacklist.go) |
+| `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` | int | `50` | Most of the pods a request considers that the blacklist may exclude, as a percentage (0-100). When more than this share of them is excluded, the request is routed across all of them as if none were: excluding most of a model's pods leaves the few that remain to carry its traffic, and a verdict wrong for many pods at once (a network fault on the gateway's side, say) is more likely than most of a fleet failing together. At the default one pod of two, two of four and three of eight may be excluded, two of three may not, and a model with one pod never excludes it. `100` turns the cap off, so only a model with every pod excluded is routed across. Counted by `gateway_pod_blacklist_fallback_total{reason="over_cap"}`. Only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go) |
+| `AIBRIX_LOAD_OUTLIER_MIN_GAP` | int | `16` | Minimum absolute gap in engine-reported running+waiting requests that a pod must have over the mean of its peers before the load-outlier sweep excludes it. Without it a pod a few standard deviations above identical, near-idle peers (for example loads `[0, 0, 1]`) would qualify. Only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. | [blacklist/pod_load_blacklist.go](blacklist/pod_load_blacklist.go) |
 
 ---
 
@@ -95,7 +116,9 @@ Preble routers (this replaces the prefix-cache-specific gate that used to live i
 `prefixcache/router.go`; see the deprecation note under [Variable Dependency
 Notes](#variable-dependency-notes)). It is exempted only for exclusive strategies (`pd`,
 `slo*`), which manage their own pod subsets and would have that management disrupted by a
-blanket running-request-count filter applied ahead of time. It does not participate in
+blanket running-request-count filter applied ahead of time. It is applied whether or not the
+pod blacklist is on (`AIBRIX_POD_BLACKLIST_ENABLED`); with the blacklist on, pods it has
+excluded are removed first and the gate narrows the rest. It does not participate in
 multi-strategy soft-scoring (`ScoreAll`) for strategies blended alongside `load-balance` — see
 `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` below for how `load-balance` itself gets
 silently blended into other strategies to compensate.
@@ -121,9 +144,10 @@ prefix-match percentage via request count.
 | `AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT` | float64 | `0` | Weight λ of engine-queued requests (`num_requests_waiting`) added to the running count in the score: `(running + λ·queued) / capacity × …`. The default `0` scores on running requests only, since the gateway's running count already includes requests queued inside the engine; raise it only if you want queued work to count extra. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 | `AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA` | float64 | `2.0` | Strength α of the KV-pressure penalty: the score is multiplied by `1 + α·(1 − kv_free)²`. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 | `AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE` | float64 | `0.10` | Free-KV-cache fraction below which a pod scores `+Inf` from `load-balance`. When `load-balance` is the sole routing strategy this excludes the pod outright (falling back to the pod with the most KV headroom if every pod is below the threshold, instead of failing the request). When `load-balance` is blended with other strategies (the default for most requests — see "Router Selection / Auto-Blend" below), a `+Inf` score is only a strong penalty, not an exclusion: another strategy can still select the pod. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
-| `AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES` | int | `8` | Completed requests with known output tokens a pod needs before its capacity estimate is used. Until then `load-balance` treats the pod as unmeasured: the mean estimate of the measured pods, or the same capacity for every pod when none is measured. `0` uses the estimate from the first completed request. Negative or unparseable values fall back to the default. Environment-only. | [../../cache/cache_metrics.go](../../cache/cache_metrics.go) |
+| `AIBRIX_LOAD_BALANCE_CAPACITY_SIGNAL` | string | `per-request` | The metric `load-balance` divides a pod's load by. `per-request`: output tokens per second of one request's time on the pod (`gateway_pod_output_tokens_per_request_second`), which does not grow with the share of traffic a pod receives; an estimate last updated more than 3 minutes ago is not used. `total`: the pod's total output tokens per second, the signal before #3491, which below saturation follows the traffic a pod receives (#3450). Any other value is logged and treated as `per-request`. Environment-only. | [algorithms/load_balance.go](algorithms/load_balance.go) |
+| `AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP` | duration | `60s` | While any candidate pod became routable less than this long ago, `load-balance` gives every candidate the same capacity (`1.0`), so the score is load × KV penalty. A new pod's first capacity estimates are not comparable with the others' (see [load_balance.md](algorithms/load_balance.md)). The window stays on for a whole rolling update or scale-up plus this duration. `0` disables it. Any other non-positive or unparseable value falls back to the default. Environment-only. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 
-The five `AIBRIX_LOAD_BALANCE_*` gate and score variables (every row above except `AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES`, which is environment-only) can also be set per request by the model config profile (`routingConfig.loadBalance.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+The five `AIBRIX_LOAD_BALANCE_*` gate and score variables can also be set per request by the model config profile (`routingConfig.loadBalance.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 
 ---
 
@@ -191,7 +215,12 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 Off by default. When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` narrows the ready
 pods to K pods before the load-imbalance gate and the router run. The gate and every strategy then
 read running counts, from Redis when it is configured, for those K pods only, which bounds the
-per-request routing work by K instead of the number of ready pods (RFC #3188).
+per-request routing work by K instead of the number of ready pods (RFC #3188). When the
+[pod blacklist](blacklist/README.md) is on and has active exclusions, it first drops excluded pods
+from the bounded scout before ranking (cap-aware; up to 4K lookups plus any prefix-finder pods, or
+the ready pods when 2×4K ≥ N), then filters the K candidates afterwards (with full-fleet reselects
+counted by `gateway_pod_blacklist_reselect_total`), so per-request lookups stay O(K) however many
+pods are tracked and zero when nothing is excluded.
 
 The K pods are chosen by the strategies themselves, from a scout: 4K ready pods drawn at random
 (the whole fleet when that would cover half of it or more), plus up to K pods a strategy finds
@@ -231,42 +260,68 @@ strategy has none (`random`, `power-of-two`), and `random_estimate_failed` when 
 estimates but none could be computed, which means the stage is running without its ranking, and
 `random_no_ranked_slot` when K = 1 leaves no slot to rank.
 
-The other gateways' counts behind the estimates come from the gateway snapshot. A snapshot tick
-that cannot read some keys in time carries their last values over; each other gateway's count of
-a pod is used only while it was actually read within 1 s, and is left out after that, so a pod
-whose counts are all older gets this gateway's own count only. Two gauges, set at every
-published tick, show how fresh those counts are:
-`aibrix_gateway_snapshot_remote_keys{state}` counts the other gateways' snapshot keys the tick
-read (`fresh`), carried within the limit (`carried`), or carried past it (`stale`, left out), and
-`aibrix_gateway_snapshot_oldest_read_age_seconds` is the age of the least recently read one. A
-steady `carried` or `stale` share means ticks run out of time before reading every key.
-
-**Experimental, off by default (#3442):** with `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`, the
+By default when Redis is configured (`AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`, #3442), the
 estimates and the `realtime_num_requests_running` gauge take the other gateways' counts from the
-`aibrix:rrq:*` hashes instead of from the gateway snapshot. A background reader sweeps every pod
-this gateway knows once per `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` (one `ZRANGEBYSCORE` for the
-live gateways, then one `HGETALL` per pod in pipelines of 100), and every exact read on the
-request path refreshes the pods it read at no extra Redis command. A pod's count is used while it
-was read within 3 × the interval (3 s at the default) and falls back to this gateway's own count
-after that. A sweep that runs out of time keeps what it read, and the next one starts with the
-pods it did not reach. Other gateways' fields are counted while their heartbeat is within the 3 s
-liveness window that the exact reads use, so a crashed gateway's counts stop being added within
-about 3 s plus one interval. When enabled, the gateway snapshot sync still writes this gateway's
-`aibrix:pod:*` hashes (so gateways running with the flag off still read them during mixed-config
-rollouts) while skipping its `SCAN` and cross-gateway `HGETALL` read phase.
-`aibrix_gateway_remote_running_reader_pods{state}` counts the known pods at the end of each sweep
-by whether their count was read within the limit (`fresh`), longer ago (`stale`, not used) or
-never (`unread`), and `aibrix_gateway_remote_running_reader_oldest_read_age_seconds` is the age of
-the least recently read one. A pod in `stale` or `unread` falls back to this gateway's local count
-while fresh neighbors still include remote counts (making it appear lighter by the missing remote
-share); a sustained non-zero `stale` gauge means sweeps or exact reads are not reaching every pod
-within 3 × the interval (for example, an interval shorter than one fleet sweep or Redis instability).
+`aibrix:rrq:*` hashes instead of from the gateway snapshot. A background reader selects every ready
+pod this gateway knows via `utils.FilterReadyPod` (ready, with IP, non-terminating, non-draining)
+once per `AIBRIX_REMOTE_RUNNING_READER_INTERVAL`. If there are pods to refresh, the sweep issues one
+`ZRANGEBYSCORE` for the live gateways and one `HGETALL` per selected pod that was not refreshed
+within the last half interval, in pipelines of 100. If all selected pods were refreshed recently,
+the sweep sends no Redis commands. The first sweep starts immediately. When the randomly chosen
+startup jitter is nonzero, the next sweep starts after half the interval plus that jitter. This
+staggers subsequent sweeps across gateways that start together. Each successful exact read on the
+request path refreshes the pods it read at no extra Redis command.
+
+A pod's remote count is used for 3 × the interval from its last successful read (3 s at the default).
+Sweeps and regular metric collection both skip pods that cease to pass `utils.FilterReadyPod`. After
+a pod recovers to Ready with an expired entry, estimates and any emitted running-request gauge use
+the local count until a successful sweep or request-path exact read refreshes the entry. A sweep that
+runs out of its Redis budget retains the results from completed batches. The next sweep resumes at
+the first unattempted eligible pod after partial progress, or advances past a batch if there was no
+progress. Other gateways' fields
+are counted while their heartbeat is within the 3 s liveness window that the exact reads use, so
+when sweeps succeed a crashed gateway's counts stop being picked up by new sweeps within about 3 s
+plus one sweep interval (existing cached entries age out after 3 × the interval from their `readAt`
+if not overwritten). While `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`, the gateway snapshot sync
+still writes this gateway's `aibrix:pod:*` hashes (so gateways running with the flag off still read
+them during mixed-config rollouts and rollbacks; until those writes are removed in stage (c) of
+#3442, enabling the reader provides fresh remote counts rather than lower Redis write load at large
+fleet scale) while skipping its `SCAN` and cross-gateway
+`HGETALL` read phase. Because the snapshot read phase is skipped, `aibrix_gateway_snapshot_remote_keys`
+and `aibrix_gateway_snapshot_oldest_read_age_seconds` are not registered or emitted while the reader
+is enabled; monitor `aibrix_gateway_remote_running_reader_pods{state}` and
+`aibrix_gateway_remote_running_reader_oldest_read_age_seconds` instead. If
+`AIBRIX_REMOTE_RUNNING_READER_ENABLED` is unset or the empty string, the gateway uses the default
+(`true`). Otherwise the parser trims leading and trailing whitespace and matches values
+case-insensitively. To enable, use `true`/`1`/`t`/`yes`/`y`/`on`/`enabled`/`enable`. To disable
+(rolling back to the gateway snapshot read path), use
+`false`/`0`/`f`/`no`/`n`/`off`/`disabled`/`disable`. A whitespace-only value or an unrecognized
+spelling logs an error and disables the reader (fail-closed), which carries the same large-scale
+snapshot fallback behavior below. Check the startup log line
+`Initializing remote running reader` to confirm it is running.
+`aibrix_gateway_remote_running_reader_pods{state}` counts the pods selected as ready at sweep start
+that remain ready (`utils.FilterReadyPod`) at the end of the sweep by whether their count was read
+within the limit (`fresh`), longer ago (`stale`, not used) or never (`unread`), and
+`aibrix_gateway_remote_running_reader_oldest_read_age_seconds` is the age of the least recently
+read one among them. A `stale` pod falls back to this gateway's local count in both the candidate
+estimates and the `realtime_num_requests_running` gauge; an `unread` pod falls back to the local
+count in the estimates and skips emission for `realtime_num_requests_running`, while fresh neighbors
+still include remote counts (making it appear lighter by the missing remote share). A sustained
+non-zero `stale` gauge means sweeps or exact reads are not reaching every pod within 3 × the
+interval (for example, an interval shorter than one fleet sweep or Redis instability).
+When `AIBRIX_REMOTE_RUNNING_READER_ENABLED` is disabled (`false`/`0`/`off`/`no`/`disabled`) at
+gateway startup, each published snapshot tick instead updates `aibrix_gateway_snapshot_remote_keys{state}`
+(`fresh`, `carried`, `stale` past the 1 s age limit) and
+`aibrix_gateway_snapshot_oldest_read_age_seconds` (at G=8, N >= 2000 fleet scale, snapshot sync may
+time out before publishing its first snapshot, in which case `GetPodsRunningRequestsApprox` falls
+back to local-only counts and `realtime_num_requests_running` skips emission until a snapshot is
+published).
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
-| `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `false` | Experimental. Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot (skipping snapshot `SCAN`/reads while keeping writes for mixed rollouts). Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
-| `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` | duration | `1s` | Experimental. How often the reader sweeps every known pod when `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`; also each sweep's time budget. Clamped to a minimum of `100ms` (with a warning). A pod's count is used for 3 × this interval after it was read. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
+| `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `true` | Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot (skipping snapshot `SCAN`/reads while keeping `aibrix:pod:*` writes for mixed rollouts and rollbacks; until stage (c) removes those writes, this provides fresh remote counts rather than lower Redis write load at scale). Accepts the case-insensitive spellings above with surrounding whitespace trimmed; unset or empty uses the default (`true`). Set `false`/`0`/`off`/`no`/`disabled` to roll back to snapshot reads (note: at G=8, N >= 2000 fleet scale, snapshot sync may time out before publishing, falling back to local-only estimates and withholding `realtime_num_requests_running`). Invalid values, including whitespace-only values, log an error and fail closed to disabled (with the same large-scale local-only consequence). Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
+| `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` | duration | `1s` | How often the reader sweeps known ready pods (`utils.FilterReadyPod`) when `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`; also each sweep's Redis-phase time budget. Clamped to a minimum of `100ms` (with a warning). Pods refreshed within the last half interval are skipped, and a pod's count is used for 3 × this interval after it was read. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 
 It can also be set per request by the model config profile (`routingConfig.candidate.k`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 

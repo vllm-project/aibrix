@@ -96,7 +96,7 @@ func routeFleetOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Po
 // SelectCandidates (K pods ranked on in-memory estimates, a quarter of them random), then the
 // gate, the shuffle and Route over the candidates only. The cost of choosing the candidates,
 // including estimating every ready pod, is included.
-func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Pod, strategy, message string, k int) {
+func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, podList types.PodList, strategy, message string, k int) {
 	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(strategy), "m1", message, "req", "")
 	defer ctx.Delete()
 	ResolveRoutingOverrides(ctx)
@@ -105,7 +105,7 @@ func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, al
 	if err != nil {
 		b.Fatal(err)
 	}
-	pods := selectCandidates(ctx, nil, router, all, k)
+	pods := selectCandidatesFromPodList(ctx, nil, router, podList, k)
 	pods = ApplyLoadImbalanceGate(ctx, c, pods)
 	utils.Shuffle(pods)
 	if _, err := router.Route(ctx, &utils.PodArray{Pods: pods}); err != nil {
@@ -179,7 +179,11 @@ func BenchmarkFleetRouting_K16(b *testing.B) { benchmarkFleetRouting(b, 16, util
 func BenchmarkFleetRouting_CandidateStage(b *testing.B) {
 	silenceKlog(b)
 	for _, n := range fleetBenchSizes {
-		c, all := newFleetBenchCache(n)
+		c, _ := newFleetBenchCache(n)
+		podList, err := c.ListPodsByModel("m1")
+		if err != nil {
+			b.Fatal(err)
+		}
 		for _, strategy := range fleetBenchStrategies {
 			b.Run(fmt.Sprintf("N=%d/%s", n, strategy), func(b *testing.B) {
 				rm := NewRouterManagerWithCache(c)
@@ -188,7 +192,7 @@ func BenchmarkFleetRouting_CandidateStage(b *testing.B) {
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					prompt := fleetBenchPrompts[i%len(fleetBenchPrompts)]
-					routeFleetCandidatesOnce(b, rm, c, all, strategy, prompt, 16)
+					routeFleetCandidatesOnce(b, rm, c, podList, strategy, prompt, 16)
 				}
 			})
 		}
@@ -201,7 +205,11 @@ func BenchmarkFleetRouting_CandidateStage(b *testing.B) {
 func BenchmarkCandidateSelection(b *testing.B) {
 	silenceKlog(b)
 	for _, n := range fleetBenchSizes {
-		c, all := newFleetBenchCache(n)
+		c, _ := newFleetBenchCache(n)
+		podList, err := c.ListPodsByModel("m1")
+		if err != nil {
+			b.Fatal(err)
+		}
 		for _, strategy := range fleetBenchStrategies {
 			b.Run(fmt.Sprintf("N=%d/%s", n, strategy), func(b *testing.B) {
 				rm := NewRouterManagerWithCache(c)
@@ -216,7 +224,7 @@ func BenchmarkCandidateSelection(b *testing.B) {
 					if err != nil {
 						b.Fatal(err)
 					}
-					if got := selectCandidates(ctx, nil, router, all, 16); len(got) != 16 {
+					if got := selectCandidatesFromPodList(ctx, nil, router, podList, 16); len(got) != 16 {
 						b.Fatalf("got %d candidates", len(got))
 					}
 					ctx.Delete()

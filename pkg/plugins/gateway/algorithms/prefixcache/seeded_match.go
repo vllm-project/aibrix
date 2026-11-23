@@ -36,14 +36,33 @@ func recordPrefixMatchOperation(model, result string) {
 	}
 }
 
+func keySetFromPodList(podList types.PodList) map[string]struct{} {
+	if arr, ok := podList.(*utils.PodArray); ok && arr != nil {
+		return arr.KeySet()
+	}
+	return nil
+}
+
 func (p prefixCacheRouter) matchPrefix(ctx *types.RoutingContext, pods []*v1.Pod, tokens []byte, remember bool) (map[string]int, []uint64) {
-	return matchPrefix(ctx, pods, p.prefixCacheIndexer, ctx.Model, -1, remember, func(ready map[string]struct{}) (map[string]int, []uint64) {
+	return matchPrefixWithKeySet(ctx, pods, nil, p.prefixCacheIndexer, ctx.Model, -1, remember, func(ready map[string]struct{}) (map[string]int, []uint64) {
+		return p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, ready)
+	})
+}
+
+func (p prefixCacheRouter) matchPrefixList(ctx *types.RoutingContext, readyPodList types.PodList, tokens []byte, remember bool) (map[string]int, []uint64) {
+	return matchPrefixWithKeySet(ctx, readyPodList.All(), keySetFromPodList(readyPodList), p.prefixCacheIndexer, ctx.Model, -1, remember, func(ready map[string]struct{}) (map[string]int, []uint64) {
 		return p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, ready)
 	})
 }
 
 func (k *kvSyncPrefixCacheRouter) matchPrefix(ctx *types.RoutingContext, pods []*v1.Pod, tokens []byte, model string, loraID int64, remember bool) (map[string]int, []uint64) {
-	return matchPrefix(ctx, pods, k.syncIndexer, model, loraID, remember, func(ready map[string]struct{}) (map[string]int, []uint64) {
+	return matchPrefixWithKeySet(ctx, pods, nil, k.syncIndexer, model, loraID, remember, func(ready map[string]struct{}) (map[string]int, []uint64) {
+		return k.syncIndexer.MatchPrefix(model, loraID, tokens, ready)
+	})
+}
+
+func (k *kvSyncPrefixCacheRouter) matchPrefixList(ctx *types.RoutingContext, readyPodList types.PodList, tokens []byte, model string, loraID int64, remember bool) (map[string]int, []uint64) {
+	return matchPrefixWithKeySet(ctx, readyPodList.All(), keySetFromPodList(readyPodList), k.syncIndexer, model, loraID, remember, func(ready map[string]struct{}) (map[string]int, []uint64) {
 		return k.syncIndexer.MatchPrefix(model, loraID, tokens, ready)
 	})
 }
@@ -56,6 +75,12 @@ func (k *kvSyncPrefixCacheRouter) matchPrefix(ctx *types.RoutingContext, pods []
 // match must be independent of the other pods in that set. Retaining ready and
 // projecting matches onto subsets relies on those contracts.
 func matchPrefix(ctx *types.RoutingContext, pods []*v1.Pod, index any, model string, loraID int64, remember bool,
+	read func(map[string]struct{}) (map[string]int, []uint64),
+) (map[string]int, []uint64) {
+	return matchPrefixWithKeySet(ctx, pods, nil, index, model, loraID, remember, read)
+}
+
+func matchPrefixWithKeySet(ctx *types.RoutingContext, pods []*v1.Pod, cachedKeys map[string]struct{}, index any, model string, loraID int64, remember bool,
 	read func(map[string]struct{}) (map[string]int, []uint64),
 ) (map[string]int, []uint64) {
 	result := prefixMatchLookup
@@ -83,9 +108,12 @@ func matchPrefix(ctx *types.RoutingContext, pods []*v1.Pod, index any, model str
 		klog.V(4).InfoS("seeded prefix match fallback", "request_id", ctx.RequestID, "model", ctx.Model, "reason", result, "pods", len(pods))
 	}
 
-	ready := make(map[string]struct{}, len(pods))
-	for _, pod := range pods {
-		ready[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
+	ready := cachedKeys
+	if ready == nil && len(pods) > 0 {
+		ready = make(map[string]struct{}, len(pods))
+		for _, pod := range pods {
+			ready[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
+		}
 	}
 	matches, hashes := read(ready)
 	recordPrefixMatchOperation(ctx.Model, result)

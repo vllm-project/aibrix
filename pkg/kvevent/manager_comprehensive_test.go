@@ -57,6 +57,12 @@ func (m *mockSyncIndexerWithCallbacks) RemovePrefix(ctx context.Context, modelNa
 	return nil
 }
 
+// readyConditions is the Ready condition the kubelet reports once a pod's
+// readiness probe passes; the manager subscribes to a pod only when it is Ready.
+func readyConditions() []v1.PodCondition {
+	return []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+}
+
 // Test configuration handling
 func TestManagerConfiguration(t *testing.T) {
 	tests := []struct {
@@ -131,6 +137,7 @@ func TestManagerPodLifecycle(t *testing.T) {
 			constants.ModelLabelName:       "test-model",
 			constants.KVEventsEnabledLabel: "true",
 		},
+		Ready: true,
 	}
 
 	podProvider := &mockPodProvider{
@@ -156,8 +163,9 @@ func TestManagerPodLifecycle(t *testing.T) {
 			Labels:    podInfo.Labels,
 		},
 		Status: v1.PodStatus{
-			Phase: v1.PodRunning,
-			PodIP: podInfo.PodIP,
+			Phase:      v1.PodRunning,
+			PodIP:      podInfo.PodIP,
+			Conditions: readyConditions(),
 		},
 	}
 
@@ -403,11 +411,30 @@ func TestManagerPodSubscriptionCriteria(t *testing.T) {
 					},
 				},
 				Status: v1.PodStatus{
+					Phase:      v1.PodRunning,
+					PodIP:      "10.0.0.1",
+					Conditions: readyConditions(),
+				},
+			},
+			shouldSubscribe: true,
+		},
+		{
+			name: "running, not ready",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "loading-pod",
+					Namespace: "default",
+					Labels: map[string]string{
+						constants.ModelLabelName:       "test-model",
+						constants.KVEventsEnabledLabel: "true",
+					},
+				},
+				Status: v1.PodStatus{
 					Phase: v1.PodRunning,
 					PodIP: "10.0.0.1",
 				},
 			},
-			shouldSubscribe: true,
+			shouldSubscribe: false,
 		},
 		{
 			name: "no kv events label",
@@ -544,8 +571,9 @@ func TestManagerConcurrentOperations(t *testing.T) {
 					},
 				},
 				Status: v1.PodStatus{
-					Phase: v1.PodRunning,
-					PodIP: fmt.Sprintf("10.0.0.%d", id),
+					Phase:      v1.PodRunning,
+					PodIP:      fmt.Sprintf("10.0.0.%d", id),
+					Conditions: readyConditions(),
 				},
 			}
 

@@ -16,6 +16,7 @@ limitations under the License.
 package cache
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +32,14 @@ type Pod struct {
 	Metrics      utils.SyncMap[string, MetricRecord] // Pod metrics (metric_name -> record)
 	ModelMetrics utils.SyncMap[string, MetricRecord] // Pod-model metrics (model_name/metric_name -> record)
 
+	// claimMetrics is immutable after publication. A non-nil map marks a warm Pod,
+	// including when it has no active engines. Unchanged targets survive Pod updates.
+	claimMetrics map[string]*modelClaimMetricsTarget
+
+	// Shared gateway labels are immutable for this Pod object and rebuilt on update.
+	gatewayMetricLabelsOnce sync.Once
+	gatewayMetricLabels     []string
+
 	// Realtime statstistic
 	runningRequests        int32 // Realtime running requests counter.
 	completedRequests      int64 // Monotonically increasing count of finished requests (gateway-tracked).
@@ -43,8 +52,8 @@ type Pod struct {
 	// decode rate (see RealtimeOutputTokensPerRequestSecondEWMA).
 	completedOutputBusyNanos int64
 	// completedOutputRequests counts the finished requests behind the two counters above: those
-	// with known output tokens. The capacity estimate is not published before
-	// loadBalanceCapacityMinSamples of them (see updateRealtimeOutputTokensPerRequestSecondEWMA).
+	// with known output tokens. A rate window updates the estimate only if it holds at least
+	// minOutputRateSamples of them (see updateRealtimeOutputTokensPerRequestSecondEWMA).
 	completedOutputRequests int64
 
 	// statsGeneration identifies this cache object's request-tracking counters.
@@ -59,8 +68,8 @@ type Pod struct {
 	// readySince is the UnixNano time this gateway first saw the pod routable
 	// (utils.FilterReadyPod), not when it was added, so time spent Pending or NotReady doesn't
 	// count against the ramp. 0 means never routable yet. It is kept across same-IP re-adds and
-	// NotReady flaps (see addPodLocked) and restarts on a new IP. Read only by
-	// LeastRequestTopKRouter's ramp.
+	// NotReady flaps (see addPodLocked) and restarts on a new IP. Read by
+	// LeastRequestTopKRouter's ramp and by the load-balance capacity warm-up.
 	readySince atomic.Int64
 }
 

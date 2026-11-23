@@ -56,6 +56,61 @@ the same settings with its own rate limiter; this is not a combined request
 budget. This configuration is also used when initializing the plugin's Kubernetes
 caches. These flags control API server traffic, not inference request QPS.
 
+Gateway Plugin Graceful Shutdown
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+On SIGTERM or SIGINT, the plugin marks gRPC health as ``NOT_SERVING`` and drains
+existing gRPC streams before stopping gateway services, state synchronization,
+and cache workers. ``--graceful-shutdown-timeout`` bounds this drain and forces
+remaining RPCs to stop at its deadline. It defaults to ``20s`` and must be
+positive, leaving 10 seconds for cleanup within the default Kubernetes
+30-second termination grace period.
+
+For longer streams, enable ``gatewayPlugin.gracefulShutdown.enabled`` in the
+Helm chart and set ``gateway.envoyAsSideCar=false``. This requires a rebuilt
+gateway image containing the standalone ``/prestop`` binary. This command waits for
+endpoint propagation, then polls the Pod-local ``gateway_in_flight_requests``
+metric until three consecutive valid zero samples or its deadline. The plugin
+initializes the metric to zero so a Pod that has never served a request can
+drain. Missing or invalid samples and fetch failures reset the zero count.
+
+The command accepts ``--metrics-url``, ``--propagation-delay``, ``--timeout``,
+and ``--poll-interval``. The last three flags accept Go durations such as ``10s``;
+the Helm values remain integer seconds. Each fetch bypasses proxies, rejects
+redirects, and is limited to 5 seconds and the remaining hook budget. Responses
+larger than 8 MiB are treated as failed fetches. Upgrade the image and chart
+together; custom hooks invoking ``/prestop.sh`` must switch to ``/prestop``.
+The image no longer includes the shell hook or BusyBox. The existing
+``/gateway-plugins prestop`` subcommand remains available for custom hooks;
+the chart uses the smaller binary to avoid gateway package initialization.
+
+The Helm hook defaults to a 300-second total budget, including a 10-second
+propagation delay, and polls every 2 seconds. When enabled, the chart sets
+``--graceful-shutdown-timeout`` from ``grpcDrainTimeoutSeconds`` (30 seconds by
+default). Set ``terminationGracePeriodSeconds`` to at least ``timeoutSeconds +
+grpcDrainTimeoutSeconds + 10``. The 10-second cleanup reserve is a minimum:
+with ``AIBRIX_STATESYNC_ENABLED=true``, state synchronization alone can wait up
+to 90 seconds, while HTTP shutdown and the OpenTelemetry flush can each take
+another 5 seconds. Increase the Pod grace period to cover the enabled services.
+
+The hook and its rollout settings are disabled by default. Enabling the hook
+sets ``maxUnavailable: 0``, ``maxSurge: 1``, and ``minReadySeconds: 10``; reserve
+capacity for the extra Pod. The bounded gRPC drain and shutdown ordering apply
+to rebuilt gateway images even when the Helm hook is disabled.
+
+Configure separately deployed Envoy proxies with
+``gateway.envoyProxy.gracefulShutdown.enabled``. This requires Envoy Gateway
+v1.2.0 or later with matching ``EnvoyProxy`` CRDs, uses its native shutdown
+manager, and preserves its generated lifecycle hooks. Upgrade the controller
+and CRDs together: older CRDs may prune ``spec.shutdown`` without enabling
+draining. Recheck the generated hooks and shutdown-manager arguments when
+upgrading Envoy Gateway. See the
+`Helm chart shutdown settings <https://github.com/vllm-project/aibrix/blob/main/dist/chart/README.md#gateway-plugin-graceful-shutdown>`_
+for configuration examples and budget constraints. Validate plugin and Envoy
+rolling updates separately with long SSE streams, including an idle Pod and
+an over-budget stream; keep the other gateway components and model backends
+available during each test.
+
 Gateway Plugin Model Discovery and Listing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -113,12 +168,14 @@ discovery completes and returns the same 503 while its cache is unavailable.
 This only covers requests that reach the plugin; when no gateway process or
 ready Service endpoint is reachable, the front proxy controls the response.
 
-The gateway plugin serves ``GET /v1/models`` on its HTTP port. The standard
-Kubernetes Envoy route still sends this path to the metadata service; route
-it to the plugin HTTP port if clients should receive the plugin's list. For
-the default Kustomize installation, this optional HTTPRoute sends the exact
-path to the plugin Service on port 8080. The exact match takes precedence over
-the existing metadata route's prefix match, while ``/v1/files`` and
+The gateway plugin serves both ``GET /v1/models`` and ``GET /v1/models/`` on
+its HTTP port, including query strings, through the same handler without
+redirects. The standard Kubernetes Envoy route still sends model-list requests
+to the metadata service; route them to the plugin HTTP port if clients should
+receive the plugin's list. For the default Kustomize installation, this optional
+HTTPRoute sends both ``/v1/models`` and ``/v1/models/`` to the plugin Service on
+port 8080. These exact matches take precedence over the existing metadata
+route's prefix match, while ``/v1/files`` and
 ``/v1/batches`` keep their existing destination:
 
 .. code-block:: yaml
@@ -136,6 +193,9 @@ the existing metadata route's prefix match, while ``/v1/files`` and
             - path:
                 type: Exact
                 value: /v1/models
+            - path:
+                type: Exact
+                value: /v1/models/
           backendRefs:
             - name: aibrix-gateway-plugins
               port: 8080

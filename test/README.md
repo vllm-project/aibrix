@@ -130,6 +130,10 @@ or
 ./test/run-e2e-tests.sh
 ```
 
+When the suite fails, the runner collects the logs of the `aibrix-system` pods after the `go test`
+output, which puts a failed test thousands of lines from the end of the log. It therefore lists the
+failed tests again under `Failed e2e tests:`, just before the cleanup output.
+
 **Environment Variables:**
 - `KIND_E2E=true` - Creates Kind cluster with proper configuration
 - `INSTALL_AIBRIX=true` - Builds images, installs dependencies, and deploys AIBrix

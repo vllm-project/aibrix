@@ -592,3 +592,107 @@ func TestSelectCandidates_CountsPaths(t *testing.T) {
 	}
 	assert.Equal(t, before, after, "decisions the stage leaves alone are not counted")
 }
+
+// The gateway runs the stage a second time when the blacklist leaves a request's candidates
+// mostly excluded. The pass narrows as SelectCandidates does but is not a second decision: the
+// counter says how many requests the stage narrowed.
+func TestReselectCandidates_NarrowsWithoutCountingAgain(t *testing.T) {
+	pods := candidatePods(40)
+	ctx := routingOverridesContext(t, `{"candidate":{"k":8}}`)
+	ctx.Model = "reselect-model"
+	ctx.Algorithm = RouterRandom
+	ctx.ResolvedStrategy = string(RouterRandom)
+	ResolveRoutingOverrides(ctx)
+
+	before := selectionCount(t, "reselect-model", candidatePathNoEstimate)
+	first := SelectCandidates(ctx, nil, plainRouter{}, pods, nil)
+	require.Len(t, first, 8)
+	require.Equal(t, before+1, selectionCount(t, "reselect-model", candidatePathNoEstimate))
+
+	second := ReselectCandidates(ctx, nil, plainRouter{}, pods)
+
+	require.Len(t, second, 8, "the second pass narrows to K as the first does")
+	requireDistinctSubset(t, second, pods)
+	assert.Equal(t, before+1, selectionCount(t, "reselect-model", candidatePathNoEstimate),
+		"one request is one narrowing, however many passes it takes")
+}
+
+// filterScout runs on the bounded scout before estimation and before excludeInflightSaturated:
+// excluded high-scoring pods cannot win the K/2 ranked slots, filterScout never scans the whole
+// fleet, and inflight drops do not shrink the denominator filterScout judges its cap on.
+func TestSelectCandidates_ScoutFilterExcludesBeforeInflightAndRanking(t *testing.T) {
+	const k, ranked = 8, 4
+	pods := candidatePods(200)
+	excluded := map[*v1.Pod]bool{
+		pods[199]: true,
+		pods[198]: true,
+		pods[197]: true,
+		pods[196]: true,
+	}
+	found := []*v1.Pod{pods[199], pods[198], pods[197], pods[196], pods[195], pods[194], pods[193], pods[192]}
+
+	// Mark every healthy pod except pods[195..192] as inflight-saturated. If
+	// excludeInflightSaturated ran before filterScout, filterScout would see only 8 pods
+	// (half excluded) instead of the full bounded scout (4K + K).
+	approx := make(map[string]int64, len(pods))
+	for i, pod := range pods {
+		if excluded[pod] || (i >= 192 && i <= 195) {
+			approx[utils.GeneratePodKey(pod.Namespace, pod.Name)] = 0
+		} else {
+			approx[utils.GeneratePodKey(pod.Namespace, pod.Name)] = 4
+		}
+	}
+	c := &countingCache{Cache: cache.NewWithPodsForTest(pods, "m1"), approx: approx}
+
+	ctx := routingOverridesContext(t, `{"candidate":{"k":8}}`)
+	ctx.Model = "m1"
+	ctx.Algorithm = RouterPrefixCache
+	ctx.ResolvedStrategy = string(RouterPrefixCache)
+	ctx.ConfigProfile.RequestsInflight = 4
+	ResolveRoutingOverrides(ctx)
+
+	var seenScoutSizes []int
+	filterScout := func(scout []*v1.Pod) []*v1.Pod {
+		seenScoutSizes = append(seenScoutSizes, len(scout))
+		kept := make([]*v1.Pod, 0, len(scout))
+		for _, pod := range scout {
+			if !excluded[pod] {
+				kept = append(kept, pod)
+			}
+		}
+		return kept
+	}
+
+	e := scoreByIndex(pods, types.PolarityMost)
+	got := SelectCandidates(ctx, c, finder{estimator: e, found: found}, pods, filterScout)
+
+	require.Len(t, got, k)
+	assert.Equal(t, []*v1.Pod{pods[195], pods[194], pods[193], pods[192]}, got[:ranked],
+		"the ranked slots skip the filtered pods and go to the best remaining pods")
+	require.Len(t, seenScoutSizes, 1, "filterScout runs once per stage")
+	assert.GreaterOrEqual(t, seenScoutSizes[0], 4*k,
+		"filterScout sees the full bounded scout before excludeInflightSaturated shrinks it")
+	assert.LessOrEqual(t, seenScoutSizes[0], 4*k+k, "filterScout sees the bounded scout only")
+	assert.Less(t, seenScoutSizes[0], len(pods), "filterScout never scans the whole fleet")
+	require.Len(t, c.approxSizes, 1)
+	assert.Equal(t, seenScoutSizes[0]-len(excluded), c.approxSizes[0],
+		"excludeInflightSaturated runs on the post-filter scout, not on excluded pods")
+}
+
+// If filterScout drops every pod in the scout, SelectCandidates keeps the unfiltered scout so
+// ranking still produces K candidates and the caller's fallback stays in charge.
+func TestSelectCandidates_ScoutFilterEmptyFallbackKeepsScout(t *testing.T) {
+	pods := candidatePods(20)
+	ctx := routingOverridesContext(t, `{"candidate":{"k":4}}`)
+	ctx.Model = "m1"
+	ctx.Algorithm = RouterLoadBalance
+	ctx.ResolvedStrategy = string(RouterLoadBalance)
+	ResolveRoutingOverrides(ctx)
+
+	got := SelectCandidates(ctx, nil, scoreByIndex(pods, types.PolarityMost), pods, func([]*v1.Pod) []*v1.Pod {
+		return nil
+	})
+
+	require.Len(t, got, 4)
+	assert.Equal(t, []*v1.Pod{pods[19], pods[18]}, got[:2], "empty filter falls back to the unfiltered scout")
+}

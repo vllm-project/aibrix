@@ -20,8 +20,10 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -559,6 +561,17 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			expectImbalance: false,
 		},
 		{
+			// The peer sum fits uint64 and puts the relative threshold well above the maximum.
+			name:            "sum_of_other_counts_exceeds_int_range",
+			requestCounts:   map[string]int{"p0": math.MaxInt, "p1": math.MaxInt, "p2": math.MaxInt / 2},
+			expectImbalance: false,
+		},
+		{
+			name:            "sum_of_other_counts_exceeds_uint64_range_on_64_bit",
+			requestCounts:   map[string]int{"p0": math.MaxInt, "p1": math.MaxInt, "p2": math.MaxInt, "p3": math.MaxInt, "p4": 8},
+			expectImbalance: false,
+		},
+		{
 			name:            "small_absolute_gap_no_imbalance",
 			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 5},
 			expectImbalance: false, // gap=5 < minGap=8
@@ -569,11 +582,11 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			expectImbalance: false, // gap=7 < minGap=8
 		},
 		{
-			// Two pods skip the relative factor check (it never holds for n=2 with factor=2)
-			// and fire on the absolute gap alone.
+			// The 8-request gap triggers the two-pod gate even though 18 is below the
+			// relative threshold of 2*(10+1) = 22.
 			name:            "two_pods_gap_at_min_triggers",
-			requestCounts:   map[string]int{"p0": 0, "p1": 8},
-			expectImbalance: true, // gap=8 >= minGap=8
+			requestCounts:   map[string]int{"p0": 10, "p1": 18},
+			expectImbalance: true,
 			expectMinPods:   []string{"p0"},
 		},
 		{
@@ -636,7 +649,7 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			result, _, _, imbalanced := getTargetPodListOnLoadImbalance(defaultNamespaceKeys(tt.requestCounts), pods, podRunningRequestImbalanceFactor, podRunningRequestImbalanceMinGap)
 			assert.Equal(t, tt.expectImbalance, imbalanced)
 			if tt.expectImbalance {
-				assert.NotEmpty(t, result)
+				require.NotEmpty(t, result)
 				for _, pod := range result {
 					assert.Contains(t, tt.expectMinPods, pod.Name)
 				}
@@ -652,20 +665,136 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 	}
 }
 
-// TestLoadBalanceScoreAll_SkewedTrafficNoLongerLooksFaster replays the state #3450 measured one
-// minute into a 73:27 skew. The total output-token rates were 271 vs 96 tokens/s, which made the
-// scores equal and held the split. The per-request rate is ~46 on both pods, so the running counts
-// decide and the idle pod wins.
+func TestGetTargetPodListOnLoadImbalance_WidePeerSumCanTriggerGate(t *testing.T) {
+	peerLoad := int64(3_800_000_000_000_000_000)
+	if peerLoad > int64(math.MaxInt) {
+		t.Skip("load counts require a 64-bit int")
+	}
+	counts := map[string]int{"busy": math.MaxInt}
+	var peers []*v1.Pod
+	for _, name := range []string{"p0", "p1", "p2", "p3", "p4"} {
+		peers = append(peers, makeLBPod(name, ""))
+		counts[name] = int(peerLoad)
+	}
+	pods := append([]*v1.Pod{makeLBPod("busy", "")}, peers...)
+
+	// The peer sum exceeds MaxUint64, but their mean is below half of the busiest count.
+	result, _, _, imbalanced := getTargetPodListOnLoadImbalance(defaultNamespaceKeys(counts), pods, 2, 8)
+	assert.True(t, imbalanced)
+	assert.ElementsMatch(t, peers, result)
+}
+
+func TestGetTargetPodListOnLoadImbalance_PreservesLargeCountThreshold(t *testing.T) {
+	var large int64 = 1 << 53
+	if int64(math.MaxInt) < large+3 {
+		t.Skip("load counts require a 64-bit int")
+	}
+	pods := []*v1.Pod{makeLBPod("p0", ""), makeLBPod("p1", ""), makeLBPod("p2", "")}
+	counts := defaultNamespaceKeys(map[string]int{"p0": int(large + 1), "p1": 1, "p2": int(large + 3)})
+
+	// Preserve the integer-sum decision here if the accumulation is refactored.
+	// Converting each peer count to float64 before summing would trip the gate.
+	result, _, _, imbalanced := getTargetPodListOnLoadImbalance(counts, pods, 2, 8)
+	assert.False(t, imbalanced)
+	assert.Empty(t, result)
+}
+
+// withCapacitySignal selects the capacity signal for one test.
+func withCapacitySignal(t *testing.T, signal string) {
+	t.Helper()
+	orig := loadBalanceCapacitySignal
+	loadBalanceCapacitySignal = signal
+	t.Cleanup(func() { loadBalanceCapacitySignal = orig })
+}
+
+// TestLoadBalanceScoreAll_SkewedTrafficNoLongerLooksFaster is the state measured on #3450: two
+// identical pods split 73:27. The busier one runs 5 requests against 2 and completes 2.7x the
+// tokens per second, so by the total rate it looks 2.7x faster and scores lower, and the split
+// holds. Per request both decode at the same speed, and the less loaded pod scores lower.
 func TestLoadBalanceScoreAll_SkewedTrafficNoLongerLooksFaster(t *testing.T) {
 	pods := []*v1.Pod{makeLBPod("busy", "1.1.1.1"), makeLBPod("idle", "2.2.2.2")}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
-		"busy": lbPodMetrics(5, 46.0, 0),
-		"idle": lbPodMetrics(2, 45.8, 0),
+		"busy": {
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 5},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 46.0},
+			metrics.RealtimeOutputTokenRateEWMA:              &metrics.SimpleMetricValue{Value: 270},
+		},
+		"idle": {
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 45.8},
+			metrics.RealtimeOutputTokenRateEWMA:              &metrics.SimpleMetricValue{Value: 97},
+		},
 	})
 	r := &loadBalanceRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	byName := func() map[string]float64 {
+		list := podsFromCache(c) // one list: its order is not stable between calls
+		scores, scored, err := r.ScoreAll(ctx, list)
+		assert.NoError(t, err)
+		out := map[string]float64{}
+		for i, pod := range list.All() {
+			assert.True(t, scored[i])
+			out[pod.Name] = scores[i]
+		}
+		return out
+	}
 
-	target, err := r.Route(ctx, podsFromCache(c))
-	assert.NoError(t, err)
-	assert.Equal(t, "2.2.2.2:8000", target)
+	perRequest := byName()
+	assert.Less(t, perRequest["idle"], perRequest["busy"], "per-request signal: the less loaded pod wins")
+	assert.InDelta(t, 5/46.0, perRequest["busy"], 1e-9)
+
+	withCapacitySignal(t, capacitySignalTotal)
+	total := byName()
+	assert.Less(t, total["busy"], total["idle"], "total rate: the busier pod looks faster and keeps winning")
+	assert.InDelta(t, 5/270.0, total["busy"], 1e-9)
+}
+
+// A per-request estimate that was last updated too long ago describes a load the pod no longer
+// has: the pod is scored like one without an estimate, at the mean of the pods that have one.
+func TestLoadBalanceCapacities_IgnoresAStalePerRequestEstimate(t *testing.T) {
+	pods := []*v1.Pod{makeLBPod("p1", "1.1.1.1"), makeLBPod("p2", "2.2.2.2")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": lbPodMetrics(1, 40, 0),
+		"p2": lbPodMetrics(1, 160, 0),
+	})
+	r := &loadBalanceRouter{cache: c}
+	all := podsFromCache(c).All()
+	index := map[string]int{}
+	for i, pod := range all {
+		index[pod.Name] = i
+	}
+
+	caps := r.capacities(all)
+	assert.Equal(t, 40.0, caps[index["p1"]])
+	assert.Equal(t, 160.0, caps[index["p2"]])
+
+	orig := loadBalanceCapacityMaxAge
+	t.Cleanup(func() { loadBalanceCapacityMaxAge = orig })
+	time.Sleep(5 * time.Millisecond)
+	loadBalanceCapacityMaxAge = time.Millisecond // both records are now older than the limit
+	caps = r.capacities(all)
+	assert.Equal(t, []float64{1, 1}, caps, "no usable estimate: uniform capacity")
+
+	// The total-rate signal has no age limit, as before.
+	withCapacitySignal(t, capacitySignalTotal)
+	c2 := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": {metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 300}},
+		"p2": {metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 100}},
+	})
+	time.Sleep(5 * time.Millisecond)
+	caps = (&loadBalanceRouter{cache: c2}).capacities(podsFromCache(c2).All())
+	assert.ElementsMatch(t, []float64{300, 100}, caps)
+}
+
+// The signal is the per-request rate unless the variable selects the total rate; anything else
+// falls back to the per-request rate. The age limit is pinned.
+func TestLoadLoadBalanceCapacitySignal(t *testing.T) {
+	for raw, want := range map[string]string{
+		"": capacitySignalPerRequest, "per-request": capacitySignalPerRequest, "total": capacitySignalTotal,
+		"Total": capacitySignalPerRequest, "bogus": capacitySignalPerRequest,
+	} {
+		t.Setenv(loadBalanceCapacitySignalEnv, raw)
+		assert.Equal(t, want, loadLoadBalanceCapacitySignal(), "env %q", raw)
+	}
+	assert.Equal(t, 3*time.Minute, loadBalanceCapacityMaxAgeDefault)
 }

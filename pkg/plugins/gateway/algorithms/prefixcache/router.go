@@ -479,7 +479,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	// Compute request counts once; reused by pod selection and log calls.
 	podRequestCount := routeutil.RequestCounts(ctx, p.cache, readyPods)
 
-	matchedPods, prefixHashes = p.matchPrefix(ctx, readyPods, tokens, false)
+	matchedPods, prefixHashes = p.matchPrefixList(ctx, readyPodList, tokens, false)
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes, "cached_blocks", p.prefixCacheIndexer.Len())
 	}
@@ -600,7 +600,7 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 		return fmt.Errorf("sync indexer not available for KV sync routing")
 	}
 	indexModel, loraID := k.indexContext(modelName)
-	_, prefixHashes := k.matchPrefix(ctx, pods, tokens, indexModel, loraID, false)
+	_, prefixHashes := k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, false)
 	if len(prefixHashes) == 0 {
 		return nil
 	}
@@ -627,12 +627,18 @@ func (p prefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodList type
 		return nil, nil, err
 	}
 
-	matchedPods, _ := p.matchPrefix(ctx, pods, tokens, remember)
+	matchedPods, _ := p.matchPrefixList(ctx, readyPodList, tokens, remember)
 
-	for i, pod := range pods {
-		matchPercent := matchedPods[utils.GeneratePodKey(pod.Namespace, pod.Name)]
-		scores[i] = float64(matchPercent)
-		scored[i] = true
+	if len(matchedPods) > 0 {
+		for i, pod := range pods {
+			matchPercent := matchedPods[utils.GeneratePodKey(pod.Namespace, pod.Name)]
+			scores[i] = float64(matchPercent)
+			scored[i] = true
+		}
+	} else {
+		for i := range scored {
+			scored[i] = true
+		}
 	}
 
 	return scores, scored, nil
@@ -646,35 +652,77 @@ func (p prefixCacheRouter) CandidateScores(ctx *types.RoutingContext, readyPodLi
 	return p.scoreAll(ctx, readyPodList, true)
 }
 
+func (p prefixCacheRouter) matchForCandidates(ctx *types.RoutingContext, readyPodList types.PodList) (map[string]int, error) {
+	if p.kvSyncRouter != nil {
+		return p.kvSyncRouter.matchForCandidates(ctx, readyPodList)
+	}
+	tokens, err := p.tokenize(ctx, readyPodList)
+	if err != nil {
+		return nil, err
+	}
+	matchedPods, _ := p.matchPrefixList(ctx, readyPodList, tokens, true)
+	return matchedPods, nil
+}
+
+// matchedCandidate pairs a prefix-holding pod with its match percentage for ranking.
+type matchedCandidate struct {
+	pod   *v1.Pod
+	score int
+}
+
 // FindCandidates implements types.CandidateFinder: up to max ready pods that hold a cached
 // prefix of this request, longest match first. Holders of the same match length are
 // interchangeable here, so they are shuffled and a hot prefix spreads over all its holders. The
 // lookup covers every ready pod and is kept on ctx, so CandidateScores and ScoreAll on any of
 // them reuse it.
+//
+// When readyPodList is a *utils.PodArray snapshot, both the ready key set and holder-to-pod
+// lookup come from its lazy KeySet/ByKey caches, keeping FindCandidates O(holders log holders)
+// rather than scanning or allocating O(N) over the entire fleet.
 func (p prefixCacheRouter) FindCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
-	if max <= 0 {
+	if max <= 0 || readyPodList == nil {
 		return nil
 	}
-	scores, scored, err := p.scoreAll(ctx, readyPodList, true)
+	matchedPods, err := p.matchForCandidates(ctx, readyPodList)
 	if err != nil {
 		klog.V(4).ErrorS(err, "prefix-cache candidate lookup skipped", "request_id", ctx.RequestID)
 		return nil
 	}
-	pods := readyPodList.All()
-	matched := make([]int, 0, max)
-	for i := range pods {
-		if scored[i] && scores[i] > 0 {
-			matched = append(matched, i)
+	if len(matchedPods) == 0 {
+		return nil
+	}
+
+	var byKey map[string]*v1.Pod
+	if arr, ok := readyPodList.(*utils.PodArray); ok && arr != nil {
+		byKey = arr.ByKey()
+	} else {
+		pods := readyPodList.All()
+		byKey = make(map[string]*v1.Pod, len(pods))
+		for _, pod := range pods {
+			byKey[utils.GeneratePodKey(pod.Namespace, pod.Name)] = pod
 		}
 	}
-	rand.Shuffle(len(matched), func(a, b int) { matched[a], matched[b] = matched[b], matched[a] })
-	sort.SliceStable(matched, func(a, b int) bool { return scores[matched[a]] > scores[matched[b]] })
-	if len(matched) > max {
-		matched = matched[:max]
+
+	holders := make([]matchedCandidate, 0, len(matchedPods))
+	for podKey, matchPercent := range matchedPods {
+		if matchPercent <= 0 {
+			continue
+		}
+		if pod := byKey[podKey]; pod != nil {
+			holders = append(holders, matchedCandidate{pod: pod, score: matchPercent})
+		}
 	}
-	found := make([]*v1.Pod, len(matched))
-	for j, i := range matched {
-		found[j] = pods[i]
+	if len(holders) == 0 {
+		return nil
+	}
+	rand.Shuffle(len(holders), func(a, b int) { holders[a], holders[b] = holders[b], holders[a] })
+	sort.SliceStable(holders, func(a, b int) bool { return holders[a].score > holders[b].score })
+	if len(holders) > max {
+		holders = holders[:max]
+	}
+	found := make([]*v1.Pod, len(holders))
+	for i, h := range holders {
+		found[i] = h.pod
 	}
 	return found
 }
@@ -687,6 +735,27 @@ func (p prefixCacheRouter) Polarity() types.Polarity {
 // ScoreAll computes the scores for all ready pods in a single batch operation for KV sync router.
 func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	return k.scoreAll(ctx, readyPodList, false)
+}
+
+func (k *kvSyncPrefixCacheRouter) matchForCandidates(ctx *types.RoutingContext, readyPodList types.PodList) (map[string]int, error) {
+	pods := readyPodList.All()
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName, _ = constants.ModelNameFromMetadata(pods[0].Labels, pods[0].Annotations)
+	}
+
+	indexModel, loraID := k.indexContext(modelName)
+
+	tokens, err := k.tokenize(ctx, readyPodList)
+	if err != nil {
+		return nil, err
+	}
+
+	if k.syncIndexer == nil {
+		return nil, fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	matchedPods, _ := k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, true)
+	return matchedPods, nil
 }
 
 func (k *kvSyncPrefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodList types.PodList, remember bool) ([]float64, []bool, error) {
@@ -709,13 +778,19 @@ func (k *kvSyncPrefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodLi
 	if k.syncIndexer == nil {
 		return nil, nil, fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	matchedPods, _ := k.matchPrefix(ctx, pods, tokens, indexModel, loraID, remember)
+	matchedPods, _ := k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, remember)
 
-	for i, pod := range pods {
-		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-		matchPercent := matchedPods[podKey]
-		scores[i] = float64(matchPercent)
-		scored[i] = true
+	if len(matchedPods) > 0 {
+		for i, pod := range pods {
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			matchPercent := matchedPods[podKey]
+			scores[i] = float64(matchPercent)
+			scored[i] = true
+		}
+	} else {
+		for i := range scored {
+			scored[i] = true
+		}
 	}
 
 	return scores, scored, nil
@@ -734,58 +809,91 @@ func (p prefixCacheRouter) Cleanup() error {
 	return nil
 }
 
+type rawChatMessageValidation struct {
+	Role         string          `json:"role"`
+	Content      json.RawMessage `json:"content"`
+	ToolCalls    json.RawMessage `json:"tool_calls"`
+	FunctionCall json.RawMessage `json:"function_call"`
+}
+
+func isEmptyJSONContainer(b []byte, open, close byte) bool {
+	if len(b) < 2 || b[0] != open || b[len(b)-1] != close {
+		return false
+	}
+	return len(bytes.TrimSpace(b[1:len(b)-1])) == 0
+}
+
+func hasPayload(raw json.RawMessage, isContainer bool, open, close byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+	if isContainer && isEmptyJSONContainer(trimmed, open, close) {
+		return false
+	}
+	return true
+}
+
 // buildTokenizeInputFromChatRequest converts ChatCompletionRequest to TokenizeInput
-// preserving multimodal content and vLLM-specific parameters. tools is the raw "tools"
-// array of the request, forwarded so the chat template renders the tool definitions.
-func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, tools json.RawMessage) (*tokenizer.TokenizeInput, error) {
-	if len(chatReq.Messages) == 0 {
+// using rawMsgs and tools byte slices when available to forward unmodelled fields verbatim
+// and preserve wire fidelity (#3307).
+func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, rawMsgs json.RawMessage, tools json.RawMessage) (*tokenizer.TokenizeInput, error) {
+	if len(rawMsgs) == 0 && (chatReq == nil || len(chatReq.Messages) == 0) {
 		return nil, fmt.Errorf("no messages in chat completion request")
 	}
 
-	// Convert OpenAI messages to tokenizer messages, preserving content structure
-	messages := make([]tokenizer.ChatMessage, len(chatReq.Messages))
-	for i, msg := range chatReq.Messages {
-		role := msg.GetRole()
-		if role == nil {
+	if len(rawMsgs) == 0 {
+		var err error
+		rawMsgs, err = json.Marshal(chatReq.Messages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal messages: %w", err)
+		}
+	}
+
+	var validationMsgs []rawChatMessageValidation
+	if err := json.Unmarshal(rawMsgs, &validationMsgs); err != nil {
+		return nil, fmt.Errorf("failed to parse messages: %w", err)
+	}
+
+	if len(validationMsgs) == 0 {
+		return nil, fmt.Errorf("no messages in chat completion request")
+	}
+
+	for i, msg := range validationMsgs {
+		if msg.Role == "" {
 			return nil, fmt.Errorf("message at index %d has no role", i)
 		}
-
-		// Directly marshal the content to preserve its structure
-		content := msg.GetContent()
-		contentAny := content.AsAny()
-		if contentAny == nil {
+		hasContent := len(bytes.TrimSpace(msg.Content)) > 0 && !bytes.Equal(bytes.TrimSpace(msg.Content), []byte("null"))
+		hasToolCalls := hasPayload(msg.ToolCalls, true, '[', ']')
+		hasFunctionCall := hasPayload(msg.FunctionCall, true, '{', '}')
+		if !hasContent && !hasToolCalls && !hasFunctionCall {
 			return nil, fmt.Errorf("message at index %d has nil content", i)
 		}
-		contentJSON, err := json.Marshal(contentAny)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal message content at index %d: %w", i, err)
-		}
+	}
 
-		messages[i] = tokenizer.ChatMessage{
-			Role:    *role,
-			Content: contentJSON,
-		}
+	if chatReq != nil && len(chatReq.Messages) > 0 && len(validationMsgs) != len(chatReq.Messages) {
+		return nil, fmt.Errorf("message count mismatch: %d in raw payload vs %d in parsed request", len(validationMsgs), len(chatReq.Messages))
 	}
 
 	// Extract vLLM-specific parameters with defaults matching vLLM behavior
 	addSpecialTokens := false
-	if chatReq.AddSpecialTokens != nil {
+	if chatReq != nil && chatReq.AddSpecialTokens != nil {
 		addSpecialTokens = *chatReq.AddSpecialTokens
 	}
 
 	addGenerationPrompt := true
-	if chatReq.AddGenerationPrompt != nil {
+	if chatReq != nil && chatReq.AddGenerationPrompt != nil {
 		addGenerationPrompt = *chatReq.AddGenerationPrompt
 	}
 
 	returnTokenStrings := false
-	if chatReq.ReturnTokenStrings != nil {
+	if chatReq != nil && chatReq.ReturnTokenStrings != nil {
 		returnTokenStrings = *chatReq.ReturnTokenStrings
 	}
 
 	return &tokenizer.TokenizeInput{
 		Type:                tokenizer.ChatInput,
-		Messages:            messages,
+		Messages:            rawMsgs,
 		AddSpecialTokens:    addSpecialTokens,
 		AddGenerationPrompt: addGenerationPrompt,
 		ReturnTokenStrings:  returnTokenStrings,
@@ -793,23 +901,42 @@ func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, too
 	}, nil
 }
 
+// rawChatPayload extracts the "messages" and "tools" arrays of a chat request body
+// in a single unmarshal pass, preserving unmodelled fields and exact wire bytes (#3307).
+func rawChatPayload(body []byte) (messages json.RawMessage, tools json.RawMessage) {
+	if !bytes.Contains(body, []byte(`"messages"`)) && !bytes.Contains(body, []byte(`"tools"`)) {
+		return nil, nil
+	}
+	var req struct {
+		Messages json.RawMessage `json:"messages"`
+		Tools    json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, nil
+	}
+	m := bytes.TrimSpace(req.Messages)
+	if len(m) > 0 && m[0] == '[' {
+		messages = m
+	}
+	t := bytes.TrimSpace(req.Tools)
+	if len(t) > 0 && t[0] == '[' {
+		tools = t
+	}
+	return messages, tools
+}
+
+// rawChatMessages returns the "messages" array of a chat request body exactly as sent, or nil
+// when the field is absent, null or not an array.
+func rawChatMessages(body []byte) json.RawMessage {
+	msgs, _ := rawChatPayload(body)
+	return msgs
+}
+
 // rawChatTools returns the "tools" array of a chat request body exactly as sent, or nil
 // when the field is absent, null or not an array. The raw bytes are forwarded instead of
 // re-encoding the parsed request, which would drop fields the OpenAI types do not model.
 func rawChatTools(body []byte) json.RawMessage {
-	if !bytes.Contains(body, []byte(`"tools"`)) {
-		return nil
-	}
-	var req struct {
-		Tools json.RawMessage `json:"tools"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil
-	}
-	tools := bytes.TrimSpace(req.Tools)
-	if len(tools) == 0 || tools[0] != '[' {
-		return nil
-	}
+	_, tools := rawChatPayload(body)
 	return tools
 }
 
@@ -841,7 +968,8 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	}
 
 	// Build TokenizeInput from request
-	input, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatTools(ctx.ReqBody))
+	rawMsgs, tools := rawChatPayload(ctx.ReqBody)
+	input, err := buildTokenizeInputFromChatRequest(&chatReq, rawMsgs, tools)
 	if err != nil {
 		klog.V(4).InfoS("failed to build tokenize input, falling back to text",
 			"request_id", ctx.RequestID,
@@ -862,7 +990,7 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	tokens := tokenizer.IntToByteArray(result.Tokens)
 	klog.V(4).InfoS("tokenized using chat template",
 		"request_id", ctx.RequestID,
-		"message_count", len(input.Messages),
+		"message_count", len(chatReq.Messages),
 		"tools_included", len(input.Tools) > 0,
 		"token_count", len(result.Tokens),
 		"add_generation_prompt", input.AddGenerationPrompt,
@@ -924,7 +1052,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		recordRoutingError(modelName, "sync_indexer_unavailable", true)
 		return "", fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	matchedPods, prefixHashes = k.matchPrefix(ctx, readyPods, tokens, indexModel, loraID, false)
+	matchedPods, prefixHashes = k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, false)
 
 	podRequestCount := routeutil.RequestCounts(ctx, k.cache, readyPods)
 

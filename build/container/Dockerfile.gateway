@@ -48,6 +48,11 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     -ldflags="-s -w -linkmode=external -extldflags '${CGO_LDFLAGS}'" \
     -o gateway-plugins ./cmd/plugins
 
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o prestop ./cmd/prestop
+
 # Gather shared libs
 RUN set -eux; \
     mkdir -p /workspace/deps; \
@@ -63,6 +68,7 @@ FROM ${RUNTIME_IMAGE}
 WORKDIR /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /workspace/gateway-plugins .
+COPY --from=builder /workspace/prestop .
 COPY --from=builder /workspace/deps /gateway-plugins-lib
 ENV LD_LIBRARY_PATH=/gateway-plugins-lib
 USER 65532:65532

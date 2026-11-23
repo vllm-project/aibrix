@@ -46,7 +46,7 @@ In most Kubernetes setups, ``LoadBalancer`` is supported by default. Capture the
 Verify the route
 ^^^^^^^^^^^^^^^^
 
-Verify that the ``HTTPRoute`` status is ``Accepted`` before sending traffic:
+Before sending traffic through a model's ``HTTPRoute``, check that one entry in ``status.parents`` reports both ``Accepted=True`` and ``ResolvedRefs=True``. While a new route is pending, the gateway plugin returns HTTP 503 for inference requests with no routing strategy selected.
 
 .. code-block:: bash
 
@@ -217,18 +217,18 @@ General load balancing
 
   .. code-block:: text
 
-      score = (running_requests + λ·queued_requests) / EWMA(output_tokens_per_request_second) × (1 + α·(1 − kv_free)²)
+      score = (running_requests + λ·queued_requests) / EWMA(output_tokens_per_second) × (1 + α·(1 − kv_free)²)
 
-  - ``EWMA(output_tokens_per_request_second)`` is the gateway-observed per-request rate of the pod: the output tokens it completed divided by the time those requests spent on it. It does not grow with the share of traffic the pod receives.
+  - ``EWMA(output_tokens_per_second)`` is the gateway-observed rate at which the pod completes output tokens.
   - ``kv_free`` is the pod's free KV-cache fraction.
   - ``λ`` defaults to ``0`` (the running count already includes requests queued in the engine) and ``α`` to ``2``.
   - **Tuning:** ``λ``, ``α`` and the free-KV-cache threshold below are set with ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``, ``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` and ``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``, respectively.
 
   Edge cases:
 
-  - **KV guardrail:** a pod with less than 10% free KV cache scores ``+Inf`` and is skipped. If every pod is below that threshold, the request still routes to the pod with the most KV headroom.
+  - **KV guardrail:** a pod scores ``+Inf`` and is skipped when its free KV-cache fraction falls below 10%. If every pod is below that threshold, the request still routes to the pod with the most KV headroom.
   - **Missing KV metrics:** a pod whose engine reports no KV-cache usage, or reports ``NaN``, is treated as fully free (no penalty and no guardrail).
-  - **No capacity estimate yet** (a new pod, or one with fewer than ``AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES`` completed requests): the pod is scored at the mean estimate of the others (uniform capacity when none has one).
+  - **No token-rate estimate yet:** the pod is scored at the mean estimate of the others (uniform capacity when none has one).
   - **Ties:** broken using least combined GPU+CPU KV-cache usage, falling back to a random pick if cache metrics are unavailable for the tied pods.
 
 * ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.

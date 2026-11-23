@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +52,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -110,6 +112,12 @@ type Server struct {
 	asyncJobsOnce sync.Once
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
+	// podBlacklist is the per-pod exclusion list (probe sweep, load-outlier flag,
+	// flaky re-add, upstream failure statuses) that selectTargetPod consults before routing (see the blacklist package). Its
+	// zero value is ready to use.
+	podBlacklist blacklist.PodBlacklist
+	// allBlacklistedLog throttles the "every ready pod is blacklisted" line per model.
+	allBlacklistedLog allBlacklistedLogThrottle
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -382,11 +390,14 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
 			rb.Start(shutdown, redisClient)
 		}
 	}
+	s.registerPodLifecycle()
+	s.registerPodQuarantine()
 	return s
 }
 
@@ -741,6 +752,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		// already being served on.
 		st.routerCtx.MarkDecodeResponded()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
+		s.recordPodResponse(st)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
 			s.finishRequestCount(st)
@@ -940,7 +952,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// with Redis it costs one pipelined read of the ready pods instead of up to four (#3322).
 	routeCtx.StartRunningRequestsSnapshot()
 	defer routeCtx.StopRunningRequestsSnapshot()
-	readyPods := utils.FilterRoutablePods(pods.All())
+	readyPods, routableSnapshot := routablePodsFromList(pods)
 
 	// Resolve the model config profile's routing knobs once per request: the
 	// load-imbalance gate below and every strategy on the routing path read the
@@ -982,6 +994,20 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
+	// Drop pods the blacklist currently excludes (a pod the probe sweep found dead or
+	// degraded, a load outlier, or one that just flapped back in). If that empties the list,
+	// route anyway rather than fail every request outright -- a blacklist is a
+	// soft preference, not a hard exclusion.
+	//
+	// The exclusive strategies see every ready pod, so the whole list is filtered here. Every
+	// other request is filtered after the candidate stage, on its K candidates only (below):
+	// filtering the ready list first costs a lookup per pod on every request. That holds with a
+	// replica-inflight limit too, since its filter also runs on the candidates, after the
+	// blacklist's (narrowToInflightCapacity).
+	if isExclusive {
+		readyPods = s.excludeBlacklisted(routeCtx, readyPods)
+	}
+
 	routerManager := s.routerManager
 	if routerManager == nil {
 		// Preserve compatibility for legacy tests that build Server literals. A local keeps
@@ -995,42 +1021,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", err
 	}
 
-	// narrowToInflightCapacity drops the pods already at the per-replica cap and reports the
-	// existing overload error when none is left. For non-exclusive strategies it runs on the
-	// candidate set, so the read it performs is the bounded one; it is the first reader of the
-	// per-decision snapshot, so whatever the candidate stage kept is what the rest of the
-	// decision reuses. Filtering before SelectCandidates reads every ready pod and leaves the
-	// stage nothing to save (#3463). For exclusive strategies the set is the full ready set,
-	// and the filter runs before engine validation so a request that will be rejected for
-	// saturation is not failed on a pod it never uses.
-	narrowToInflightCapacity := func(scope string) error {
-		limit := replicaInflightLimit(routeCtx)
-		if limit <= 0 {
-			return nil
-		}
-		considered := len(readyPods)
-		readyPods = s.filterSaturatedReplicaInflight(routeCtx, readyPods, limit)
-		if len(readyPods) == 0 {
-			// Every pod considered is at the cap. A full-fleet fallback would read every ready
-			// pod at the load where Redis is hottest, and a second K-pod sample would miss this
-			// decision's snapshot, so keep the existing 429 (#3463). The span records how many
-			// pods were considered, and the counter records which set that was, so a sampled-set
-			// rejection can be told from a fleet-wide one after the fact: ready_pods, set at the
-			// top of this function, is the fleet.
-			recordInflightRejection(routeCtx.Model, scope)
-			if routeCtx.Span != nil {
-				routeCtx.Span.SetAttributes(
-					attribute.Int("inflight_cap", int(limit)),
-					attribute.Int("inflight_considered_pods", considered),
-				)
-			}
-			return errReplicaInflightExceeded
-		}
-		return nil
-	}
-
 	if isExclusive {
-		if err := narrowToInflightCapacity(inflightScopeFleet); err != nil {
+		// For exclusive strategies the set is the full ready set, and the filter runs before
+		// engine validation so a request that will be rejected for saturation is not failed on
+		// a pod it never uses.
+		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflightScopeFleet); err != nil {
 			return "", err
 		}
 		if isPD {
@@ -1043,17 +1038,22 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	} else {
 		// Narrow the pods to a bounded candidate set when AIBRIX_ROUTING_CANDIDATE_K is set, so
 		// the filter, the gate and the router read running counts for those pods only (RFC #3188).
-		// The cache lets the stage skip pods already at the profile's inflight cap before ranking
-		// them, from memory only; the Redis filter below still decides the 429.
+		// Pass a cap-aware blacklist filter for the 4K scout (nil when the blacklist is off or
+		// empty) so drained excluded pods cannot steal the K/2 ranked slots (#3541), and pass the
+		// cache so the stage skips pods already at the profile's inflight cap before ranking from
+		// memory only; excludeBlacklistedCandidates and the Redis filter below stay authoritative.
+		allReady := readyPods
 		readyBeforeCandidates := len(readyPods)
-		readyPods = routing.SelectCandidates(routeCtx, s.cache, router, readyPods)
+		readyPods = selectStageCandidates(routeCtx, s.cache, router, routableSnapshot, readyPods, s.scoutBlacklistFilter())
 		// The scope is what the filter actually ran on, not which branch ran: with the candidate
 		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
+		// It is read before the blacklist drops pods, which says nothing about what was sampled.
 		scope := inflightScopeFleet
 		if len(readyPods) < readyBeforeCandidates {
 			scope = inflightScopeCandidates
 		}
-		if err := narrowToInflightCapacity(scope); err != nil {
+		readyPods = s.excludeBlacklistedCandidates(routeCtx, router, allReady, readyPods)
+		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, scope); err != nil {
 			return "", err
 		}
 		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
@@ -1061,6 +1061,10 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// strategies (pd, slo*) are exempted above: they manage their own pod subsets
 		// (prefill/decode, SLO tiers), which a blanket running-request-count filter would
 		// distort.
+		//
+		// The gate does not depend on the pod blacklist and runs with it on or off. Pods the
+		// blacklist excluded are already out of readyPods here, and the gate narrows what is
+		// left from the live counts, exactly as it does without a blacklist.
 		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
 	}
 
@@ -1083,6 +1087,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 					return "", types.ErrTargetReplicaInflightExceeded
 				}
 			}
+			// readyPods may alias the shared snapshot here (the clone guard runs below);
+			// PostRouteUpdate must treat readyPodList as read-only.
 			podList := &utils.PodArray{Pods: readyPods}
 			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
 				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
@@ -1091,6 +1097,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 		return routeCtx.TargetAddress(), nil
 	}
+	// Clone unconditionally before shuffling and routing so that every
+	// downstream mutator (utils.Shuffle and routers such as session-affinity's
+	// fallbackPod) owns a private slice, regardless of which upstream stage
+	// returned a shared snapshot.
+	readyPods = slices.Clone(readyPods)
 	// The order only breaks ties between equally scored pods, so it needs to be unbiased, not
 	// unpredictable: crypto/rand here cost a syscall per pod on every request.
 	utils.Shuffle(readyPods)
@@ -1109,6 +1120,58 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 	}
 	return addr, err
+}
+
+// routablePodsFromList returns the routable pods from pods and, when pods is a
+// *utils.PodArray, its cached Routable snapshot so downstream stages can reuse
+// snapshot-level indexes (KeySet, ByKey). Other PodList implementations fall
+// back to FilterRoutablePods with a nil snapshot. Callers must treat the
+// returned slice as read-only because it may alias a shared snapshot.
+func routablePodsFromList(pods types.PodList) ([]*v1.Pod, *utils.PodArray) {
+	if pods == nil {
+		return nil, nil
+	}
+	if arr, ok := pods.(*utils.PodArray); ok {
+		routable := arr.Routable()
+		return routable.All(), routable
+	}
+	return utils.FilterRoutablePods(pods.All()), nil
+}
+
+// isSnapshot reports whether ready is still the exact backing slice of snap
+// (same length and same first element address), meaning no upstream stage
+// narrowed or replaced it. Checking identity directly rather than enumerating
+// upstream filters stays correct if another stage is added before the candidate
+// stage in the future.
+func isSnapshot(ready []*v1.Pod, snap *utils.PodArray) bool {
+	if snap == nil {
+		return false
+	}
+	all := snap.All()
+	return len(ready) == len(all) && (len(all) == 0 || &ready[0] == &all[0])
+}
+
+// selectStageCandidates runs the candidate stage, reusing routableSnapshot only
+// when readyPods still is that exact snapshot. Otherwise it falls back cleanly
+// to readyPods so SeededPrefixMatch.Pods stays strictly scoped to the stage's
+// input.
+func selectStageCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, routableSnapshot *utils.PodArray, readyPods []*v1.Pod, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
+	if isSnapshot(readyPods, routableSnapshot) {
+		return routing.SelectCandidatesFromPodList(ctx, c, router, routableSnapshot, filterScout)
+	}
+	return routing.SelectCandidates(ctx, c, router, readyPods, filterScout)
+}
+
+// countRoutablePodsFromList returns the number of routable pods in pods,
+// reusing PodArray's cached Routable view when available.
+func countRoutablePodsFromList(pods types.PodList) int {
+	if pods == nil {
+		return 0
+	}
+	if arr, ok := pods.(*utils.PodArray); ok {
+		return arr.Routable().Len()
+	}
+	return utils.CountRoutablePods(pods.All())
 }
 
 func newEncodeExecutor() *encode.Executor {
@@ -1138,6 +1201,36 @@ func (s *Server) encodeMedia(routeCtx *types.RoutingContext, encoders []*v1.Pod)
 		return
 	}
 	s.encodeExecutor.EncodeMedia(routeCtx, encoders, target, routeCtx.RoutingOverrides().PD.PrefillRequestTimeout)
+}
+
+// httpRouteStatusError checks both conditions on the same parent. Each parent
+// reports independently and status.parents can be empty before reconciliation.
+func httpRouteStatusError(namespace, name string, parents []gatewayv1.RouteParentStatus) error {
+	var reasons []string
+	for _, parent := range parents {
+		var accepted, resolved bool
+		for _, condition := range parent.Conditions {
+			switch gatewayv1.RouteConditionType(condition.Type) {
+			case gatewayv1.RouteConditionAccepted:
+				accepted = condition.Status == metav1.ConditionTrue
+				if !accepted {
+					reasons = append(reasons, "route is not accepted: "+condition.Reason)
+				}
+			case gatewayv1.RouteConditionResolvedRefs:
+				resolved = condition.Status == metav1.ConditionTrue
+				if !resolved {
+					reasons = append(reasons, "route's object references are not resolved: "+condition.Reason)
+				}
+			}
+		}
+		if accepted && resolved {
+			return nil
+		}
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "does not have valid status: no parent reports both Accepted=True and ResolvedRefs=True")
+	}
+	return fmt.Errorf("httproute: %s/%s, %s", namespace, name, strings.Join(reasons, ", "))
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
@@ -1185,27 +1278,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			return nil, err
 		}
 
-		errMsg := []string{}
-		for _, status := range httproute.Status.Parents {
-			if len(status.Conditions) == 0 {
-				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name))
-				break
-			}
-			for _, condition := range status.Conditions {
-				if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
-					condition.Reason != string(gatewayv1.RouteReasonAccepted) {
-					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason))
-				} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
-					condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
-					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason))
-				}
-			}
-		}
-
-		var result error
-		if len(errMsg) > 0 {
-			result = errors.New(strings.Join(errMsg, ", "))
-		}
+		result := httpRouteStatusError(defaultAIBrixNamespace, name, httproute.Status.Parents)
 		ttl := s.httprouteCacheTTL
 		if result != nil {
 			ttl = s.httprouteErrorTTL
@@ -1227,6 +1300,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 }
 
 // StartHTTPServer starts the gateway's HTTP server with metrics and API handlers.
+// Both /v1/models and /v1/models/ use the same handler without redirects.
 // In local/standalone mode, Envoy routes /v1/models here since there is no metadata service.
 // In standard K8s deployment, Envoy routes /v1/models to the metadata service instead,
 // so the /v1/models handler here is never reached — no conflict.
@@ -1246,6 +1320,7 @@ func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Serv
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/v1/models", handler)
+	mux.HandleFunc("/v1/models/{$}", handler)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -1314,7 +1389,10 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) Shutdown() {
 	if s.shutdown != nil {
-		s.shutdownOnce.Do(func() { close(s.shutdown) })
+		s.shutdownOnce.Do(func() {
+			close(s.shutdown)
+			s.unregisterFromCache()
+		})
 	}
 	if s.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

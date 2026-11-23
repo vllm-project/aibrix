@@ -19,8 +19,11 @@ package cache
 import (
 	"context"
 	"math"
+	"math/rand/v2"
+	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,13 +35,15 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// The remote running reader (#3442, PR (a)) reads the other gateways' running counts from the
+// The remote running reader (#3442) reads the other gateways' running counts from the
 // aibrix:rrq:* hashes the request path already keeps live, instead of from the gateway snapshot.
-// It is off by default. While it is off nothing here runs: the snapshot sync is the only source
-// of GetPodsRunningRequestsApprox's and the realtime_num_requests_running gauge's remote counts.
+// It is enabled by default when Redis is configured. Set AIBRIX_REMOTE_RUNNING_READER_ENABLED=false
+// (or 0/off/no/disabled) to disable it and keep the snapshot sync as the sole source of
+// GetPodsRunningRequestsApprox's and the realtime_num_requests_running gauge's remote counts.
 const (
-	remoteRunningReaderEnabledEnv  = "AIBRIX_REMOTE_RUNNING_READER_ENABLED"
-	remoteRunningReaderIntervalEnv = "AIBRIX_REMOTE_RUNNING_READER_INTERVAL"
+	remoteRunningReaderEnabledEnv     = "AIBRIX_REMOTE_RUNNING_READER_ENABLED"
+	remoteRunningReaderIntervalEnv    = "AIBRIX_REMOTE_RUNNING_READER_INTERVAL"
+	defaultRemoteRunningReaderEnabled = true
 	// defaultRemoteRunningReaderInterval is the middle of the 500 ms-2 s range that cost the
 	// same in the candidate simulation of #3442.
 	defaultRemoteRunningReaderInterval = time.Second
@@ -61,10 +66,11 @@ const (
 //   - every successful exact read on the request path (readPodsSharedRoutingState), with the
 //     fields it already has, at no extra Redis command.
 type remoteRunningReader struct {
-	store    *Store
-	interval time.Duration
-	maxAge   time.Duration
-	entries  utils.SyncMap[string, *remoteRunningEntry]
+	store         *Store
+	interval      time.Duration
+	maxAge        time.Duration
+	startupJitter time.Duration
+	entries       utils.SyncMap[string, *remoteRunningEntry]
 
 	// resumeAt is the pod key the next sweep starts at, so a sweep that runs out of time is
 	// followed by one that starts with the pods it did not reach. Only the sweep goroutine
@@ -82,11 +88,45 @@ func newRemoteRunningReader(store *Store, interval time.Duration) *remoteRunning
 	}
 }
 
+// parseRemoteRunningReaderEnabled parses raw after trimming whitespace. In addition to
+// strconv.ParseBool spellings, it accepts on/yes/y/enabled/enable as true and
+// off/no/n/disabled/disable as false. Any other non-empty value returns (false, false) so an
+// operator typo during an incident fails closed rather than silently leaving the reader on.
+func parseRemoteRunningReaderEnabled(raw string, defaultValue bool) (enabled bool, valid bool) {
+	if raw == "" {
+		return defaultValue, true
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "y", "yes", "on", "enable", "enabled":
+		return true, true
+	case "0", "f", "false", "n", "no", "off", "disable", "disabled":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func loadRemoteRunningReaderEnabled(defaultValue bool) bool {
+	raw := os.Getenv(remoteRunningReaderEnabledEnv)
+	enabled, valid := parseRemoteRunningReaderEnabled(raw, defaultValue)
+	if !valid {
+		klog.ErrorS(nil, "invalid environment variable value; disabling remote running reader (fail-closed)",
+			"key", remoteRunningReaderEnabledEnv, "value", raw)
+		return false
+	}
+	if raw == "" {
+		klog.Infof("set %s: %v, using default value", remoteRunningReaderEnabledEnv, enabled)
+	} else {
+		klog.Infof("set %s: %v", remoteRunningReaderEnabledEnv, enabled)
+	}
+	return enabled
+}
+
 // initRemoteRunningReader starts the reader when AIBRIX_REMOTE_RUNNING_READER_ENABLED is true and
 // Redis is configured. Otherwise it does nothing, and store.remoteRunningReader stays nil, which
 // keeps every consumer on the gateway snapshot.
 func initRemoteRunningReader(store *Store, stopCh <-chan struct{}) {
-	if store.redisClient == nil || !utils.LoadEnvBool(remoteRunningReaderEnabledEnv, false) {
+	if store.redisClient == nil || !loadRemoteRunningReaderEnabled(defaultRemoteRunningReaderEnabled) {
 		return
 	}
 	interval := utils.LoadEnvDuration(remoteRunningReaderIntervalEnv, defaultRemoteRunningReaderInterval)
@@ -96,34 +136,63 @@ func initRemoteRunningReader(store *Store, stopCh <-chan struct{}) {
 		interval = minRemoteRunningReaderInterval
 	}
 	r := newRemoteRunningReader(store, interval)
+	r.startupJitter = time.Duration(rand.Int64N(int64(interval)))
 	store.remoteRunningReader.Store(r)
-	klog.InfoS("Initializing remote running reader (experimental)", "interval", interval, "maxAge", r.maxAge)
+	klog.InfoS("Initializing remote running reader", "interval", interval, "maxAge", r.maxAge)
 	go r.run(stopCh)
 }
 
 func (r *remoteRunningReader) run(stopCh <-chan struct{}) {
+	r.runWithStartupTimer(stopCh, func(delay time.Duration) (<-chan time.Time, func() bool) {
+		timer := time.NewTimer(delay)
+		return timer.C, timer.Stop
+	})
+}
+
+// The timer factory lets tests exercise both startup wakeups without depending on wall-clock timing.
+func (r *remoteRunningReader) runWithStartupTimer(stopCh <-chan struct{}, startTimer func(time.Duration) (<-chan time.Time, func() bool)) {
+	r.sweep()
+	if r.startupJitter > 0 {
+		// Keep the first sweep immediate, then stagger the next sweep. Waiting at least half
+		// an interval makes entries from the initial sweep eligible for refresh.
+		fired, stopTimer := startTimer(r.interval/2 + r.startupJitter)
+		select {
+		case <-fired:
+		case <-stopCh:
+			stopTimer()
+			return
+		}
+		r.sweep()
+	}
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
-		r.sweep()
 		select {
 		case <-ticker.C:
+			r.sweep()
 		case <-stopCh:
 			return
 		}
 	}
 }
 
-// sweep reads the live gateway set, then every known pod's aibrix:rrq hash in pipelined batches
-// (N/100 + 1 round trips), within one interval. Each batch is published as soon as it is read,
-// with the batch's start as its read time. A sweep that runs out of time or fails stops there:
-// the pods it did not reach keep their previous entry and read time, so they keep aging, and the
-// next sweep starts with them.
-//
-// TODO(#3442): skip pods a request refreshed within the last half interval.
+// sweep reads the live gateway set, then every known ready pod's aibrix:rrq hash in pipelined
+// batches (N/100 + 1 round trips), within one interval, skipping pods whose entry was already
+// refreshed within the last half interval (for instance, by an exact read on the request path).
+// Each batch is published as soon as it is read, with the batch's start as its read time. A sweep
+// that runs out of time or fails stops there: the pods it did not reach keep their previous entry
+// and read time, so they keep aging, and the next sweep starts with them.
 func (r *remoteRunningReader) sweep() {
 	c := r.store
-	keys := c.metaPods.Keys()
+	rawKeys := c.metaPods.Keys()
+	keys := make([]string, 0, len(rawKeys))
+	for _, podKey := range rawKeys {
+		metaPod, ok := c.metaPods.Load(podKey)
+		if !ok || metaPod.Pod == nil || !utils.FilterReadyPod(metaPod.Pod) {
+			continue
+		}
+		keys = append(keys, podKey)
+	}
 	if len(keys) == 0 {
 		r.pruneDeletedPods()
 		r.recordFreshness(keys)
@@ -135,6 +204,21 @@ func (r *remoteRunningReader) sweep() {
 	first := sort.SearchStrings(keys, r.resumeAt) % len(keys)
 	keys = append(keys[first:len(keys):len(keys)], keys[:first]...)
 
+	sweepStart := c.snapshotNow()
+	halfInterval := r.interval / 2
+	toRead := make([]string, 0, len(keys))
+	for _, podKey := range keys {
+		if e, ok := r.entries.Load(podKey); ok && sweepStart.Sub(e.readAt) < halfInterval {
+			continue
+		}
+		toRead = append(toRead, podKey)
+	}
+	if len(toRead) == 0 {
+		r.pruneDeletedPods()
+		r.recordFreshness(keys)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), r.interval)
 	defer cancel()
 	client := c.readClient()
@@ -144,9 +228,9 @@ func (r *remoteRunningReader) sweep() {
 		// at the same place.
 		advance := read
 		if advance == 0 {
-			advance = min(remoteRunningReaderBatchSize, len(keys))
+			advance = min(remoteRunningReaderBatchSize, len(toRead))
 		}
-		r.resumeAt = keys[advance%len(keys)]
+		r.resumeAt = toRead[advance%len(toRead)]
 		r.pruneDeletedPods()
 		r.recordFreshness(keys)
 	}()
@@ -163,8 +247,8 @@ func (r *remoteRunningReader) sweep() {
 		live[gw] = struct{}{}
 	}
 
-	for start := 0; start < len(keys); start += remoteRunningReaderBatchSize {
-		chunk := keys[start:min(start+remoteRunningReaderBatchSize, len(keys))]
+	for start := 0; start < len(toRead); start += remoteRunningReaderBatchSize {
+		chunk := toRead[start:min(start+remoteRunningReaderBatchSize, len(toRead))]
 		readAt := c.snapshotNow()
 		pipe := client.Pipeline()
 		cmds := make([]*redis.MapStringStringCmd, len(chunk))
@@ -174,8 +258,8 @@ func (r *remoteRunningReader) sweep() {
 		// As in readGatewaySnapshots: a Redis error reply for one key does not make its
 		// batch-mates unread, but a timeout or dropped connection says nothing about any of them.
 		if _, err := pipe.Exec(ctx); err != nil && !isRedisReply(err) {
-			klog.V(4).ErrorS(err, "remote running reader stopped before reading every pod", "read", read, "pods", len(keys))
-			r.errLog.log("read", err, "remote running reader cannot read every pod; the unread pods keep aging", "read", read, "pods", len(keys))
+			klog.V(4).ErrorS(err, "remote running reader stopped before reading every pod", "read", read, "pods", len(toRead))
+			r.errLog.log("read", err, "remote running reader cannot read every pod; the unread pods keep aging", "read", read, "pods", len(toRead))
 			return
 		}
 		for i, cmd := range cmds {
@@ -280,7 +364,8 @@ func (r *remoteRunningReader) recordFreshness(podKeys []string) {
 	var fresh, stale, unread int
 	var oldest time.Duration
 	for _, podKey := range podKeys {
-		if _, ok := r.store.metaPods.Load(podKey); !ok {
+		mp, ok := r.store.metaPods.Load(podKey)
+		if !ok || mp.Pod == nil || !utils.FilterReadyPod(mp.Pod) {
 			continue
 		}
 		e, ok := r.entries.Load(podKey)
@@ -300,12 +385,12 @@ func (r *remoteRunningReader) recordFreshness(podKeys []string) {
 		remoteRunningReaderPods = registerGauge(prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Subsystem: constants.AibrixSubsystemName,
 			Name:      "gateway_remote_running_reader_pods",
-			Help:      "Pods known to this gateway at the end of the last remote running reader sweep, by whether their remote count was read within the age limit (fresh), longer ago (stale, not used), or never (unread)",
+			Help:      "Pods selected as ready (ready, with IP, non-terminating, non-draining) at sweep start that remain ready at sweep end, by whether their remote count was read within the age limit (fresh), longer ago (stale, not used), or never (unread)",
 		}, []string{"state"}), "gateway_remote_running_reader_pods")
 		remoteRunningReaderOldestAge = registerGauge(prometheus.NewGauge(prometheus.GaugeOpts{
 			Subsystem: constants.AibrixSubsystemName,
 			Name:      "gateway_remote_running_reader_oldest_read_age_seconds",
-			Help:      "Age, at the end of the last remote running reader sweep, of the least recently read remote count among the pods known to this gateway",
+			Help:      "Age, at the end of the last remote running reader sweep, of the least recently read remote count among the sweep's ready pods that remained ready at sweep end",
 		}), "gateway_remote_running_reader_oldest_read_age_seconds")
 	})
 	remoteRunningReaderPods.WithLabelValues(remoteRunningPodFresh).Set(float64(fresh))

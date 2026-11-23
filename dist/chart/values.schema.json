@@ -47,6 +47,19 @@
     "gatewayPlugin": {
       "type": "object",
       "properties": {
+        "gracefulShutdown": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "propagationDelaySeconds": { "type": "integer", "minimum": 0, "maximum": 86400 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "grpcDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "pollIntervalSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "metricsURL": { "type": "string", "pattern": "^http://(127\\.0\\.0\\.1|localhost|\\[::1\\]):[0-9]+/metrics$" }
+          },
+          "required": ["enabled", "terminationGracePeriodSeconds", "propagationDelaySeconds", "timeoutSeconds", "grpcDrainTimeoutSeconds", "pollIntervalSeconds", "metricsURL"]
+        },
         "replicaCount": {
           "type": "integer",
           "minimum": 1,
@@ -176,6 +189,16 @@
         "envoyProxy": {
           "type": "object",
           "properties": {
+            "gracefulShutdown": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+                "drainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+                "minDrainDurationSeconds": { "type": "integer", "minimum": 0, "maximum": 86400 }
+              },
+              "required": ["enabled", "terminationGracePeriodSeconds", "drainTimeoutSeconds", "minDrainDurationSeconds"]
+            },
             "accessLog": {
               "type": "object",
               "properties": {
