@@ -106,17 +106,17 @@ func (o modelDiscoveryOptions) validate() error {
 }
 
 type discoveryCheckOptions struct {
-	interval       time.Duration
-	staleThreshold time.Duration
+	interval             time.Duration
+	unreachableThreshold time.Duration
 }
 
 func (o *discoveryCheckOptions) addFlags(fs *flag.FlagSet) {
 	fs.DurationVar(&o.interval, "discovery-check-interval", 10*time.Second,
 		"Interval of the check that this replica can still read Pods from the Kubernetes API server; "+
 			"each check is bounded by half of it. 0 disables the check; otherwise at least 1s. Ignored in standalone mode.")
-	fs.DurationVar(&o.staleThreshold, "discovery-stale-threshold", 30*time.Second,
-		"Age of the last successful discovery check at which aibrix_gateway_discovery_stale becomes 1. "+
-			"Keep it above normal watch reconnect delays; it must be greater than --discovery-check-interval.")
+	fs.DurationVar(&o.unreachableThreshold, "discovery-unreachable-threshold", 30*time.Second,
+		"Age of the last successful reachability check at which aibrix_gateway_discovery_unreachable becomes 1. "+
+			"Keep it above normal watch reconnect delays; it must be at least twice --discovery-check-interval.")
 }
 
 func (o discoveryCheckOptions) validate() error {
@@ -128,9 +128,11 @@ func (o discoveryCheckOptions) validate() error {
 	if o.interval > 0 && o.interval < time.Second {
 		return fmt.Errorf("--discovery-check-interval must be 0 or at least 1s, got %v", o.interval)
 	}
-	if o.interval > 0 && o.staleThreshold <= o.interval {
-		return fmt.Errorf("--discovery-stale-threshold (%v) must be greater than --discovery-check-interval (%v)",
-			o.staleThreshold, o.interval)
+	// A healthy check may run for half an interval, so a scrape during it can
+	// see an age of up to 1.5 intervals; twice the interval leaves a margin.
+	if o.interval > 0 && o.unreachableThreshold < 2*o.interval {
+		return fmt.Errorf("--discovery-unreachable-threshold (%v) must be at least twice --discovery-check-interval (%v)",
+			o.unreachableThreshold, o.interval)
 	}
 	return nil
 }
@@ -330,15 +332,15 @@ func runGateway() {
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
-		IsGateway:                    true,
-		EnableKVSync:                 kvSyncEnabled && remoteTokenizerEnabled,
-		RedisClient:                  redisClient,
-		ModelRouterProvider:          routing.ModelRouterFactory,
-		DiscoveryProvider:            discoveryProvider,
-		DisableModelClaimPodBindings: !standalone && !modelDiscovery.watchModelClaims,
-		ModelListMaxAge:              modelDiscovery.maxAge,
-		DiscoveryCheckInterval:       discoveryCheck.interval,
-		DiscoveryStaleThreshold:      discoveryCheck.staleThreshold,
+		IsGateway:                     true,
+		EnableKVSync:                  kvSyncEnabled && remoteTokenizerEnabled,
+		RedisClient:                   redisClient,
+		ModelRouterProvider:           routing.ModelRouterFactory,
+		DiscoveryProvider:             discoveryProvider,
+		DisableModelClaimPodBindings:  !standalone && !modelDiscovery.watchModelClaims,
+		ModelListMaxAge:               modelDiscovery.maxAge,
+		DiscoveryCheckInterval:        discoveryCheck.interval,
+		DiscoveryUnreachableThreshold: discoveryCheck.unreachableThreshold,
 	})
 
 	lis, err := net.Listen("tcp", grpcAddr)

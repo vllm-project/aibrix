@@ -229,7 +229,8 @@ watch events:
   verification's ten-second timeout. After a failure it waits twice as long
   before the next attempt, up to five minutes, so a LIST that is too slow for a
   large cluster is not repeated every interval. When reachability recovers
-  after a failure, it runs at once and the wait starts over.
+  after a failure, the wait starts over at one interval plus a random delay of
+  up to one interval, so replicas do not all send a full LIST at once.
 
 .. code-block:: yaml
 
@@ -237,38 +238,39 @@ watch events:
       - name: gateway-plugin
         args:
           - --discovery-check-interval=10s   # default; 0 disables the check
-          - --discovery-stale-threshold=30s  # default; must exceed the interval
+          - --discovery-unreachable-threshold=30s  # default; at least twice the interval
 
 The check exports these metrics:
 
-- ``aibrix_gateway_discovery_last_verified_age_seconds``: seconds since the
+- ``aibrix_gateway_discovery_reachability_age_seconds``: seconds since the
   reachability check last succeeded.
-- ``aibrix_gateway_discovery_stale``: 1 once that age reaches
-  ``--discovery-stale-threshold``, otherwise 0.
+- ``aibrix_gateway_discovery_unreachable``: 1 once that age reaches
+  ``--discovery-unreachable-threshold``, otherwise 0.
 - ``aibrix_gateway_discovery_consistency_last_verified_age_seconds``: seconds
-  since the cache last matched a full LIST. Only with the consistency check.
+  since the cache last matched a full LIST, whether this check or a
+  ``/v1/models`` request ran it. Only with the consistency check.
 - ``aibrix_gateway_discovery_verification_failures_total``: failed checks, by
   ``check`` (``reachability`` or ``consistency``).
 
-Only reachability drives the stale gauge. The consistency check requires an
-exact match, so a Pod or ModelAdapter change during its LIST fails it on a
+Only reachability drives the unreachable gauge. The consistency check requires
+an exact match, so a Pod or ModelAdapter change during its LIST fails it on a
 healthy replica; a single failure is expected during rollouts. A consistency
 age that keeps rising, while reachability succeeds, means the cache is not
 converging. Because failed checks back off for up to five minutes, a few
 failures in a row can raise the age to about five minutes plus the max age on a
 healthy replica, so set any alert on it above that.
 
-Alert on the stale gauge. A replica that is stale while others are not has
-lost its own connection; every replica stale at once points at the API server:
+Alert on the unreachable gauge. One replica reporting it while others do not
+has lost its own connection; every replica at once points at the API server:
 
 .. code-block:: yaml
 
-    - alert: AIBrixGatewayDiscoveryStale
-      expr: max by (pod) (aibrix_gateway_discovery_stale) == 1
+    - alert: AIBrixGatewayDiscoveryUnreachable
+      expr: max by (pod) (aibrix_gateway_discovery_unreachable) == 1
       for: 1m
 
 The threshold absorbs a normal watch reconnect, so keep it above the time one
-takes. The ``for`` clause then requires the replica to stay stale, so with the
+takes. The ``for`` clause then requires it to stay unreachable, so with the
 defaults the alert fires after about 90 seconds without a successful check.
 
 What the check does not prove:
@@ -276,8 +278,8 @@ What the check does not prove:
 - Reachability proves the API server answers this replica. It does not prove
   the watch is delivering events. A watch that is connected but stuck shows
   only in the consistency age.
-- Being stale does not change readiness or routing. The replica stays in the
-  Service endpoints and keeps routing on its last known Pod list.
+- Reporting unreachable does not change readiness or routing. The replica
+  stays in the Service endpoints and keeps routing on its last known Pod list.
 
 In standalone mode there is no API server, so no check runs and no discovery
 metric is reported.

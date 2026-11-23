@@ -296,9 +296,9 @@ func TestDiscoveryCheckFlags(t *testing.T) {
 		wantError     string
 	}{
 		{name: "defaults", wantInterval: 10 * time.Second, wantThreshold: 30 * time.Second},
-		{name: "disabled", args: []string{"--discovery-check-interval=0", "--discovery-stale-threshold=0"}},
+		{name: "disabled", args: []string{"--discovery-check-interval=0", "--discovery-unreachable-threshold=0"}},
 		{
-			name: "custom", args: []string{"--discovery-check-interval=5s", "--discovery-stale-threshold=1m"},
+			name: "custom", args: []string{"--discovery-check-interval=5s", "--discovery-unreachable-threshold=1m"},
 			wantInterval: 5 * time.Second, wantThreshold: time.Minute,
 		},
 		{
@@ -311,7 +311,17 @@ func TestDiscoveryCheckFlags(t *testing.T) {
 		},
 		{
 			name: "threshold equal to interval", args: []string{"--discovery-check-interval=30s"},
-			wantError: "--discovery-stale-threshold (30s) must be greater than --discovery-check-interval (30s)",
+			wantError: "--discovery-unreachable-threshold (30s) must be at least twice --discovery-check-interval (30s)",
+		},
+		{
+			name:      "threshold just above interval",
+			args:      []string{"--discovery-check-interval=10s", "--discovery-unreachable-threshold=11s"},
+			wantError: "must be at least twice",
+		},
+		{
+			name:         "threshold exactly twice interval",
+			args:         []string{"--discovery-check-interval=10s", "--discovery-unreachable-threshold=20s"},
+			wantInterval: 10 * time.Second, wantThreshold: 20 * time.Second,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -325,7 +335,7 @@ func TestDiscoveryCheckFlags(t *testing.T) {
 			}
 			require.NoError(t, options.validate())
 			require.Equal(t, tc.wantInterval, options.interval)
-			require.Equal(t, tc.wantThreshold, options.staleThreshold)
+			require.Equal(t, tc.wantThreshold, options.unreachableThreshold)
 		})
 	}
 }

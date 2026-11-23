@@ -108,9 +108,9 @@ func startReplicaChecker(cfg *rest.Config, interval, threshold time.Duration) *r
 	client, err := kubernetes.NewForConfig(cfg)
 	Expect(err).NotTo(HaveOccurred())
 	checker, err := cache.NewDiscoveryChecker(cache.DiscoveryCheckOptions{
-		Interval:       interval,
-		StaleThreshold: threshold,
-		Reachability:   cache.PodListReachability(client),
+		Interval:             interval,
+		UnreachableThreshold: threshold,
+		Reachability:         cache.PodListReachability(client),
 	})
 	Expect(err).NotTo(HaveOccurred())
 	reg := prometheus.NewRegistry()
@@ -143,12 +143,12 @@ func (r *replicaChecker) metric(name string) float64 {
 }
 
 const (
-	staleMetric    = "aibrix_gateway_discovery_stale"
-	ageMetric      = "aibrix_gateway_discovery_last_verified_age_seconds"
-	failuresMetric = "aibrix_gateway_discovery_verification_failures_total"
+	unreachableMetric = "aibrix_gateway_discovery_unreachable"
+	ageMetric         = "aibrix_gateway_discovery_reachability_age_seconds"
+	failuresMetric    = "aibrix_gateway_discovery_verification_failures_total"
 )
 
-func (r *replicaChecker) stale() float64 { return r.metric(staleMetric) }
+func (r *replicaChecker) unreachable() float64 { return r.metric(unreachableMetric) }
 
 var _ = Describe("Gateway discovery check", Ordered, Label("gateway", "integration"), func() {
 	const (
@@ -193,30 +193,30 @@ var _ = Describe("Gateway discovery check", Ordered, Label("gateway", "integrati
 		}
 	})
 
-	It("reports both replicas fresh while the API server answers", func() {
-		Consistently(func() float64 { return cutOff.stale() + connected.stale() },
+	It("reports both replicas reachable while the API server answers", func() {
+		Consistently(func() float64 { return cutOff.unreachable() + connected.unreachable() },
 			2*interval, 200*time.Millisecond).Should(BeZero())
 		Expect(cutOff.metric(failuresMetric)).To(BeZero())
 	})
 
-	It("reports only the cut-off replica stale, within one interval plus the threshold", func() {
+	It("reports only the cut-off replica unreachable, within one interval plus the threshold", func() {
 		proxy.Cut()
 		cutAt := time.Now()
-		Eventually(cutOff.stale, interval+threshold+2*time.Second, 100*time.Millisecond).Should(Equal(1.0))
+		Eventually(cutOff.unreachable, interval+threshold+2*time.Second, 100*time.Millisecond).Should(Equal(1.0))
 		Expect(time.Since(cutAt)).To(BeNumerically(">=", threshold-interval),
-			"not stale before the threshold, minus the time since its last success")
+			"not unreachable before the threshold, minus the time since its last success")
 		Expect(cutOff.metric(failuresMetric)).To(BeNumerically(">=", 1))
 		Expect(cutOff.metric(ageMetric)).To(BeNumerically(">=", threshold.Seconds()))
 
-		Expect(connected.stale()).To(BeZero())
+		Expect(connected.unreachable()).To(BeZero())
 		Expect(connected.metric(ageMetric)).To(BeNumerically("<", threshold.Seconds()))
 		Expect(connected.metric(failuresMetric)).To(BeZero())
 	})
 
-	It("reports the cut-off replica fresh again after it reconnects", func() {
+	It("reports the cut-off replica reachable again after it reconnects", func() {
 		proxy.Restore()
-		Eventually(cutOff.stale, 3*interval, 100*time.Millisecond).Should(BeZero())
+		Eventually(cutOff.unreachable, 3*interval, 100*time.Millisecond).Should(BeZero())
 		Expect(cutOff.metric(ageMetric)).To(BeNumerically("<", 2*interval.Seconds()))
-		Expect(connected.stale()).To(BeZero())
+		Expect(connected.unreachable()).To(BeZero())
 	})
 })

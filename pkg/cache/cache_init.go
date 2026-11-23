@@ -79,9 +79,9 @@ type InitOptions struct {
 	// discovery; standalone mode has no API server to check.
 	DiscoveryCheckInterval time.Duration
 
-	// DiscoveryStaleThreshold is the age of the last successful discovery
-	// check at which the gateway reports itself stale.
-	DiscoveryStaleThreshold time.Duration
+	// DiscoveryUnreachableThreshold is the age of the last successful discovery
+	// check at which the gateway reports the API server unreachable.
+	DiscoveryUnreachableThreshold time.Duration
 }
 
 const (
@@ -623,12 +623,12 @@ func startDiscoveryChecker(store *Store, config *rest.Config, provider discovery
 		return nil
 	}
 	checkOpts := DiscoveryCheckOptions{
-		Interval:       opts.DiscoveryCheckInterval,
-		StaleThreshold: opts.DiscoveryStaleThreshold,
-		Reachability:   PodListReachability(client),
+		Interval:             opts.DiscoveryCheckInterval,
+		UnreachableThreshold: opts.DiscoveryUnreachableThreshold,
+		Reachability:         PodListReachability(client),
 	}
 	if health := store.modelListHealth; health != nil {
-		checkOpts.Consistency = health.EnsureVerified
+		checkOpts.Consistency = health
 	}
 	checker, err := NewDiscoveryChecker(checkOpts)
 	if err != nil {
@@ -641,7 +641,7 @@ func startDiscoveryChecker(store *Store, config *rest.Config, provider discovery
 	}
 	go checker.Run(stopCh)
 	klog.InfoS("Discovery check started", "interval", opts.DiscoveryCheckInterval,
-		"staleThreshold", opts.DiscoveryStaleThreshold, "consistency", checkOpts.Consistency != nil)
+		"unreachableThreshold", opts.DiscoveryUnreachableThreshold, "consistency", checkOpts.Consistency != nil)
 	return checker
 }
 
