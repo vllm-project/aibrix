@@ -132,6 +132,7 @@ func main() {
 	var modeladapterSchedulerPolicy string
 	var enableRuntimeSidecar bool
 	var disableWebhook bool
+	var webhookNamePrefix string
 	var debugMode bool
 	var qps float64
 	var burst int
@@ -162,6 +163,8 @@ func main() {
 		"If set, Runtime management API will be enabled for the metrics, model adapter and model downloading interactions, control plane will not talk to engine directly anymore")
 	flag.BoolVar(&disableWebhook, "disable-webhook", false,
 		"If set, mutation and validation webhook will be disabled, this will be only used in standalone setup mode for some controllers")
+	flag.StringVar(&webhookNamePrefix, "webhook-name-prefix", cert.DefaultWebhookNamePrefix,
+		"Name prefix of the webhook Service, the webhook certificate Secret and the validating and mutating webhook configurations whose certificates the manager rotates. It must match the install's kustomize namePrefix.")
 	flag.BoolVar(&debugMode, "debug-mode", false,
 		"If set, control plane will talk to localhost nodePort for testing purpose")
 
@@ -280,7 +283,7 @@ func main() {
 		setupLog.Info("Closing the certsReady channel because the webhook is disabled, this is to avoid blocking setupControllers")
 		close(certsReady)
 	} else {
-		if err = cert.CertsManager(mgr, leaderElectionNamespace, certsReady); err != nil {
+		if err = cert.CertsManager(mgr, leaderElectionNamespace, webhookNamePrefix, certsReady); err != nil {
 			setupLog.Error(err, "unable to setup cert rotation")
 			os.Exit(1)
 		}

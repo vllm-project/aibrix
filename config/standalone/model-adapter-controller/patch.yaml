@@ -14,6 +14,9 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=0
             - --controllers=model-adapter-controller
+            # Must match namePrefix in kustomization.yaml, so the cert rotator
+            # finds this overlay's webhook Service, Secret and configurations.
+            - --webhook-name-prefix=aibrix-lora-
           # following patch is from config/default/manager_webhook_patch.yaml
           ports:
             - containerPort: 9443
