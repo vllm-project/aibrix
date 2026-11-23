@@ -304,7 +304,8 @@ func TestPodAutoscalerControllerStormServiceScale(t *testing.T) {
 
 	roleSel, err := scaler.GetPodSelectorFromScale(ctx, rolePA, scaleObj)
 	require.NoError(t, err)
-	expectedRole, err := labels.Parse(constants.RoleNameLabelKey + "=prefill," + constants.StormServiceNameLabelKey + "=ss-pool")
+	expectedRole, err := labels.Parse(
+		constants.RoleNameLabelKey + "=prefill," + constants.StormServiceNameLabelKey + "=ss-pool")
 	require.NoError(t, err)
 	require.Equal(t, expectedRole.String(), roleSel.String())
 
