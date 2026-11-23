@@ -226,8 +226,10 @@ The K pods are chosen by the strategies themselves, from a scout: 4K ready pods 
 directly, which for `prefix-cache` are the holders of the request's longest cached prefix. Each
 strategy that can estimate its score from memory (`types.CandidateScorer`) scores the scout
 without Redis: `prefix-cache` from its prefix index, `load-balance` and `least-request` from this
-gateway's own running counts plus the other gateways' counts in the last gateway snapshot
-(refreshed every 100 ms), and the `least-*` strategies from the scraped metrics they already read.
+gateway's own running counts plus the other gateways' counts from the remote running reader
+(`AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`, default `1s` sweep of `aibrix:rrq:*`; or the gateway
+snapshot refreshed every 100 ms when the reader is disabled), and the `least-*` strategies from
+the scraped metrics they already read.
 These estimates are normalized and weighted exactly as the router blends its scores, the best
 `K/2` scouted pods are kept, ties broken at random, and the other slots go to pods drawn at random
 from the whole fleet. The random half keeps lagging estimates from offering the router the same
