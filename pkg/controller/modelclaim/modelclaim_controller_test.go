@@ -85,6 +85,7 @@ type fakeRuntime struct {
 	snapshotCallsTo map[string]int
 	portSeq         int32
 	failActivate    bool
+	portConflictOn  map[string]bool
 	// failActivateOn makes the runtimes of the pods listed, by IP, refuse
 	// every start, and activatedOn is the pod each start was asked of.
 	failActivateOn map[string]bool
@@ -132,6 +133,9 @@ func (f *fakeRuntime) Activate(_ context.Context, podIP string, runtimePort int,
 	}
 	f.activateCalls = append(f.activateCalls, *req)
 	f.activatedOn = append(f.activatedOn, podIP)
+	if f.portConflictOn[podIP] {
+		return nil, fmt.Errorf("%w: test port", errPortInUse)
+	}
 	if f.failActivate || f.failActivateOn[podIP] {
 		return &ActivateResponse{Status: "error", Message: "boom"}, &runtimeRefusal{"activate failed: boom"}
 	}
@@ -4745,4 +4749,143 @@ func TestKVInitialCapacityDemotionEvent(t *testing.T) {
 	}
 	require.Len(t, demotions, 1)
 	assert.Contains(t, demotions[0], "limit of 2.0 GiB")
+}
+
+func TestServingPortConflictRetriesOtherPod(t *testing.T) {
+	for _, all := range []bool{false, true} {
+		t.Run(fmt.Sprint(all), func(t *testing.T) {
+			pm := withFinalizer(sampleModelClaim())
+			port := int32(18081)
+			pm.Spec.ServingPort = &port
+			a := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+			b := warmPod("warm-b", "b300-pool-a", true, corev1.PodRunning)
+			a.Status.PodIP = "10.0.0.11"
+			b.Status.PodIP = "10.0.0.12"
+			r, rt := newReconciler(t, pm, a, b)
+			rt.portConflictOn = map[string]bool{a.Status.PodIP: true, b.Status.PodIP: all}
+			reconcileOnce(t, r, pm.Name)
+			require.Equal(t, []string{a.Status.PodIP, b.Status.PodIP}, rt.activatedOn)
+			for _, call := range rt.activateCalls {
+				require.Equal(t, port, call.Port)
+			}
+			got := getModel(t, r, pm.Name)
+			if all {
+				require.Empty(t, got.Status.Instances)
+				require.Equal(t, "PortInUse", scheduled(t, r, pm.Name).Reason)
+				require.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+			} else {
+				require.Len(t, got.Status.Instances, 1)
+				require.Equal(t, b.Name, got.Status.Instances[0].Pod)
+				require.Equal(t, port, got.Status.Instances[0].Port)
+			}
+		})
+	}
+}
+
+func TestServingPortLostResponseDoesNotTryAnotherPod(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	a := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+	b := warmPod("warm-b", "b300-pool-a", true, corev1.PodRunning)
+	a.Status.PodIP = "10.0.0.11"
+	b.Status.PodIP = "10.0.0.12"
+	r, rt := newReconciler(t, pm, a, b)
+	rt.loseActivateAnswer = true
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: pm.Name, Namespace: pm.Namespace}})
+	require.Len(t, rt.activateCalls, 1)
+	require.Len(t, getModel(t, r, pm.Name).Status.Instances, 1)
+}
+
+func TestServingPortSnapshotOccupancy(t *testing.T) {
+	for _, tc := range []struct {
+		name, phase, uid string
+		sameName         bool
+	}{
+		{"sleeping", "sleeping", "other", false},
+		{"booting", "booting", "other", false},
+		{"same-name-other-owner", "active", "other", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pm := withFinalizer(sampleModelClaim())
+			pm.UID = "this-claim"
+			port := int32(18081)
+			pm.Spec.ServingPort = &port
+			a := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+			b := warmPod("warm-b", "b300-pool-a", true, corev1.PodRunning)
+			a.Status.PodIP, b.Status.PodIP = "10.0.0.11", "10.0.0.12"
+			r, rt := newReconciler(t, pm, a, b)
+			name := "other-model"
+			if tc.sameName {
+				name = servedModelName(pm)
+			}
+			rt.snapshots = map[string]*RuntimeSnapshot{a.Status.PodIP: {
+				Models: []RuntimeSnapshotModel{{ModelName: name, Port: port, Phase: tc.phase, ClaimRef: &ModelClaimRef{UID: tc.uid}}},
+			}}
+			reconcileOnce(t, r, pm.Name)
+			require.Equal(t, []string{b.Status.PodIP}, rt.activatedOn)
+			require.Equal(t, b.Name, getModel(t, r, pm.Name).Status.Instances[0].Pod)
+		})
+	}
+}
+
+func TestServingPortConflictRestoresFailedInstance(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	failedPod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	replacementPod := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	replacementPod.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, failedPod, replacementPod)
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	// Update the persisted spec before reconciling.
+	require.NoError(t, r.Update(context.Background(), pm))
+	runtime.portConflictOn = map[string]bool{replacementPod.Status.PodIP: true}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP: {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+			LastError: "restart budget exhausted",
+			ClaimRef:  &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+		}}},
+		testPeerIP: {},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The replacement did not start, so the failed instance stays. The claim
+	// still reads as failed, and the next pass leaves warm-1 out again.
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	require.Len(t, runtime.activateCalls, 1)
+	require.Equal(t, "PortInUse", scheduled(t, r, pm.Name).Reason)
+}
+
+func TestServingPortConflictUsesPlacementBackoff(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	pod := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+	r, rt := newReconciler(t, pm, pod)
+	now := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	rt.portConflictOn = map[string]bool{pod.Status.PodIP: true}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: pm.Name, Namespace: pm.Namespace}}
+	first, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	require.Positive(t, first.RequeueAfter)
+	calls := len(rt.activateCalls)
+	_, err = r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	require.Len(t, rt.activateCalls, calls, "no retry before backoff expires")
+	now = now.Add(first.RequeueAfter + time.Second)
+	second, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	require.Greater(t, second.RequeueAfter, first.RequeueAfter)
 }

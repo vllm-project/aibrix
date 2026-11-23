@@ -91,6 +91,24 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 			}
 		}
 	}
+	if oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.ServingPort, spec.ServingPort) {
+		if spec.ServingPort != nil {
+			port := *spec.ServingPort
+			if port < 1 || port > 65535 || port == 8080 || (port >= 20000 && port <= 20999) {
+				allErrs = append(allErrs, field.Invalid(path.Child("servingPort"), port,
+					"must be 1-65535, excluding runtime port 8080 and automatic ports 20000-20999"))
+			}
+		}
+	}
+	if oldClaim == nil && spec.EngineConfig != nil {
+		for key := range spec.EngineConfig.Args {
+			flag, _, _ := utils.ModelClaimEngineFlag(key)
+			if flag == "--port" {
+				allErrs = append(allErrs, field.Invalid(path.Child("engineConfig", "args"), "<redacted>",
+					"must not set --port; use spec.servingPort instead"))
+			}
+		}
+	}
 	// Require a declaration on creation and prevent removal of an existing one.
 	// Grandfather absence only for legacy objects; keep the schema optional.
 	if spec.PerGPU == nil && (oldClaim == nil || oldClaim.Spec.PerGPU != nil) {

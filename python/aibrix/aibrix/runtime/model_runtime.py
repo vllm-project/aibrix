@@ -151,6 +151,10 @@ class ModelNotFoundError(LookupError):
     """Raised when a control request targets an absent runtime model."""
 
 
+class PortInUseError(RuntimeError):
+    """A requested port was occupied before an engine launch was attempted."""
+
+
 class UnsupportedModelControlError(RuntimeError):
     """Raised when an engine does not implement a requested lifecycle control."""
 
@@ -1947,16 +1951,28 @@ class ModelRuntime:
         claim_ref: Optional[Dict[str, str]] = None,
     ) -> ModelInstance:
         with self._operation_lock, self._lock:
+            if not 0 <= port <= 65535:
+                raise ValueError("port must be between 0 and 65535")
             if engine == "vllm":
                 validate_vllm_parallelism(engine_config, additional_config)
             existing = self._models.get(model_name)
             if existing is not None:
+                if port and existing.port != port:
+                    raise ValueError(
+                        f"model {model_name!r} already uses port {existing.port}; "
+                        "deactivate it before changing its port"
+                    )
                 if existing.phase == "failed":
                     raise RuntimeError(
                         f"model {model_name!r} has failed on this pod; "
                         "deactivate it before activating again"
                     )
                 return existing  # idempotent; the supervisor owns recovery
+            if port and (
+                any(model.port == port for model in self._models.values())
+                or not self._port_free(port)
+            ):
+                raise PortInUseError(f"requested serving port {port} is in use")
             inst = ModelInstance(
                 model_name=model_name,
                 port=port or self._pick_port(),

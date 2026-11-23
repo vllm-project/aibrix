@@ -254,3 +254,25 @@ func TestModelClaimWebhookEngineArgsRedacted(t *testing.T) {
 		})
 	}
 }
+
+func TestServingPortAdmission(t *testing.T) {
+	for _, port := range []int32{0, 8080, 20000, 20999, 65536, -1, 18081, 19999, 21000, 65535} {
+		claim := validModelClaimForWebhookTest()
+		claim.Spec.ServingPort = &port
+		_, err := (&ModelClaimWebhook{}).ValidateCreate(context.Background(), claim)
+		invalid := port < 1 || port > 65535 || port == 8080 || (port >= 20000 && port <= 20999)
+		if invalid {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+	for _, key := range []string{"--port", "--port=18081"} {
+		claim := validModelClaimForWebhookTest()
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Args: map[string]string{key: ""}}
+		_, err := (&ModelClaimWebhook{}).ValidateCreate(context.Background(), claim)
+		require.ErrorContains(t, err, "spec.servingPort")
+		_, err = (&ModelClaimWebhook{}).ValidateUpdate(context.Background(), claim.DeepCopy(), claim)
+		require.NoError(t, err)
+	}
+}

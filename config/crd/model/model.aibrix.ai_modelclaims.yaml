@@ -141,11 +141,24 @@ spec:
                 maximum: 1
                 minimum: 1
                 type: integer
+              servingPort:
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+                x-kubernetes-validations:
+                - message: servingPort must not use runtime port 8080 or automatic
+                    ports 20000-20999
+                  rule: self != 8080 && (self < 20000 || self > 20999)
             required:
             - artifactURL
             - podSelector
             type: object
             x-kubernetes-validations:
+            - fieldPath: .servingPort
+              message: servingPort is immutable; create a new ModelClaim instead
+              rule: has(self.servingPort) == has(oldSelf.servingPort) && (!has(self.servingPort)
+                || self.servingPort == oldSelf.servingPort)
             - fieldPath: .modelName
               message: modelName is immutable; create a new ModelClaim instead
               rule: has(self.modelName) == has(oldSelf.modelName) && (!has(self.modelName)

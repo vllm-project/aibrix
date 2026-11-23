@@ -43,9 +43,19 @@ const (
 // Only perGPU can be changed after a claim is created. The other fields decide
 // which engine runs and where, and the engine is started with them only once,
 // so a change would never reach it. To change one, create a new ModelClaim.
+// +kubebuilder:validation:XValidation:rule="has(self.servingPort) == has(oldSelf.servingPort) && (!has(self.servingPort) || self.servingPort == oldSelf.servingPort)",message="servingPort is immutable; create a new ModelClaim instead",fieldPath=".servingPort"
 // +kubebuilder:validation:XValidation:rule="has(self.modelName) == has(oldSelf.modelName) && (!has(self.modelName) || self.modelName == oldSelf.modelName)",message="modelName is immutable; create a new ModelClaim instead",fieldPath=".modelName"
 // +kubebuilder:validation:XValidation:rule="has(self.engineConfig) == has(oldSelf.engineConfig) && (!has(self.engineConfig) || self.engineConfig == oldSelf.engineConfig)",message="engineConfig is immutable; create a new ModelClaim instead",fieldPath=".engineConfig"
 type ModelClaimSpec struct {
+	// ServingPort requests a stable inference port on each selected Pod. Omit it
+	// to let the runtime allocate a port. The runtime management port and its
+	// automatic allocation range are reserved. Changing the port needs a new Claim.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:validation:XValidation:rule="self != 8080 && (self < 20000 || self > 20999)",message="servingPort must not use runtime port 8080 or automatic ports 20000-20999"
+	ServingPort *int32 `json:"servingPort,omitempty"`
+
 	// ModelName is the served model identifier that clients address in requests
 	// (e.g. the `model` field of an OpenAI-style request). Defaults to the
 	// ModelClaim object name when omitted.

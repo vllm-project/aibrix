@@ -3337,3 +3337,89 @@ def test_sglang_grace_restarts_after_a_recovered_probe():
     assert inst.phase == "booting"
     assert inst.next_restart_at is None
     assert inst.restart_count == 0
+
+
+@pytest.mark.parametrize(
+    "phase", ["active", "sleeping", "booting", "stopping", "failed"]
+)
+def test_explicit_port_conflicts_with_every_resident_phase(phase):
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    first = agent.activate(model_name="first", artifact_url="hf://x", port=18081)
+    first.phase = phase
+    with pytest.raises(PortInUseError, match="18081"):
+        agent.activate(model_name="second", artifact_url="hf://x", port=18081)
+    assert agent._launcher.launched == ["first"]
+    assert {m.model_name for m in agent.list_models()} == {"first"}
+
+
+def test_explicit_port_checks_os_listener_and_can_retry_after_release():
+    import socket
+
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with pytest.raises(PortInUseError):
+            agent.activate(model_name="first", artifact_url="hf://x", port=port)
+        assert agent.list_models() == []
+    inst = agent.activate(model_name="first", artifact_url="hf://x", port=port)
+    assert inst.port == port
+
+
+def test_explicit_port_idempotence_requires_same_port():
+    agent = make_agent()
+    first = agent.activate(model_name="first", artifact_url="hf://x", port=18081)
+    assert (
+        agent.activate(model_name="first", artifact_url="hf://x", port=18081) is first
+    )
+    assert agent.activate(model_name="first", artifact_url="hf://x") is first
+    with pytest.raises(ValueError, match="already uses port"):
+        agent.activate(model_name="first", artifact_url="hf://x", port=18082)
+    assert agent._launcher.launched == ["first"]
+
+
+def test_explicit_port_endpoint_reports_typed_prelaunch_conflict(monkeypatch):
+    import json
+
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.openapi.protocol import ActivateRuntimeModelRequest
+
+    agent = make_agent()
+    agent.activate(model_name="first", artifact_url="hf://x", port=18081)
+    monkeypatch.setattr(api, "get_model_runtime", lambda: agent)
+    response = api.activate_runtime_model(
+        ActivateRuntimeModelRequest(
+            model_name="second", artifact_url="hf://x", port=18081
+        )
+    )
+    assert response.status_code == 409
+    assert json.loads(response.body)["reason"] == "PortInUse"
+    assert agent._launcher.launched == ["first"]
+
+
+def test_concurrent_explicit_port_has_only_one_launch():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    barrier = Barrier(2)
+
+    def activate(name):
+        barrier.wait(timeout=5)
+        try:
+            return agent.activate(model_name=name, artifact_url="hf://x", port=18081)
+        except PortInUseError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(activate, ["first", "second"]))
+    assert sum(result is not None for result in results) == 1
+    assert len(agent._launcher.launched) == 1
+    assert len(agent.list_models()) == 1

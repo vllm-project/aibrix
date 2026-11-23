@@ -741,6 +741,22 @@ func (r *ModelClaimReconciler) ensureActivated(
 		}
 	}
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	portConflicts := []string{}
+	if pm.Spec.ServingPort != nil {
+		for _, pod := range admissible {
+			if snapshot := snapshots[pod.Name]; snapshot != nil {
+				owned := snapshotModelForClaim(snapshot, pm, servedModelName(pm))
+				for i := range snapshot.Models {
+					engine := &snapshot.Models[i]
+					if engine.Port == *pm.Spec.ServingPort && engine != owned {
+						portConflicts = append(portConflicts, pod.Name)
+						admissible = withoutPod(admissible, pod.Name)
+						break
+					}
+				}
+			}
+		}
+	}
 	rankByRoom(placementStates, ledgers)
 
 	// Every pod the claim is on stays out of the ranking, the pods where its
@@ -757,6 +773,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			admissible, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
 		)
 		if selectErr != nil {
+
 			// No available warm pod right now; remain Pending and try again
 			// once the wait is up. The refusal is raised as an Event only when
 			// it changes, as InvalidPerGPU is. The same refusal on each try is
@@ -764,8 +781,19 @@ func (r *ModelClaimReconciler) ensureActivated(
 			//
 			// A failed instance that cannot be replaced stays as it is, so the
 			// claim stays Failed.
-			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, claims, ledgers, placementStates,
-				admissible, refusals, failed, selectErr, readings)
+			var refusal placementRefused
+			if len(portConflicts) == 0 {
+				refusal = r.refusePlacement(ctx, pm, perGPU, candidates, claims, ledgers, placementStates,
+					admissible, refusals, failed, selectErr, readings)
+			}
+			if len(portConflicts) > 0 {
+				refusal = placementRefused{
+					reason:      "PortInUse",
+					message:     fmt.Sprintf("no placement available; serving port %d is in use on pods %v; free the port or select another pool", *pm.Spec.ServingPort, portConflicts),
+					eventType:   corev1.EventTypeWarning,
+					eventReason: "PortInUse",
+				}
+			}
 			reason := refusal.reason
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
@@ -894,6 +922,27 @@ func (r *ModelClaimReconciler) ensureActivated(
 				couldHold: true,
 				reason: fmt.Sprintf("%s cannot be asked to start %s yet: %v",
 					pod.Name, servedModelName(pm), aerr),
+			})
+			admissible = withoutPod(admissible, pod.Name)
+			continue
+		}
+		if pm.Spec.ServingPort != nil && errors.Is(aerr, errPortInUse) {
+			recordActivation(pm.Namespace, servedModelName(pm), false)
+			// Only the runtime's pre-spawn conflict proves that no engine
+			// started. Undo the provisional record before trying another pod.
+			if replaced != nil {
+				pm.Status.Instances[slot] = *replaced
+			} else {
+				pm.Status.Instances = pm.Status.Instances[:slot]
+			}
+			if err := r.Status().Update(ctx, pm); err != nil {
+				return 0, fmt.Errorf("release port-conflicted placement: %w", err)
+			}
+			portConflicts = append(portConflicts, pod.Name)
+			refusals = append(refusals, podRefusal{
+				pod: pod.Name, known: true, couldHold: true,
+				roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+				reason:    fmt.Sprintf("%s refused serving port %d: %v", pod.Name, *pm.Spec.ServingPort, aerr),
 			})
 			admissible = withoutPod(admissible, pod.Name)
 			continue
@@ -1119,7 +1168,12 @@ func markPlaced(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod) {
 
 // activateRequest is what the runtime is asked to start for a claim.
 func activateRequest(pm *modelv1alpha1.ModelClaim) *ActivateRequest {
+	var port int32
+	if pm.Spec.ServingPort != nil {
+		port = *pm.Spec.ServingPort
+	}
 	return &ActivateRequest{
+		Port:         port,
 		ModelName:    servedModelName(pm),
 		ArtifactURL:  pm.Spec.ArtifactURL,
 		Engine:       pm.Spec.Engine,
