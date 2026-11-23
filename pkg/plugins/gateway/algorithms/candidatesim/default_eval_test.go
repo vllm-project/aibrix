@@ -35,6 +35,11 @@ type defaultEvalConfig struct {
 	BlacklistFrac       float64 // fraction of pods excluded (soft cap 50%)
 	CorrelatedBlacklist bool    // blacklist hottest prefix holders first
 	RandomOnlyScoutCap  bool    // evaluate the 50% scout cap on the random 4K slice only
+	// ScoutRandomCapMode overrides the 8K >= N whole-fleet shortcut in selectKOnly:
+	// 0 = shipped (whole fleet when 8K >= N),
+	// 1 = always draw random 4K scout (capped at N),
+	// 2 = always draw random min(4K, N/2) scout.
+	ScoutRandomCapMode int
 }
 
 type evalResult struct {
@@ -125,6 +130,8 @@ func overBlacklistCap(kept, total int) bool {
 	return excluded*100 > 50*total
 }
 
+// selectKOnly mirrors policyBlendRanked in sim_test.go (keep in sync), adding
+// the scout-stage blacklist (#3543) and inflight (#3467) filters in between.
 func (es *evalSim) selectKOnly(g, group int, ready []int, allowScoutBLFilter bool) []int {
 	n := len(ready)
 	k := es.pol.K
@@ -133,7 +140,7 @@ func (es *evalSim) selectKOnly(g, group int, ready []int, allowScoutBLFilter boo
 	}
 	var scout []int
 	var randStart int
-	if 8*k >= n {
+	if es.ecfg.ScoutRandomCapMode == 0 && 8*k >= n {
 		scout = ready
 		randStart = 0
 	} else {
@@ -152,7 +159,11 @@ func (es *evalSim) selectKOnly(g, group int, ready []int, allowScoutBLFilter boo
 			holders = holders[:min(k, len(holders))]
 		}
 		randStart = len(holders)
-		scout = es.fillRandom(ready, holders, len(holders)+4*k)
+		randSize := 4 * k
+		if es.ecfg.ScoutRandomCapMode == 2 {
+			randSize = min(randSize, n/2)
+		}
+		scout = es.fillRandom(ready, holders, min(len(holders)+randSize, n))
 	}
 
 	// 1. Cap-aware blacklist scout filter (#3543) before inflight filter.
@@ -274,6 +285,8 @@ func (es *evalSim) routeEval(r *request, group int, countStats bool) {
 	es.place(r, target, group)
 }
 
+// runEval mirrors sim.run in sim_test.go (keep in sync), adding correlated
+// post-warmup blacklist setup and inflight-cap / reselect accounting.
 func (es *evalSim) runEval() evalResult {
 	cfg := es.cfg
 	totalCap := 0.0
@@ -726,6 +739,137 @@ func TestCandidateSelectionBlacklist(t *testing.T) {
 			}
 			fmt.Fprintf(&sb, "| N=%d BL=%.0f%% (%s) | %s | %.2fx | %.2fx | %.1f%% | %.2f%% |\n",
 				sc.n, sc.frac*100, mode, v.label, meanR/ns, p99R/ns, 100*hit/ns, 100*resel/req)
+		}
+	}
+	t.Log(sb.String())
+}
+
+func meanStd(xs []float64) (float64, float64) {
+	if len(xs) == 0 {
+		return 0, 0
+	}
+	var sum float64
+	for _, x := range xs {
+		sum += x
+	}
+	m := sum / float64(len(xs))
+	var sq float64
+	for _, x := range xs {
+		d := x - m
+		sq += d * d
+	}
+	return m, math.Sqrt(sq / float64(len(xs)))
+}
+
+// TestCandidateSelectionMidFleet10Seed runs 10 seeds (1..10) on the mid-size
+// N={300, 500} prefix=true delay=1s cells to reduce seed noise and compare the
+// shipped 8K >= N whole-fleet scout against always-random scouts (4K and
+// min(4K, N/2)). Run with CANDIDATE_SIM=defaultk.
+func TestCandidateSelectionMidFleet10Seed(t *testing.T) {
+	if os.Getenv("CANDIDATE_SIM") != "defaultk" {
+		t.Skip("set CANDIDATE_SIM=defaultk to run the 10-seed mid-fleet evaluation")
+	}
+	type scenario struct {
+		n    int
+		util float64
+		bl   float64
+		corr bool
+		name string
+	}
+	scenarios := []scenario{
+		{300, 0.85, 0, false, "N=300 util=0.85 no BL"},
+		{300, 0.92, 0, false, "N=300 util=0.92 no BL"},
+		{300, 0.85, 0.40, true, "N=300 util=0.85 BL=40% corr"},
+		{500, 0.85, 0, false, "N=500 util=0.85 no BL"},
+		{500, 0.92, 0, false, "N=500 util=0.92 no BL"},
+		{500, 0.85, 0.40, true, "N=500 util=0.85 BL=40% corr"},
+	}
+	type variant struct {
+		k         int
+		scoutMode int
+		label     string
+	}
+	variants := []variant{
+		{0, 0, "full (K=0)"},
+		{32, 0, "K=32 (shipped)"},
+		{64, 0, "K=64 (shipped, 8K>=N whole-fleet)"},
+		{64, 1, "K=64 (random 4K scout)"},
+		{64, 2, "K=64 (random min(4K,N/2) scout)"},
+	}
+	seeds := []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+
+	type key struct {
+		si   int
+		vi   int
+		seed uint64
+	}
+	results := map[key]evalResult{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+
+	for si, sc := range scenarios {
+		for vi, v := range variants {
+			for _, seed := range seeds {
+				ck := key{si, vi, seed}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					delay := time.Second
+					pol := policy{Kind: policyBlendRanked, K: v.k, LiveScoring: true, GateSample: true}
+					if v.k == 0 {
+						delay = 0
+						pol = policy{Kind: policyFull, LiveScoring: true}
+					}
+					cfg := defaultEvalConfig{
+						simConfig: simConfig{
+							Pods: sc.n, Gateways: 4, Utilization: sc.util, MeanWork: 200,
+							PrefixOn: true, PrefixGroups: 2000, PrefixPerPod: 32, PrefixSaving: 0.3,
+							SignalDelay: delay, Step: 5 * time.Millisecond,
+							Warmup: 3 * time.Second, Duration: 15 * time.Second,
+							SeedRandom: true, Seed: seed,
+							ImbalanceMinGap: 8, ImbalanceFactor: 2,
+						},
+						BlacklistFrac:       sc.bl,
+						CorrelatedBlacklist: sc.corr,
+						ScoutRandomCapMode:  v.scoutMode,
+					}
+					r := newEvalSim(cfg, pol).runEval()
+					mu.Lock()
+					results[ck] = r
+					mu.Unlock()
+				}()
+			}
+		}
+	}
+	wg.Wait()
+
+	var sb strings.Builder
+	sb.WriteString("\n### Mid-fleet 10-seed check (prefix=true, delay=1s, seeds 1..10, mean ± std)\n\n")
+	sb.WriteString("| Scenario | Policy | Mean Lat Ratio | P99 Ratio | Prefix Hit% | O(N) Reselect% |\n|---|---|---:|---:|---:|---:|\n")
+	for si, sc := range scenarios {
+		for vi, v := range variants {
+			if vi == 0 {
+				continue
+			}
+			means := make([]float64, 0, len(seeds))
+			p99s := make([]float64, 0, len(seeds))
+			var hitSum, reselSum, reqSum float64
+			for _, seed := range seeds {
+				r := results[key{si, vi, seed}]
+				f := results[key{si, 0, seed}]
+				means = append(means, r.MeanLatency/f.MeanLatency)
+				p99s = append(p99s, r.P99Latency/f.P99Latency)
+				hitSum += r.PrefixHit
+				reselSum += float64(r.Reselects)
+				reqSum += float64(r.Requests)
+			}
+			mm, ms := meanStd(means)
+			pm, ps := meanStd(p99s)
+			fmt.Fprintf(&sb, "| %s | %s | %.3fx ± %.3f | %.3fx ± %.3f | %.1f%% | %.2f%% |\n",
+				sc.name, v.label, mm, ms, pm, ps, 100*hitSum/float64(len(seeds)), 100*reselSum/reqSum)
 		}
 	}
 	t.Log(sb.String())

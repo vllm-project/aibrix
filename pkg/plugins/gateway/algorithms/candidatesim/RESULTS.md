@@ -4,7 +4,9 @@
 
 These results evaluate the shipped K-only candidate stage (`AIBRIX_ROUTING_CANDIDATE_K`, 4K+holders scout, best K/2 ranked by in-memory estimate + K/2 random, live stage 2, gate on sample) at `SignalDelay=1s` (matching the default-on `aibrix:rrq:*` remote running reader interval from #3532) against exact-count full scoring (`K=0`, `SignalDelay=0`, matching production `K=0` reading Redis on every request).
 
-Output of `CANDIDATE_SIM=defaultk go test -run 'TestCandidateSelectionDefaultK|TestCandidateSelectionInflightCap|TestCandidateSelectionBlacklist' -v ./pkg/plugins/gateway/algorithms/candidatesim/` (4 gateways, 3 seeds unless noted). Mean and P99 latency ratios are relative to exact `full (K=0)` on the same seed; lower is better (`1.00x` = same as exact full scoring).
+Output of `CANDIDATE_SIM=defaultk go test -run 'TestCandidateSelectionDefaultK|TestCandidateSelectionInflightCap|TestCandidateSelectionBlacklist|TestCandidateSelectionMidFleet10Seed' -v ./pkg/plugins/gateway/algorithms/candidatesim/` (4 gateways, 3 seeds unless noted). Mean and P99 latency ratios are relative to exact `full (K=0)` on the same seed; lower is better (`1.00x` = same as exact full scoring).
+
+**What this means for the default:** across `prefix=false` and large fleets (`N=2000`, where `8K < N`), `K=64` closes nearly all of the gap to exact full scoring (`1.01–1.02x` prefix-off, `0.96–0.98x` prefix-on) while cutting Redis reads `31×` and leaving every deployment with `N <= 64` untouched. On mid-size fleets (`N=300–500`) with `prefix=true` where `8K >= N`, the shipped whole-fleet scout causes mild stale-estimate herding even without a blacklist, so over 10 seeds `K=64` is no better than `K=32` (`1.146x` vs `1.058x` at `N=300, util=0.85`, and `1.100x` vs `1.095x` at `util=0.92`; see the 10-seed table below) and has higher tail variance under heavy correlated blacklists (`BL=40%`). That tradeoff is worth tracking explicitly when choosing `K=64` vs `K=32` (or whether to keep a random `4K` scout when `8K >= N`).
 
 ### Default-K sweep across fleet size and utilization (delay=1s vs exact full K=0)
 
@@ -65,7 +67,7 @@ Models the soft in-memory scout exclusion (#3467) followed by the authoritative 
 | N=500 | util=0.92 cap=12 prefix=true | K=16 / K=32 / K=64 | 0.000% / 0.000% / 0.000% | 0.000% / 0.000% / 0.000% | 1.17x / 1.12x / 1.10x | 1.16x / 1.12x / 1.10x |
 | N=500 | util=1.05 cap=4 prefix=false | full / K=16 / K=32 / K=64 | 6.296% / 5.836% / 6.126% / 6.092% | 0.000% / 5.836% / 6.126% / 6.079% | 1.00x / 0.96x / 0.99x / 0.99x | 1.00x / 0.94x / 0.98x / 0.99x |
 
-Across all sustainable loads tested (`util=0.85` and `util=0.92`), 429 and false-429 rates are `0.000%`. Under `105%` overload (`util=1.05, cap=4, prefix=false`), overall rejection rate matches `full (K=0)` (~`6.1–6.5%` vs `6.3%`) with no premature rejection cliff.
+Across all sustainable loads tested (`util=0.85` and `util=0.92`), 429 and false-429 rates are `0.000%`. Under `105%` overload (`util=1.05, cap=4, prefix=false`), the total rejection rate matches `full (K=0)` (~`6.1–6.5%` vs `6.3%`), but nearly all K-only rejections are false 429s (another pod elsewhere in the fleet had room at that moment, so the stage rejects different requests than full scoring would; full scoring has none by construction).
 
 ### Pod blacklist × K-only evaluation (prefix=true, util=0.85, delay=1s)
 
@@ -82,11 +84,42 @@ Models the cap-aware scout blacklist filter plus post-selection `excludeBlacklis
 | N=2000 BL=40% (correlated hot holders) | K=16 / K=32 / K=64 | 1.39x / 1.30x / 1.24x | 1.48x / 1.39x / 1.28x | 97.9% / 97.4% / 98.4% | 2.74% / 0.68% / 0.15% |
 | N=2000 BL=40% (correlated, random-only 4K cap) | K=32 / K=64 | 1.33x / 1.16x | 1.69x / 1.20x | 95.6% / 98.2% | 0.46% / 0.01% |
 
-Note on the `8K >= N` whole-fleet scout regime: when `8K >= N` (e.g., `K=64` at `N=300` or `N=500`), `candidateScout` estimates the entire ready fleet rather than drawing a per-request `4K` random scout. Under `delay=1s` and heavy correlated hot-holder blacklists (`BL=40%`), all gateways see the same whole-fleet stale estimates and rank the same top `K/2` pods before filling the random half, which raises tail latency (`1.46x`/`1.62x`) even though `O(N)` reselects drop to `0.00%`. Once `8K < N` (`N=2000`), each request draws a fresh `4K` random scout and `K=64` outperforms both `K=16` and `K=32` (`1.24x` mean, `1.28x` P99, `98.4%` hit, `0.15%` reselect).
+### Mid-fleet 10-seed check & random-scout comparison (`N=300` and `N=500`, `prefix=true`, `delay=1s`)
+
+On 3-seed `prefix=true` runs, differences under roughly `0.1x` are within seed noise (for example, `TestCandidateSelectionKOnly` and the 3-seed sweep above flip the `K=32` vs `K=64` ordering at `N=300, prefix=true, delay=1s` purely due to RNG consumption differences). To separate signal from noise and test keeping a random scout when `8K >= N` (dropping the `2*size >= len(readyPods)` whole-fleet shortcut in `candidateScout`), `TestCandidateSelectionMidFleet10Seed` runs 10 seeds (`1..10`, reporting mean ± population standard deviation):
+
+| Scenario (`prefix=true, delay=1s`) | Policy | Mean Lat Ratio | P99 Ratio | Prefix Hit% | O(N) Reselect% |
+| --- | --- | --- | --- | --- | --- |
+| N=300 util=0.85 no BL | K=32 (shipped) | 1.058x ± 0.105 | 1.042x ± 0.122 | 98.7% | 0.00% |
+| N=300 util=0.85 no BL | K=64 (shipped, 8K>=N whole-fleet) | 1.146x ± 0.056 | 1.143x ± 0.074 | 98.7% | 0.00% |
+| N=300 util=0.85 no BL | K=64 (random 4K scout) | 1.116x ± 0.049 | 1.110x ± 0.061 | 98.8% | 0.00% |
+| N=300 util=0.85 no BL | K=64 (random min(4K,N/2) scout) | 1.137x ± 0.061 | 1.130x ± 0.067 | 98.8% | 0.00% |
+| N=300 util=0.92 no BL | K=32 (shipped) | 1.095x ± 0.089 | 1.075x ± 0.104 | 98.8% | 0.00% |
+| N=300 util=0.92 no BL | K=64 (shipped, 8K>=N whole-fleet) | 1.100x ± 0.060 | 1.091x ± 0.068 | 98.9% | 0.00% |
+| N=300 util=0.92 no BL | K=64 (random 4K scout) | 1.108x ± 0.060 | 1.098x ± 0.059 | 98.9% | 0.00% |
+| N=300 util=0.92 no BL | K=64 (random min(4K,N/2) scout) | 1.126x ± 0.036 | 1.118x ± 0.046 | 98.9% | 0.00% |
+| N=300 util=0.85 BL=40% corr | K=32 (shipped) | 1.281x ± 0.088 | 1.321x ± 0.132 | 94.0% | 0.03% |
+| N=300 util=0.85 BL=40% corr | K=64 (shipped, 8K>=N whole-fleet) | 1.350x ± 0.165 | 1.508x ± 0.382 | 92.8% | 0.00% |
+| N=300 util=0.85 BL=40% corr | K=64 (random 4K scout) | 1.339x ± 0.103 | 1.373x ± 0.113 | 94.5% | 0.00% |
+| N=300 util=0.85 BL=40% corr | K=64 (random min(4K,N/2) scout) | 1.319x ± 0.218 | 1.419x ± 0.392 | 93.5% | 0.01% |
+| N=500 util=0.85 no BL | K=32 (shipped) | 1.058x ± 0.088 | 1.032x ± 0.099 | 99.3% | 0.00% |
+| N=500 util=0.85 no BL | K=64 (shipped, 8K>=N whole-fleet) | 1.096x ± 0.054 | 1.078x ± 0.057 | 99.3% | 0.00% |
+| N=500 util=0.85 no BL | K=64 (random 4K scout) | 1.088x ± 0.087 | 1.072x ± 0.093 | 99.4% | 0.00% |
+| N=500 util=0.85 no BL | K=64 (random min(4K,N/2) scout) | 1.067x ± 0.061 | 1.058x ± 0.069 | 99.4% | 0.00% |
+| N=500 util=0.92 no BL | K=32 (shipped) | 1.107x ± 0.092 | 1.097x ± 0.100 | 99.4% | 0.00% |
+| N=500 util=0.92 no BL | K=64 (shipped, 8K>=N whole-fleet) | 1.068x ± 0.069 | 1.058x ± 0.076 | 99.4% | 0.00% |
+| N=500 util=0.92 no BL | K=64 (random 4K scout) | 1.112x ± 0.082 | 1.111x ± 0.091 | 99.4% | 0.00% |
+| N=500 util=0.92 no BL | K=64 (random min(4K,N/2) scout) | 1.118x ± 0.047 | 1.110x ± 0.051 | 99.4% | 0.00% |
+| N=500 util=0.85 BL=40% corr | K=32 (shipped) | 1.215x ± 0.132 | 1.314x ± 0.417 | 95.8% | 0.21% |
+| N=500 util=0.85 BL=40% corr | K=64 (shipped, 8K>=N whole-fleet) | 1.785x ± 0.788 | 3.009x ± 2.662 | 91.5% | 0.00% |
+| N=500 util=0.85 BL=40% corr | K=64 (random 4K scout) | 1.419x ± 0.272 | 1.855x ± 1.044 | 93.7% | 0.00% |
+| N=500 util=0.85 BL=40% corr | K=64 (random min(4K,N/2) scout) | 1.533x ± 0.509 | 2.254x ± 1.819 | 93.2% | 0.00% |
+
+Note on the `8K >= N` whole-fleet scout regime: when `8K >= N` (e.g., `K=64` at `N=300` or `N=500`), `candidateScout` estimates the entire ready fleet rather than drawing a per-request `4K` random scout. With `prefix=true` and `delay=1s`, all gateways rank the same whole-fleet stale estimates into the top `K/2` slots before filling the random half. That affects both unblacklisted traffic (`N=300, util=0.85`: `1.146x` vs `K=32`'s `1.058x`; `N=500, util=0.85`: `1.096x` vs `1.058x`, while `N=500, util=0.92` favors `K=64` at `1.068x` vs `1.107x`) and heavy correlated hot-holder blacklists (`BL=40%`, where `K=64` tail latency spikes to `1.508x` P99 at `N=300` and `3.009x` P99 at `N=500` even though `O(N)` reselects stay `0.00%`). Keeping a random `4K` scout instead of the whole-fleet shortcut leaves no-blacklist latency mostly unchanged (`±0.03–0.04x`), but materially damps the correlated-blacklist tail (`N=300` P99 `1.508x → 1.373x`, `N=500` P99 `3.009x → 1.855x`, hit `+1.7–2.2%`) while keeping `O(N)` reselects at `0.00%`. Once `8K < N` (`N=2000`), `K=64` already uses a per-request `4K` scout and outperforms both `K=16` and `K=32` (`0.96–0.98x` no-BL, `1.24x` / `0.15%` reselect at `BL=40%` corr).
 
 ### Fixed `TestCandidateSelectionKOnly` baseline (`N=300` and `N=500`, 3 seeds)
 
-Output of `CANDIDATE_SIM=konly CANDIDATE_SIM_PODS=300` and `500` after fixing `TestCandidateSelectionKOnly` to run `policyFull` with exact live counts (`SignalDelay=0`) instead of stale `sc.delay`:
+Output of `CANDIDATE_SIM=konly CANDIDATE_SIM_PODS=300` and `500` after fixing `TestCandidateSelectionKOnly` to run `policyFull` with exact live counts (`SignalDelay=0`) instead of stale `sc.delay` (note: on 3 seeds with `prefix=true`, differences under ~`0.1x` are within seed noise; see the 10-seed table above for `K=32` vs `K=64` at `N=300/500`):
 
 | Fleet | Policy | prefix=false delay=100ms | prefix=false delay=1s | prefix=true delay=100ms | prefix=true delay=1s |
 | --- | --- | --- | --- | --- | --- |

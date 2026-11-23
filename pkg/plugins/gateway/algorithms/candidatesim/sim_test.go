@@ -446,6 +446,7 @@ func (s *sim) candidates(g, group int, universe []int, allowed map[int]bool) []i
 		}
 		return union(s.prefixSeeds(g, group, allowed), order[:k])
 	case policyBlendRanked:
+		// Keep in sync with evalSim.selectKOnly in default_eval_test.go.
 		if n <= k {
 			return universe
 		}
@@ -644,6 +645,7 @@ func (s *sim) work() float64 {
 	return s.rng.ExpFloat64() * s.cfg.MeanWork
 }
 
+// Keep in sync with evalSim.runEval in default_eval_test.go.
 func (s *sim) run() result {
 	cfg := s.cfg
 	totalCap := 0.0
