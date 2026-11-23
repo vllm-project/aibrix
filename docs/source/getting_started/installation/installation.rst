@@ -134,6 +134,12 @@ Install AIBrix in testing Environments
 Install Individual AIBrix Components
 ------------------------------------
 
+Each component below installs into the ``aibrix-system`` namespace, which its manifests don't create. Create the namespace first if it doesn't exist:
+
+.. code:: bash
+
+    kubectl create namespace aibrix-system
+
 
 Autoscaler
 ~~~~~~~~~~
