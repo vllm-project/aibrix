@@ -91,6 +91,32 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 			}
 		}
 	}
+	allErrs = append(allErrs, validateModelClaimServingPort(oldClaim, claim)...)
+	// Require a declaration on creation and prevent removal of an existing one.
+	// Grandfather absence only for legacy objects; keep the schema optional.
+	if spec.PerGPU == nil && (oldClaim == nil || oldClaim.Spec.PerGPU != nil) {
+		allErrs = append(allErrs, field.Required(path.Child("perGPU"), "a per-GPU cost declaration is required"))
+	}
+	if spec.PerGPU != nil && (oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.PerGPU, spec.PerGPU)) {
+		if _, err := utils.ModelClaimDeclaredBytes("maximumFootprint", spec.PerGPU.MaximumFootprint); err != nil {
+			allErrs = append(allErrs, field.Invalid(path.Child("perGPU", "maximumFootprint"), spec.PerGPU.MaximumFootprint.String(), err.Error()))
+		}
+		if _, err := utils.ModelClaimDeclaredBytes("kvFloor", spec.PerGPU.KVFloor); err != nil {
+			allErrs = append(allErrs, field.Invalid(path.Child("perGPU", "kvFloor"), spec.PerGPU.KVFloor.String(), err.Error()))
+		}
+	}
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return apierrors.NewInvalid(modelapi.GroupVersion.WithKind("ModelClaim").GroupKind(), claim.Name, allErrs)
+}
+
+// validateModelClaimServingPort validates new or changed port declarations,
+// while preserving metadata updates for legacy claims with engine port args.
+func validateModelClaimServingPort(oldClaim, claim *modelapi.ModelClaim) field.ErrorList {
+	var allErrs field.ErrorList
+	path := field.NewPath("spec")
+	spec := &claim.Spec
 	if oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.ServingPort, spec.ServingPort) {
 		if spec.ServingPort != nil {
 			port := *spec.ServingPort
@@ -109,21 +135,5 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 			}
 		}
 	}
-	// Require a declaration on creation and prevent removal of an existing one.
-	// Grandfather absence only for legacy objects; keep the schema optional.
-	if spec.PerGPU == nil && (oldClaim == nil || oldClaim.Spec.PerGPU != nil) {
-		allErrs = append(allErrs, field.Required(path.Child("perGPU"), "a per-GPU cost declaration is required"))
-	}
-	if spec.PerGPU != nil && (oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.PerGPU, spec.PerGPU)) {
-		if _, err := utils.ModelClaimDeclaredBytes("maximumFootprint", spec.PerGPU.MaximumFootprint); err != nil {
-			allErrs = append(allErrs, field.Invalid(path.Child("perGPU", "maximumFootprint"), spec.PerGPU.MaximumFootprint.String(), err.Error()))
-		}
-		if _, err := utils.ModelClaimDeclaredBytes("kvFloor", spec.PerGPU.KVFloor); err != nil {
-			allErrs = append(allErrs, field.Invalid(path.Child("perGPU", "kvFloor"), spec.PerGPU.KVFloor.String(), err.Error()))
-		}
-	}
-	if len(allErrs) == 0 {
-		return nil
-	}
-	return apierrors.NewInvalid(modelapi.GroupVersion.WithKind("ModelClaim").GroupKind(), claim.Name, allErrs)
+	return allErrs
 }

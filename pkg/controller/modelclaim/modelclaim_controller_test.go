@@ -4889,3 +4889,21 @@ func TestServingPortConflictUsesPlacementBackoff(t *testing.T) {
 	require.NoError(t, err)
 	require.Greater(t, second.RequeueAfter, first.RequeueAfter)
 }
+
+func TestServingPortSnapshotFiltersMultipleConflicts(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	a := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+	b := warmPod("warm-b", "b300-pool-a", true, corev1.PodRunning)
+	c := warmPod("warm-c", "b300-pool-a", true, corev1.PodRunning)
+	a.Status.PodIP, b.Status.PodIP, c.Status.PodIP = "10.0.0.11", "10.0.0.12", "10.0.0.13"
+	r, rt := newReconciler(t, pm, a, b, c)
+	rt.snapshots = map[string]*RuntimeSnapshot{
+		a.Status.PodIP: {Models: []RuntimeSnapshotModel{{ModelName: "other-a", Port: port, Phase: "sleeping"}}},
+		b.Status.PodIP: {Models: []RuntimeSnapshotModel{{ModelName: "other-b", Port: port, Phase: "failed"}}},
+	}
+	reconcileOnce(t, r, pm.Name)
+	require.Equal(t, []string{c.Status.PodIP}, rt.activatedOn)
+	require.Equal(t, c.Name, getModel(t, r, pm.Name).Status.Instances[0].Pod)
+}
