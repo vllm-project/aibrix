@@ -112,8 +112,11 @@ type kustomization struct {
 	NamePrefix string   `json:"namePrefix"`
 	Resources  []string `json:"resources"`
 	Patches    []struct {
-		Path  string `json:"path"`
-		Patch string `json:"patch"`
+		Path   string `json:"path"`
+		Patch  string `json:"patch"`
+		Target *struct {
+			Kind string `json:"kind"`
+		} `json:"target"`
 	} `json:"patches"`
 }
 
@@ -146,7 +149,9 @@ func managerArgs(t *testing.T, install string, k kustomization) []string {
 	require.NoError(t, err)
 	var args []string
 	for _, doc := range strings.Split(string(data), "\n---") {
-		if a, ok := managerContainerArgs(t, []byte(doc)); ok {
+		a, ok, err := managerContainerArgs([]byte(doc))
+		require.NoError(t, err)
+		if ok {
 			args = a
 		}
 	}
@@ -158,7 +163,20 @@ func managerArgs(t *testing.T, install string, k kustomization) []string {
 			patch, err = os.ReadFile(filepath.Join(configDir, install, p.Path))
 			require.NoError(t, err)
 		}
-		if a, ok := managerContainerArgs(t, patch); ok && a != nil {
+		a, ok, err := managerContainerArgs(patch)
+		if err != nil {
+			// Not a strategic merge patch: a JSON 6902 patch is a list of
+			// operations. Skipping one is only safe if it can't change the
+			// manager's args, so fail on one that targets a Deployment.
+			source := p.Path
+			if source == "" {
+				source = "inline patch"
+			}
+			require.False(t, p.Target != nil && p.Target.Kind == "Deployment",
+				"%s: can't read the JSON 6902 Deployment patch (%s); teach managerArgs about it", install, source)
+			continue
+		}
+		if ok && a != nil {
 			args = a
 		}
 	}
@@ -166,20 +184,23 @@ func managerArgs(t *testing.T, install string, k kustomization) []string {
 }
 
 // managerContainerArgs returns the args of the container named "manager" if
-// doc is a Deployment that has one.
-func managerContainerArgs(t *testing.T, doc []byte) ([]string, bool) {
-	t.Helper()
+// doc is a Deployment that has one. Strategic merge patches of other kinds
+// decode and are skipped; err is set for a document that isn't an object,
+// such as a JSON 6902 patch.
+func managerContainerArgs(doc []byte) ([]string, bool, error) {
 	var d appsv1.Deployment
-	require.NoError(t, yaml.Unmarshal(doc, &d))
+	if err := yaml.Unmarshal(doc, &d); err != nil {
+		return nil, false, err
+	}
 	if d.Kind != "Deployment" {
-		return nil, false
+		return nil, false, nil
 	}
 	for _, c := range d.Spec.Template.Spec.Containers {
 		if c.Name == "manager" {
-			return c.Args, true
+			return c.Args, true, nil
 		}
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 // manifestNames returns the names of the objects of the given kind in a file
