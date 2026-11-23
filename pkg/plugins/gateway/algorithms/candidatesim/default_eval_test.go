@@ -451,6 +451,7 @@ func TestCandidateSelectionDefaultK(t *testing.T) {
 				}
 				fmt.Fprintf(&sb, "| %d | %s |", n, label)
 				for _, prefixOn := range []bool{false, true} {
+					numSeeds := float64(len(seeds))
 					if k == 0 {
 						var meanSum, p99Sum, hitSum float64
 						for _, seed := range seeds {
@@ -460,9 +461,9 @@ func TestCandidateSelectionDefaultK(t *testing.T) {
 							hitSum += r.PrefixHit
 						}
 						if prefixOn {
-							fmt.Fprintf(&sb, " %.3fs / %.3fs / %.1f%% |", meanSum/3, p99Sum/3, 100*hitSum/3)
+							fmt.Fprintf(&sb, " %.3fs / %.3fs / %.1f%% |", meanSum/numSeeds, p99Sum/numSeeds, 100*hitSum/numSeeds)
 						} else {
-							fmt.Fprintf(&sb, " %.3fs / %.3fs |", meanSum/3, p99Sum/3)
+							fmt.Fprintf(&sb, " %.3fs / %.3fs |", meanSum/numSeeds, p99Sum/numSeeds)
 						}
 					} else {
 						var meanR, p99R, hitSum float64
@@ -478,9 +479,9 @@ func TestCandidateSelectionDefaultK(t *testing.T) {
 							hitSum += r.PrefixHit
 						}
 						if prefixOn {
-							fmt.Fprintf(&sb, " %.2fx (%.2f..%.2f) / %.2fx / %.1f%% |", meanR/3, lo, hi, p99R/3, 100*hitSum/3)
+							fmt.Fprintf(&sb, " %.2fx (%.2f..%.2f) / %.2fx / %.1f%% |", meanR/numSeeds, lo, hi, p99R/numSeeds, 100*hitSum/numSeeds)
 						} else {
-							fmt.Fprintf(&sb, " %.2fx (%.2f..%.2f) / %.2fx |", meanR/3, lo, hi, p99R/3)
+							fmt.Fprintf(&sb, " %.2fx (%.2f..%.2f) / %.2fx |", meanR/numSeeds, lo, hi, p99R/numSeeds)
 						}
 					}
 				}
@@ -591,9 +592,10 @@ func TestCandidateSelectionInflightCap(t *testing.T) {
 					if k > 0 {
 						label = fmt.Sprintf("K-only K=%d", k)
 					}
+					numSeeds := float64(len(seeds))
 					fmt.Fprintf(&sb, "| util=%.2f cap=%d prefix=%v | %s | %.3f%% | %.3f%% | %.2fx | %.2fx |\n",
 						tc.util, tc.cap, prefixOn, label,
-						100*rejSum/reqSum, 100*falseSum/reqSum, meanR/3, p99R/3)
+						100*rejSum/reqSum, 100*falseSum/reqSum, meanR/numSeeds, p99R/numSeeds)
 				}
 			}
 		}
