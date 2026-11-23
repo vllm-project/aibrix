@@ -147,9 +147,8 @@ spec:
                 minimum: 1
                 type: integer
                 x-kubernetes-validations:
-                - message: servingPort must not use runtime port 8080 or automatic
-                    ports 20000-20999
-                  rule: self != 8080 && (self < 20000 || self > 20999)
+                - message: servingPort must not use runtime port 8080
+                  rule: self != 8080
             required:
             - artifactURL
             - podSelector

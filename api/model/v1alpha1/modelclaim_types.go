@@ -48,12 +48,12 @@ const (
 // +kubebuilder:validation:XValidation:rule="has(self.engineConfig) == has(oldSelf.engineConfig) && (!has(self.engineConfig) || self.engineConfig == oldSelf.engineConfig)",message="engineConfig is immutable; create a new ModelClaim instead",fieldPath=".engineConfig"
 type ModelClaimSpec struct {
 	// ServingPort requests a stable inference port on each selected Pod. Omit it
-	// to let the runtime allocate a port. The runtime management port and its
-	// automatic allocation range are reserved. Changing the port needs a new Claim.
+	// to let the runtime allocate a port. The runtime management port is
+	// reserved. Changing the port needs a new Claim.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
-	// +kubebuilder:validation:XValidation:rule="self != 8080 && (self < 20000 || self > 20999)",message="servingPort must not use runtime port 8080 or automatic ports 20000-20999"
+	// +kubebuilder:validation:XValidation:rule="self != 8080",message="servingPort must not use runtime port 8080"
 	ServingPort *int32 `json:"servingPort,omitempty"`
 
 	// ModelName is the served model identifier that clients address in requests

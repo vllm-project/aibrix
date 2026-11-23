@@ -117,15 +117,7 @@ func validateModelClaimServingPort(oldClaim, claim *modelapi.ModelClaim) field.E
 	var allErrs field.ErrorList
 	path := field.NewPath("spec")
 	spec := &claim.Spec
-	if oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.ServingPort, spec.ServingPort) {
-		if spec.ServingPort != nil {
-			port := *spec.ServingPort
-			if port < 1 || port > 65535 || port == 8080 || (port >= 20000 && port <= 20999) {
-				allErrs = append(allErrs, field.Invalid(path.Child("servingPort"), port,
-					"must be 1-65535, excluding runtime port 8080 and automatic ports 20000-20999"))
-			}
-		}
-	}
+
 	if oldClaim == nil && spec.EngineConfig != nil {
 		for key := range spec.EngineConfig.Args {
 			flag, _, _ := utils.ModelClaimEngineFlag(key)

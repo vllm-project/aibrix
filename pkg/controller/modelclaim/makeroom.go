@@ -531,7 +531,7 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 			}
 			continue
 		}
-		shared = portUsableCandidates(ctx, claim, shared, readings)
+		shared = r.portUsableCandidates(ctx, claim, shared, readings)
 		perGPU, err := perGPUBytesOf(claim)
 		if err != nil {
 			continue

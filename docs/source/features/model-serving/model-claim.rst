@@ -98,7 +98,8 @@ Limitations
   part of annotation keys on the Pod.
 * **No access control.** The runtime agent's API on port 8080 has no
   authentication, and the engines accept vLLM's own sleep and wake calls on
-  their ports, from 20000 to 20999. Anything that can reach a pool Pod can
+  their ports, from 20000 to 20999 by default, or on a claim's
+  ``servingPort``. Anything that can reach a pool Pod can
   start, stop, sleep or wake its engines. Limit access to these ports, for
   example with a NetworkPolicy that admits only the ModelClaim controller,
   Envoy and Prometheus.
@@ -312,6 +313,11 @@ The sample claims:
    * - ``engineConfig.args``
      - Engine flags and their values, as strings. An empty string adds a flag
        without a value.
+   * - ``servingPort``
+     - Optional. A stable inference port requested on each selected Pod.
+       Omit it to let the runtime allocate a port. Valid values are 1
+       through 65535, excluding runtime management port 8080. Immutable;
+       see `Serving port`_.
    * - ``perGPU.maximumFootprint``
      - Needed for placement. The most GPU memory one instance holds on a GPU
        apart from its KV cache. That covers weights, CUDA graphs, activations
@@ -414,10 +420,69 @@ namespaces, Pod names and UIDs are deliberately absent from these labels.
 
 The runtime agent sets ``--model``, ``--served-model-name``, ``--host``,
 ``--port`` and ``--enable-sleep-mode`` itself, so leave them out of
-``engineConfig.args``. Leave out ``--gpu-memory-utilization`` as well, since
-kvcached manages the KV cache. A vLLM claim with that flag fails with
-``InvalidEngineConfig``. So does one whose parallel sizes are not positive
-whole numbers, or whose data parallel size is not 1.
+``engineConfig.args``. New claims that set ``--port`` are rejected at
+admission and told to use `Serving port`_ instead. A claim created before
+this rejection existed keeps the argument and can still be updated, but
+deleting and recreating it, as a GitOps prune or a Helm reinstall does,
+applies the rejection to the recreated claim. Leave out
+``--gpu-memory-utilization`` as well, since kvcached manages the KV cache. A
+vLLM claim with that flag fails with ``InvalidEngineConfig``. So does one
+whose parallel sizes are not positive whole numbers, or whose data parallel
+size is not 1.
+
+Serving port
+~~~~~~~~~~~~
+
+By default the runtime allocates each engine's port from 20000 through
+20999. Set ``servingPort`` to request a stable port instead, the same one on
+every selected Pod:
+
+.. code-block:: yaml
+
+   spec:
+     servingPort: 18081
+
+The value must be 1 through 65535, excluding runtime management port
+8080. The port is immutable, like ``engineConfig``: create a new claim to
+change it.
+
+The controller first consults each Pod's runtime snapshot. When the
+snapshot reports the Pod's listening ports, the controller skips a Pod
+whose port is taken, whether by an engine the claim does not own or by any
+other process, such as a sidecar, before any GPU memory is divided. An
+older runtime does not report its listeners, so the controller then falls
+back to the ports of the engines it knows, and to the runtime's own check:
+before it launches the engine, the runtime checks the port under its
+operation lock. Only that explicit pre-launch conflict answer lets the
+controller take back the provisional placement, restore the card's KV
+limits, and try another Pod; an ambiguous answer, such as a timeout, keeps
+the placement record rather than risk a second launch elsewhere. One pass
+tries at most two Pods that fail this late check. The claim briefly
+remembers each Pod that refused it and skips it until the memory expires,
+so a pool-wide unseen conflict cannot starve a healthy Pod. The memory
+also resets when the claim is changed or recreated. The
+``Scheduled`` condition reads ``False`` with reason ``PortInUse`` when
+that limit ends a pass, or when known listeners and recent refusals leave
+no candidate the claim does not already occupy. The message names the
+Pods involved; when the limit ended the pass, it notes that untried
+candidates will be tried on the next pass. Free the port or select
+another pool; the claim is retried.
+
+A port check cannot reserve the port, so another process can still take it
+between the check and the engine's own bind. ``servingPort`` also does not
+assign a served model name to a claim: give each claim its own
+``modelName``. A different claim with the same served name but another port
+can be rejected by the runtime instead of retried as a port conflict.
+
+Roll the controller and the pools' runtime images before creating claims
+with ``servingPort``. A controller older than the applied CRD accepts the
+field and ignores it, with no condition. An older runtime neither reports
+the Pod's listening ports nor answers the typed pre-launch conflict, so
+conflicts are not handled as described here. If the runtime answers with an engine on another port than
+requested, the claim keeps its instance record without a port and stays
+``Activating``, off the route, with a ``ServingPortMismatch`` warning Event.
+The controller does not try another Pod, because the engine may already have
+started. Upgrade the runtime, or remove the conflicting engine.
 
 Declare what a model needs on a GPU
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -725,6 +790,11 @@ Until then, it gives one of these reasons:
    * - ``WaitingForPlacementTurn``
      - Another feasible claim has an earlier priority/FIFO placement turn for
        the same pool.
+   * - ``PortInUse``
+     - The claim's ``servingPort`` is taken on the Pods named in the
+       message, seen in a snapshot or a recent refusal, or refused when
+       tried. A pass tries at most two refusing Pods, and untried Pods
+       are tried on the next pass. Free the port or select another pool.
 
 The ``Ready`` condition is ``True`` with ``ModelClaimActive`` while the claim
 serves. Otherwise, its reason says what holds the claim back:
@@ -848,6 +918,8 @@ The controller exports these metrics:
   ``aibrix_modelclaim_ready_replicas``, for each claim;
 * ``aibrix_modelclaim_activating``, 1 while a claim's engine starts;
 * ``aibrix_modelclaim_activation_total``, engine starts by result;
+* ``aibrix_modelclaim_port_conflicts_total``, port conflicts the runtime
+  reports before launch, including when a missing engine is restarted;
 * ``aibrix_modelclaim_no_ready_duration_seconds``, how long a claim has not
   been ready;
 * ``aibrix_modelclaim_pool_policy_valid``, whether a pool's sleep policy is
@@ -903,7 +975,10 @@ A claim stays ``Pending``
    that the Pod has both labels, is running, and has as many GPUs as the claim
    needs. A message about GPU memory names the Pod that came closest and what
    it lacks. For ``InvalidPerGPU`` or ``TooLargeForAnyCard``, correct
-   ``perGPU``.
+   ``perGPU``. ``PortInUse`` means the claim's ``servingPort`` is taken
+   on the Pods named in the message, seen in a snapshot or a recent
+   refusal, or refused when tried; untried Pods continue on the next
+   pass. Free the port, or recreate the claim with another port or pool.
 
 A claim reads ``Failed`` with ``InvalidEngineConfig``
    Remove ``--gpu-memory-utilization``, and check the parallel sizes. Engine

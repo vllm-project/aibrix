@@ -102,7 +102,7 @@ func (r *ModelClaimReconciler) claimFeasibleForPlacement(
 	if !valid {
 		return false
 	}
-	shared = portUsableCandidates(ctx, claim, shared, readings)
+	shared = r.portUsableCandidates(ctx, claim, shared, readings)
 	admissible, _ := admissibleCandidates(shared, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(claim))
 	if len(admissible) > 0 {
 		return true
@@ -137,7 +137,7 @@ func (r *ModelClaimReconciler) claimFeasibleForPlacementWithPolicy(
 	if !valid {
 		return false
 	}
-	shared = portUsableCandidates(ctx, claim, shared, readings)
+	shared = r.portUsableCandidates(ctx, claim, shared, readings)
 	admissible, _ := admissibleCandidates(shared, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(claim))
 	if len(admissible) > 0 {
 		return true

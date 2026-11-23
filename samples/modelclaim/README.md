@@ -50,8 +50,7 @@ kubectl delete -f samples/modelclaim/warm-runtime-pool.yaml
 Add `spec.servingPort: 18081` to a ModelClaim to request that port on every
 selected Pod. Omit it to keep automatic allocation. The port is immutable,
 like the engine configuration; create a new claim to change it. Valid values
-are 1 through 65535, excluding runtime management port 8080 and the automatic
-allocation range 20000 through 20999. Do not set `--port` in
+are 1 through 65535, excluding runtime management port 8080. Do not set `--port` in
 `spec.engineConfig.args`; new claims reject it and direct you to `servingPort`.
 Existing claims using that argument can still receive metadata updates.
 
@@ -67,9 +66,7 @@ unrelated processes that bind it after the check.
 Upgrade both controller and runtime sidecars for conflict-aware placement.
 Older runtime images do not provide the typed pre-launch conflict contract.
 
-Port reservations above are the ModelClaim API policy, not discovery of a
-custom runtime allocator range. Keep runtime allocation configuration
-consistent with it. Serving ports do not fix same-name ownership across
+Serving ports do not fix same-name ownership across
 claims: use distinct served model names. A different claim with the same
 served name but another port can still be rejected by the runtime rather
 than retried as a port conflict. A rejected launch can leave neighboring

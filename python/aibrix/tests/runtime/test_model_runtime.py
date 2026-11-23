@@ -3423,3 +3423,109 @@ def test_concurrent_explicit_port_has_only_one_launch():
     assert sum(result is not None for result in results) == 1
     assert len(agent._launcher.launched) == 1
     assert len(agent.list_models()) == 1
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.2"])
+def test_explicit_port_rejects_wildcard_and_specific_address_listeners(host):
+    import socket
+
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, 0))
+        listener.listen()
+        with pytest.raises(PortInUseError):
+            agent.activate(
+                model_name="first",
+                artifact_url="hf://x",
+                port=listener.getsockname()[1],
+            )
+        assert agent._launcher.launched == []
+        assert agent.list_models() == []
+
+
+def test_explicit_port_can_reuse_after_server_active_close():
+    import socket
+
+    agent = make_agent()
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with socket.socket() as client:
+            client.connect(("127.0.0.1", port))
+            conn, _ = listener.accept()
+            conn.sendall(b"x")
+            assert client.recv(1) == b"x"
+            conn.close()
+            assert client.recv(1) == b""
+    assert (
+        agent.activate(model_name="first", artifact_url="hf://x", port=port).port
+        == port
+    )
+
+
+def test_explicit_port_permission_error_is_not_a_conflict(monkeypatch):
+    import errno
+    from unittest.mock import MagicMock
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    sock = MagicMock()
+    sock.__enter__.return_value.bind.side_effect = OSError(errno.EACCES, "denied")
+    monkeypatch.setattr(runtime_module.socket, "socket", lambda *args: sock)
+    with pytest.raises(ValueError, match="cannot bind serving port"):
+        agent.activate(model_name="first", artifact_url="hf://x", port=80)
+    assert agent._launcher.launched == []
+    assert agent.list_models() == []
+
+
+def test_automatic_port_skips_probe_errors_and_tries_next(monkeypatch):
+    agent = make_agent()
+    attempted = []
+
+    def probe(port):
+        attempted.append(port)
+        if len(attempted) == 1:
+            raise ValueError("cannot bind serving port: permission denied")
+        return True
+
+    monkeypatch.setattr(agent, "_port_free", probe)
+    inst = agent.activate(model_name="first", artifact_url="hf://x")
+    assert attempted == [20000, 20001]
+    assert inst.port == 20001
+
+
+def test_snapshot_lists_external_listener():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.2", 0))
+        listener.listen()
+        assert listener.getsockname()[1] in listening_ports()
+
+
+def test_listener_observation_unavailable_is_unknown(monkeypatch):
+    import builtins
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    def unavailable(*args, **kwargs):
+        raise PermissionError("not accessible")
+
+    monkeypatch.setattr(builtins, "open", unavailable)
+    assert listening_ports() is None
+
+
+def test_explicit_port_in_automatic_range_remains_reserved_for_its_model():
+    agent = make_agent()
+    fixed = agent.activate(model_name="fixed", artifact_url="hf://x", port=20000)
+    automatic = agent.activate(model_name="automatic", artifact_url="hf://x")
+    assert fixed.port == 20000
+    assert automatic.port == 20001

@@ -45,6 +45,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -82,10 +83,12 @@ type fakeRuntime struct {
 	snapshotCalls int
 	snapshotErrOn map[string]error
 	// snapshotCallsTo counts the snapshot reads of each runtime, by pod IP.
-	snapshotCallsTo map[string]int
-	portSeq         int32
-	failActivate    bool
-	portConflictOn  map[string]bool
+	snapshotCallsTo        map[string]int
+	portSeq                int32
+	failActivate           bool
+	portConflictOn         map[string]bool
+	activationPortOverride int32
+	onActivate             func()
 	// failActivateOn makes the runtimes of the pods listed, by IP, refuse
 	// every start, and activatedOn is the pod each start was asked of.
 	failActivateOn map[string]bool
@@ -131,6 +134,9 @@ func (f *fakeRuntime) Activate(_ context.Context, podIP string, runtimePort int,
 	if f.silent || f.silentIPs[podIP] {
 		return nil, fmt.Errorf("runtime %s:%d %w", podIP, runtimePort, errRuntimeSilent)
 	}
+	if f.onActivate != nil {
+		f.onActivate()
+	}
 	f.activateCalls = append(f.activateCalls, *req)
 	f.activatedOn = append(f.activatedOn, podIP)
 	if f.portConflictOn[podIP] {
@@ -143,6 +149,9 @@ func (f *fakeRuntime) Activate(_ context.Context, podIP string, runtimePort int,
 	port := req.Port
 	if port == 0 {
 		port = 9000 + f.portSeq
+	}
+	if f.activationPortOverride != 0 {
+		port = f.activationPortOverride
 	}
 	if f.models == nil {
 		f.models = map[string]ModelInfo{}
@@ -4906,4 +4915,295 @@ func TestServingPortSnapshotFiltersMultipleConflicts(t *testing.T) {
 	reconcileOnce(t, r, pm.Name)
 	require.Equal(t, []string{c.Status.PodIP}, rt.activatedOn)
 	require.Equal(t, c.Name, getModel(t, r, pm.Name).Status.Instances[0].Pod)
+}
+
+func TestServingPortMismatchKeepsOwnershipWithoutRouting(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	a := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+	b := warmPod("warm-b", "b300-pool-a", true, corev1.PodRunning)
+	a.Status.PodIP, b.Status.PodIP = "10.0.0.11", "10.0.0.12"
+	r, rt := newReconciler(t, pm, a, b)
+	rt.activationPortOverride = 20003
+	reconcileOnce(t, r, pm.Name)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Zero(t, got.Status.Instances[0].Port)
+	require.Len(t, rt.activateCalls, 1)
+	reconcileOnce(t, r, pm.Name)
+	got = getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Zero(t, got.Status.Instances[0].Port)
+	assert.Equal(t, "ServingPortMismatch", got.Status.Instances[0].Reason)
+	assert.Zero(t, got.Status.ReadyReplicas)
+	require.Len(t, rt.activateCalls, 1, "a mismatched success may have started, never retry elsewhere")
+}
+
+func TestServingPortConflictRestoresNeighboursFromFreshAccount(t *testing.T) {
+	pm := claimWithCost(500, 100)
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, rt := newReconciler(t, pm, pod, neighbour)
+	rt.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	rt.portConflictOn = map[string]bool{pod.Status.PodIP: true}
+	// Make cached listings stale only during the rejected attempt. APIReader
+	// retains the fresh status account used by conflict recovery.
+	base := r.Client.(client.WithWatch)
+	stale := &modelv1alpha1.ModelClaimList{}
+	rt.onActivate = func() {
+		require.NoError(t, base.List(context.Background(), stale, client.InNamespace(testNamespace)))
+	}
+	r.APIReader = base
+	r.Client = interceptor.NewClient(base, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		if claims, ok := list.(*modelv1alpha1.ModelClaimList); ok && len(stale.Items) > 0 {
+			*claims = *stale.DeepCopy()
+			return nil
+		}
+		return c.List(ctx, list, opts...)
+	}})
+	reconcileOnce(t, r, pm.Name)
+	require.NotEmpty(t, rt.kvLimitCalls)
+	t.Logf("KV calls: %+v", rt.kvLimitCalls)
+	assert.Equal(t, int64(700), rt.kvLimitCalls[len(rt.kvLimitCalls)-1].LimitBytes)
+	assert.Empty(t, getModel(t, r, pm.Name).Status.Instances)
+}
+
+func TestMissingEnginePortConflictDropsOnlyKnownUnstartedRecord(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, rt := newReconciler(t, pm, pod)
+	rt.portConflictOn = map[string]bool{pod.Status.PodIP: true}
+	inst := modelv1alpha1.ModelClaimInstance{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating}
+	stays, started := r.startMissingEngine(context.Background(), pm, &inst, pod.Status.PodIP)
+	assert.False(t, stays)
+	assert.False(t, started)
+}
+
+func TestHiddenPortConflictBatchMakesProgressToLaterPod(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	objs := []client.Object{pm}
+	for i := 0; i < 5; i++ {
+		p := warmPod(fmt.Sprintf("warm-%d", i), "b300-pool-a", true, corev1.PodRunning)
+		p.Status.PodIP = fmt.Sprintf("10.0.0.%d", 10+i)
+		objs = append(objs, p)
+	}
+	r, rt := newReconciler(t, objs...)
+	rt.portConflictOn = map[string]bool{"10.0.0.10": true, "10.0.0.11": true, "10.0.0.12": true, "10.0.0.13": true}
+	now := time.Now()
+	r.Now = func() time.Time { return now }
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	for pass := 1; pass <= 3; pass++ {
+		before := len(rt.activateCalls)
+		reconcileOnce(t, r, pm.Name)
+		assert.LessOrEqual(t, len(rt.activateCalls)-before, 2)
+		now = now.Add(DefaultRequeueDuration + time.Second)
+	}
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-4", got.Status.Instances[0].Pod)
+	assert.Len(t, rt.activateCalls, 5)
+}
+
+func TestSnapshotListenerAvoidsActivationAndKVChanges(t *testing.T) {
+	pm := claimWithCost(500, 100)
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	snapshot.ListeningPorts = []int32{18081}
+	r, rt := newReconciler(t, pm, pod)
+	rt.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	reconcileOnce(t, r, pm.Name)
+	assert.Empty(t, rt.activateCalls)
+	assert.Empty(t, rt.kvLimitCalls)
+	assert.Equal(t, "PortInUse", scheduled(t, r, pm.Name).Reason)
+}
+
+func TestRecentPortHistoryExpiresAndSeparatesRecreatedClaim(t *testing.T) {
+	pm := sampleModelClaim()
+	pm.UID = "old"
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	h := &portConflictHistory{entries: map[types.NamespacedName]recentPortConflicts{}}
+	now := time.Now()
+	h.note(pm, pod, now, 1)
+	usable, _ := h.filter(pm, []corev1.Pod{*pod}, now)
+	assert.Empty(t, usable)
+	usable, _ = h.filter(pm, []corev1.Pod{*pod}, now.Add(3*time.Minute))
+	assert.Len(t, usable, 1)
+	h.note(pm, pod, now, 1)
+	pm.UID = "new"
+	usable, _ = h.filter(pm, []corev1.Pod{*pod}, now)
+	assert.Len(t, usable, 1)
+}
+
+// warm-1 has a 40 GiB card and warm-2 an 80 GiB one, where the claim other
+// serves on 18081. The newcomer needs 60 GiB, so only warm-2 could ever hold
+// it. When it asks for 18081, only the port stops it there, so it is not too
+// large for every card. Without a port it is placed on warm-2.
+func TestPortOccupiedLargeCardIsNotPermanentlyTooSmall(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		port *int32
+	}{{"asks for the taken port", ptr.To[int32](18081)}, {"asks for no port", nil}} {
+		t.Run(tt.name, func(t *testing.T) {
+			pm := claimWithCost(50<<30, 10<<30)
+			pm.UID = types.UID("newcomer-uid")
+			pm.Spec.ServingPort = tt.port
+			small, smallSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 40<<30)
+			larger, largerSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 80<<30)
+			other := claimOnPod("other", larger.Name, modelv1alpha1.ModelClaimActive, 8<<30, 2<<30)
+			other.UID = types.UID("other-uid")
+			engine := engineHolding("other", 1<<30, 2<<30)
+			engine.Port = 18081
+			engine.ClaimRef = &ModelClaimRef{Namespace: testNamespace, Name: "other", UID: "other-uid"}
+			largerSnapshot.Models = []RuntimeSnapshotModel{engine}
+			r, runtime := newReconciler(t, pm, small, larger, other)
+			runtime.snapshots = map[string]*RuntimeSnapshot{
+				small.Status.PodIP:  smallSnapshot,
+				larger.Status.PodIP: largerSnapshot,
+			}
+
+			reconcileOnce(t, r, pm.Name)
+
+			got := getModel(t, r, pm.Name)
+			condition := scheduled(t, r, pm.Name)
+			t.Logf("Scheduled %s: %s; instances %v", condition.Reason, condition.Message, got.Status.Instances)
+			if tt.port == nil {
+				if assert.Len(t, got.Status.Instances, 1) {
+					assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+				}
+				return
+			}
+			assert.Empty(t, got.Status.Instances)
+			assert.Contains(t, condition.Message, "warm-2")
+			assert.Contains(t, condition.Message, "18081")
+			assert.Contains(t, condition.Message, "occupied")
+			assert.NotEqual(t, constants.ModelClaimReasonTooLargeForAnyCard, condition.Reason,
+				"warm-2 could hold the claim once its port is free")
+		})
+	}
+}
+
+func newPortClaimForPlacement(t *testing.T, r *ModelClaimReconciler, name string, port *int32, created metav1.Time) *modelv1alpha1.ModelClaim {
+	t.Helper()
+	claim := withFinalizer(claimOnPod(name, "", modelv1alpha1.ModelClaimActive, 300, 100))
+	claim.UID = types.UID(name + "-uid")
+	claim.Status.Instances = nil
+	claim.CreationTimestamp = created
+	claim.Spec.ServingPort = port
+	claim.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
+	require.NoError(t, r.Create(context.Background(), claim))
+	return getModel(t, r, name)
+}
+
+// warm-1 has room, but its resident a already serves on 9001, the port the
+// newcomer asks for. warm-2 is full of idle models, and its pool keeps no wake
+// reserve, so a sleep there would make room. Room should be made on warm-2.
+func TestPortConflictElsewhereStillMakesRoom(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 2,
+		serving{"a", "warm-1", 300, 100, at0758},
+		serving{"b", "warm-2", 300, 100, at0758},
+		serving{"c", "warm-2", 300, 100, at0758},
+		serving{"d", "warm-2", 300, 100, at0759},
+	)
+	claim := newPortClaimForPlacement(t, r, "newcomer", ptr.To[int32](9001), metav1.NewTime(at0759))
+
+	reconcileOnce(t, r, claim.Name)
+
+	condition := scheduledOf(t, r, claim.Name)
+	t.Logf("Scheduled %s: %s; sleeps %v; activates %d", condition.Reason, condition.Message, runtime.sleepCalls, len(runtime.activateCalls))
+	assert.NotEmpty(t, runtime.sleepCalls, "an idle model on warm-2 is put to sleep to make room")
+	assert.Equal(t, scheduledReasonMakingRoom, condition.Reason)
+}
+
+// warm-1 is full of idle models, and a serves on 9001, the port the newcomer
+// asks for. A sleeping engine keeps its port, so no sleep there can let the
+// newcomer in, and none should be asked for.
+func TestNoRoomIsMadeWherePortRemainsTaken(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758},
+		serving{"b", "warm-1", 300, 100, at0758},
+		serving{"c", "warm-1", 300, 100, at0759},
+	)
+	claim := newPortClaimForPlacement(t, r, "newcomer", ptr.To[int32](9001), metav1.NewTime(at0759))
+
+	reconcileOnce(t, r, claim.Name)
+
+	condition := scheduledOf(t, r, claim.Name)
+	t.Logf("Scheduled %s: %s; sleeps %v", condition.Reason, condition.Message, runtime.sleepCalls)
+	assert.Empty(t, runtime.sleepCalls, "no model is put to sleep on a Pod whose port stays taken")
+	assert.NotEqual(t, scheduledReasonMakingRoom, condition.Reason)
+
+	// The next pass: whatever was put to sleep, the port is still a's.
+	reconcileOnce(t, r, claim.Name)
+	condition = scheduledOf(t, r, claim.Name)
+	ip := podNamed(t, r, "warm-1").Status.PodIP
+	for _, m := range runtime.snapshots[ip].Models {
+		t.Logf("after the second pass: %s phase=%s port=%d", m.ModelName, m.Phase, m.Port)
+	}
+	t.Logf("second pass: Scheduled %s: %s; instances %d; activates %d", condition.Reason, condition.Message,
+		len(getModel(t, r, claim.Name).Status.Instances), len(runtime.activateCalls))
+	for pass := 3; pass <= 4; pass++ {
+		reconcileOnce(t, r, claim.Name)
+		condition = scheduledOf(t, r, claim.Name)
+		t.Logf("pass %d: Scheduled %s: %s; sleeps so far %d; activates %d", pass, condition.Reason, condition.Message,
+			len(runtime.sleepCalls), len(runtime.activateCalls))
+		assert.Empty(t, runtime.sleepCalls, "port-blocked Pod stays untouched across passes")
+		assert.Equal(t, "PortInUse", condition.Reason)
+	}
+}
+
+// The older claim asks for 9001, which a holds on the only Pod. It cannot be
+// placed, so it should not hold up the newer claim, which asks for no port.
+func TestPortBlockedClaimDoesNotHoldPlacementTurn(t *testing.T) {
+	r, _ := servingPool(t, keepNoWakeReserve, 1, serving{"a", "warm-1", 300, 100, at0758})
+	newPortClaimForPlacement(t, r, "older", ptr.To[int32](9001), metav1.NewTime(at0758))
+	newer := newPortClaimForPlacement(t, r, "newer", nil, metav1.NewTime(at0759))
+
+	reconcileOnce(t, r, newer.Name)
+
+	condition := scheduledOf(t, r, newer.Name)
+	t.Logf("newer: Scheduled %s: %s; instances %d", condition.Reason, condition.Message, len(getModel(t, r, newer.Name).Status.Instances))
+	assert.Len(t, getModel(t, r, newer.Name).Status.Instances, 1, "the newer claim is placed")
+}
+
+func TestExplicitPortInsideAutomaticRangeIsForwarded(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(20003)
+	pm.Spec.ServingPort = &port
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, rt := newReconciler(t, pm, pod)
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, rt.activateCalls, 1)
+	assert.Equal(t, port, rt.activateCalls[0].Port)
+	assert.Equal(t, port, getModel(t, r, pm.Name).Status.Instances[0].Port)
+}
+
+func TestPortHistoryDoesNotHideReplacementPodWithSameName(t *testing.T) {
+	pm := sampleModelClaim()
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.UID = "old-pod"
+	h := &portConflictHistory{entries: map[types.NamespacedName]recentPortConflicts{}}
+	now := time.Now()
+	h.note(pm, pod, now, 1)
+	replacement := pod.DeepCopy()
+	replacement.UID = "new-pod"
+	usable, _ := h.filter(pm, []corev1.Pod{*replacement}, now)
+	assert.Len(t, usable, 1)
+	replacement = pod.DeepCopy()
+	replacement.Status.PodIP = "10.0.0.99"
+	usable, _ = h.filter(pm, []corev1.Pod{*replacement}, now)
+	assert.Len(t, usable, 1)
 }

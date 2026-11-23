@@ -25,7 +25,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	urlpkg "net/url"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -104,12 +104,12 @@ func (e *runtimeRefusal) Error() string { return e.message }
 // such as a proxy that gave up waiting. It says nothing about what the runtime
 // did, so it is no refusal. Neither is a status below 400 that the runtime
 // does not send for this call.
-func statusError(method, url string, status int, body []byte) error {
-	message := fmt.Sprintf("runtime %s %s returned %d: %s", method, url, status, body)
+func statusError(method, endpointURL string, status int, body []byte) error {
+	message := fmt.Sprintf("runtime %s %s returned %d: %s", method, endpointURL, status, body)
 	var answer struct {
 		Status string `json:"status"`
 	}
-	endpoint, _ := urlpkg.Parse(url)
+	endpoint, _ := url.Parse(endpointURL)
 	if method == http.MethodPost && endpoint != nil && endpoint.Path == activatePath && status == http.StatusConflict {
 		var conflict struct {
 			Status string `json:"status"`
@@ -154,7 +154,7 @@ func callNotDone(err error) bool {
 	if errors.Is(err, errRuntimeSilent) {
 		return true
 	}
-	var unsent *urlpkg.Error
+	var unsent *url.Error
 	if errors.As(err, &unsent) && unsent.Op == "parse" {
 		return true
 	}
@@ -318,6 +318,7 @@ type RuntimeSnapshot struct {
 	Accelerators    []RuntimeAcceleratorSnapshot `json:"accelerators"`
 	Models          []RuntimeSnapshotModel       `json:"models"`
 	CachedArtifacts []string                     `json:"cached_artifacts"`
+	ListeningPorts  []int32                      `json:"listening_ports,omitempty"`
 }
 
 // RuntimeClient is the control-plane view of the per-runtime sidecar. The

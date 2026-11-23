@@ -91,6 +91,11 @@ var boundedPolicyReasons = map[string]struct{}{
 // does not leave a series frozen at its last value); counters are left to
 // stop exporting on their own, per Prometheus convention.
 var (
+	claimPortConflictsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Subsystem: constants.AibrixSubsystemName,
+		Name:      "modelclaim_port_conflicts_total",
+		Help:      "Count of pre-launch serving port conflicts returned by runtimes.",
+	})
 	claimDesiredReplicas = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Subsystem: constants.AibrixSubsystemName,
@@ -176,6 +181,7 @@ var (
 
 func init() {
 	metrics.Registry.MustRegister(
+		claimPortConflictsTotal,
 		claimDesiredReplicas,
 		claimReadyReplicas,
 		claimActivating,

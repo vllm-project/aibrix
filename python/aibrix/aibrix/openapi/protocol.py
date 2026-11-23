@@ -277,3 +277,4 @@ class RuntimeSnapshotResponse(NoProtectedBaseModel):
     accelerators: List[RuntimeAcceleratorSnapshot]
     models: List[RuntimeSnapshotModel]
     cached_artifacts: List[str]
+    listening_ports: Optional[List[int]] = None

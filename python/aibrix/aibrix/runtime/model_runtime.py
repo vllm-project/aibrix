@@ -27,6 +27,7 @@ without a GPU (MockEngineLauncher).
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -2433,6 +2434,7 @@ class ModelRuntime:
             "accelerators": accelerators,
             "models": models,
             "cached_artifacts": cached_artifacts(),
+            "listening_ports": listening_ports(),
         }
 
     @staticmethod
@@ -2480,18 +2482,52 @@ class ModelRuntime:
         for port in range(self._port_lo, self._port_hi):
             if port in used:
                 continue
-            if _external_runtime_mock_enabled() or self._port_free(port):
-                return port
+            try:
+                if _external_runtime_mock_enabled() or self._port_free(port):
+                    return port
+            except ValueError:
+                # Automatic allocation can try another port. An explicit
+                # request instead reports the actual bind error to its caller.
+                continue
         raise RuntimeError("no free port available in agent range")
 
     @staticmethod
     def _port_free(port: int) -> bool:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(("127.0.0.1", port))
+                # Match the launcher's wildcard listener and allow immediate
+                # reuse after an engine leaves accepted sockets in TIME_WAIT.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("0.0.0.0", port))
                 return True
-        except OSError:
-            return False
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return False
+            raise ValueError(f"cannot bind serving port {port}: {exc}") from exc
+
+
+def listening_ports() -> Optional[List[int]]:
+    """Advisory listeners in this Linux network namespace, including sidecars.
+
+    A missing/unreadable proc table means unknown, never proof of availability.
+    The locked pre-launch bind check remains authoritative.
+    """
+    ports = set()
+    try:
+        for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(table) as stream:
+                    for line in stream.readlines()[1:]:
+                        fields = line.split()
+                        if fields[3] == "0A":
+                            ports.add(int(fields[1].rsplit(":", 1)[1], 16))
+            except FileNotFoundError:
+                if table.endswith("tcp6"):
+                    continue
+                raise
+    except (OSError, ValueError, IndexError):
+        return None
+    return sorted(ports)
 
 
 # --------------------------------------------------------------------------- #
