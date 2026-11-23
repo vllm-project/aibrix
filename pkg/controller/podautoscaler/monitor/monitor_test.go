@@ -120,3 +120,25 @@ func TestMonitor_RecordAndForgetScaleActionConcurrently(t *testing.T) {
 	m.ForgetScaleAction("default", "llm")
 	assert.Equal(t, 0, testutil.CollectAndCount(autoscalerScaleAction))
 }
+
+func TestMonitor_RecordMetricSourceHealth(t *testing.T) {
+	autoscalerFailedMetricSources.Reset()
+	autoscalerScaleDownHeld.Reset()
+
+	m := New()
+	m.RecordMetricSourceHealth("default", "llm", 1, true)
+	m.RecordMetricSourceHealth("default", "other", 0, false)
+	assert.Equal(t, 1.0, testutil.ToFloat64(autoscalerFailedMetricSources.WithLabelValues("default", "llm")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(autoscalerScaleDownHeld.WithLabelValues("default", "llm")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(autoscalerScaleDownHeld.WithLabelValues("default", "other")))
+
+	// The source recovers.
+	m.RecordMetricSourceHealth("default", "llm", 0, false)
+	assert.Equal(t, 0.0, testutil.ToFloat64(autoscalerFailedMetricSources.WithLabelValues("default", "llm")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(autoscalerScaleDownHeld.WithLabelValues("default", "llm")))
+
+	// A deleted PodAutoscaler stops being exported.
+	m.ForgetScaleAction("default", "llm")
+	assert.Equal(t, 1, testutil.CollectAndCount(autoscalerFailedMetricSources))
+	assert.Equal(t, 1, testutil.CollectAndCount(autoscalerScaleDownHeld))
+}
