@@ -139,7 +139,8 @@ gone, so with ``maxSurge: 0`` each rolling-update batch waits at least
 RoleSets that are not terminating count as ready. In pooled mode, the
 replacement for a directly deleted RoleSet is created only after the old
 RoleSet is gone, so for up to ``timeoutSeconds`` its roles have only draining
-Pods.
+Pods. During that time the StormService does not report ``Ready`` and counts
+the RoleSet as not ready.
 
 
 Topology Policy
