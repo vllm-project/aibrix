@@ -1333,77 +1333,129 @@ func (r *pdRouter) scoreDecodePodsWithLedger(routingCtx *types.RoutingContext, f
 					"request_id", routingCtx.RequestID, "pod", pod.Name, "roleset", rolesetName,
 					"cold_score", coldScore, "pending", pending)
 			}
-			if existing, exists := out.PerRoleset[rolesetName]; !exists || coldScore < existing.Score {
-				out.PerRoleset[rolesetName] = pd.RolesetDecodePick{Pod: pod, Score: coldScore}
-			}
-			if coldScore > out.MaxScore {
-				out.MaxScore = coldScore
-			}
+			recordDecodePick(&out, rolesetName, pod, coldScore)
 			continue
 		}
-		rawThroughput := podThroughputs[podKey]
-		in := pd.DecodePodInput{
-			RunningReqs:     podRequestCounts[podKey],
-			Throughput:      rawThroughput,
-			FreeGPUPercent:  podFreeGpuUsage[podKey],
-			MaxRequestCount: maxRequestCount,
-			MaxThroughput:   maxThroughput,
-			MaxFreeGPUUsage: maxFreeGPUUsage,
-		}
-		if policyName == pd.DecodePolicyConductor && in.Throughput <= 0 && conductorMedianTP > 0 {
-			in.Throughput = conductorMedianTP
-			in.ThroughputFallback = true
-		}
-		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
-			in.DecodeTokens = scaleByCapacity(r.decodeTokenLoad(podKey, decodeRates[podKey], remoteLedger), decodeCapacities, podKey)
-		}
 
-		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
-		if pd.InvalidDecodeScore(decodeScore) {
-			if policyName != pd.DecodePolicyLoadBalancing {
-				in.Throughput = rawThroughput
-				in.ThroughputFallback = false
-				decodeScore = loadBalancingDecodePolicy.ScoreDecodePod(routingCtx, pod, in)
-				out.FallbackUsed = true
+		decodeScore, ok := r.scoreWarmDecodePod(
+			routingCtx, pod, podKey, policy, policyName, conductorMedianTP,
+			usesDecodeTokenLoad, decodeRates[podKey], decodeCapacities, remoteLedger,
+			podRequestCounts[podKey], podThroughputs[podKey], podFreeGpuUsage[podKey],
+			maxRequestCount, maxThroughput, maxFreeGPUUsage, &out.FallbackUsed, verbose,
+		)
+		if !ok {
+			if verbose {
+				skippedPods = append(skippedPods, fmt.Sprintf("%s:invalid_score", pod.Name))
 			}
-			if pd.InvalidDecodeScore(decodeScore) {
-				if verbose {
-					skippedPods = append(skippedPods, fmt.Sprintf("%s:invalid_score", pod.Name))
-					klog.V(4).InfoS("decode score invalid after policy and load_balancing fallback, skipping pod",
-						"request_id", routingCtx.RequestID, "pod", pod.Name, "policy", policyName,
-						"roleset", pod.Labels[PDRoleSetIdentifier])
-				}
-				continue
-			}
+			continue
 		}
 
 		if verbose {
 			scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s", pod.Name, decodeScore, rolesetName))
 		}
-
-		if existing, exists := out.PerRoleset[rolesetName]; !exists || decodeScore < existing.Score {
-			out.PerRoleset[rolesetName] = pd.RolesetDecodePick{Pod: pod, Score: decodeScore}
-		}
-		if decodeScore > out.MaxScore {
-			out.MaxScore = decodeScore
-		}
+		recordDecodePick(&out, rolesetName, pod, decodeScore)
 	}
 
 	if verbose {
-		perRolesetBest := make([]string, 0, len(out.PerRoleset))
-		for roleset, pick := range out.PerRoleset {
-			perRolesetBest = append(perRolesetBest, fmt.Sprintf("%s:%s=%.4f", roleset, pick.Pod.Name, pick.Score))
-		}
-		sort.Strings(perRolesetBest)
-		klog.V(4).InfoS("decode_score_summary",
-			"request_id", routingCtx.RequestID, "policy", policyName,
-			"fallback_used", out.FallbackUsed, "any_metrics_ready", anyMetricsReady,
-			"scored", strings.Join(scoredPods, " "), "skipped", strings.Join(skippedPods, " "),
-			"per_roleset_best", strings.Join(perRolesetBest, " "),
-		)
+		logDecodeScoreSummary(routingCtx.RequestID, policyName, out, anyMetricsReady, scoredPods, skippedPods)
 	}
 
 	return out
+}
+
+// recordDecodePick updates the lowest-score decode candidate for rolesetName and
+// tracks the pass-wide maximum score for final score normalisation.
+func recordDecodePick(out *pd.DecodeScoreRun, rolesetName string, pod *v1.Pod, score float64) {
+	if existing, exists := out.PerRoleset[rolesetName]; !exists || score < existing.Score {
+		out.PerRoleset[rolesetName] = pd.RolesetDecodePick{Pod: pod, Score: score}
+	}
+	if score > out.MaxScore {
+		out.MaxScore = score
+	}
+}
+
+// scoreWarmDecodePod scores a single ready decode pod, applying conductor's
+// fleet-median throughput fallback and falling back to load_balancing if the
+// primary policy produces an invalid score.
+func (r *pdRouter) scoreWarmDecodePod(
+	routingCtx *types.RoutingContext,
+	pod *v1.Pod,
+	podKey string,
+	policy pd.DecodeScorePolicy,
+	policyName pd.DecodePolicyName,
+	conductorMedianTP float64,
+	usesDecodeTokenLoad bool,
+	decodeRate float64,
+	decodeCapacities map[string]float64,
+	remoteLedger map[string]cache.RemoteDecodeLoad,
+	runningReqs float64,
+	rawThroughput float64,
+	freeGPU float64,
+	maxRequestCount float64,
+	maxThroughput float64,
+	maxFreeGPUUsage float64,
+	fallbackUsed *bool,
+	verbose bool,
+) (float64, bool) {
+	in := pd.DecodePodInput{
+		RunningReqs:     runningReqs,
+		Throughput:      rawThroughput,
+		FreeGPUPercent:  freeGPU,
+		MaxRequestCount: maxRequestCount,
+		MaxThroughput:   maxThroughput,
+		MaxFreeGPUUsage: maxFreeGPUUsage,
+	}
+	if policyName == pd.DecodePolicyConductor && in.Throughput <= 0 && conductorMedianTP > 0 {
+		in.Throughput = conductorMedianTP
+		in.ThroughputFallback = true
+	}
+	if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
+		in.DecodeTokens = scaleByCapacity(r.decodeTokenLoad(podKey, decodeRate, remoteLedger), decodeCapacities, podKey)
+	}
+
+	decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
+	if !pd.InvalidDecodeScore(decodeScore) {
+		return decodeScore, true
+	}
+
+	if policyName != pd.DecodePolicyLoadBalancing {
+		in.Throughput = rawThroughput
+		in.ThroughputFallback = false
+		decodeScore = loadBalancingDecodePolicy.ScoreDecodePod(routingCtx, pod, in)
+		*fallbackUsed = true
+	}
+	if !pd.InvalidDecodeScore(decodeScore) {
+		return decodeScore, true
+	}
+
+	if verbose {
+		klog.V(4).InfoS("decode score invalid after policy and load_balancing fallback, skipping pod",
+			"request_id", routingCtx.RequestID, "pod", pod.Name, "policy", policyName,
+			"roleset", pod.Labels[PDRoleSetIdentifier])
+	}
+	return 0, false
+}
+
+// logDecodeScoreSummary emits the V(4) decode_score_summary diagnostic log line.
+func logDecodeScoreSummary(
+	requestID string,
+	policyName pd.DecodePolicyName,
+	out pd.DecodeScoreRun,
+	anyMetricsReady bool,
+	scoredPods []string,
+	skippedPods []string,
+) {
+	perRolesetBest := make([]string, 0, len(out.PerRoleset))
+	for roleset, pick := range out.PerRoleset {
+		perRolesetBest = append(perRolesetBest, fmt.Sprintf("%s:%s=%.4f", roleset, pick.Pod.Name, pick.Score))
+	}
+	sort.Strings(perRolesetBest)
+	klog.V(4).InfoS("decode_score_summary",
+		"request_id", requestID, "policy", policyName,
+		"fallback_used", out.FallbackUsed, "any_metrics_ready", anyMetricsReady,
+		"scored", strings.Join(scoredPods, " "), "skipped", strings.Join(skippedPods, " "),
+		"per_roleset_best", strings.Join(perRolesetBest, " "),
+	)
 }
 
 // decodeTokenLoadRates returns, per decode pod key, the per-request decode rate
