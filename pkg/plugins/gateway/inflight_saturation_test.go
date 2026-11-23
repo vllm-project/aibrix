@@ -24,7 +24,6 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -97,7 +96,6 @@ func TestSelectTargetPod_AllCandidatesSaturated(t *testing.T) {
 	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 	require.True(t, errors.Is(err, errReplicaInflightExceeded),
 		"every candidate is at the cap, so the request is rejected with the existing overload error")
-	require.NotNil(t, inflight.InflightRejections, "the rejection counter is registered on first use")
 	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflight.InflightScopeCandidates),
 		"the rejection is counted against the candidate set")
 	require.Len(t, readSizes, 1, "the decision reads the running counts once")
@@ -170,7 +168,6 @@ func TestSelectTargetPod_PDSaturatedRejectsBeforeEngineValidation(t *testing.T) 
 	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 	require.True(t, errors.Is(err, errReplicaInflightExceeded),
 		"the cap is checked before engine validation, so mixed engines do not mask the 429: %v", err)
-	require.NotNil(t, inflight.InflightRejections, "the rejection counter is registered on first use")
 	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflight.InflightScopeFleet),
 		"an exclusive strategy checks the cap on the ready set, so the rejection is fleet scoped")
 	assert.NotContains(t, err.Error(), "inconsistent LLM engines")
@@ -336,14 +333,27 @@ func TestSelectTargetPod_GateRunsAfterFilter(t *testing.T) {
 		"the gate compares only the pods that can still admit, so the saturated pod cannot trigger it")
 }
 
-// inflightRejectionCount reads the rejection counter for one model and scope. The counter is
-// created on first use, and the test that calls this has already caused a rejection.
+// inflightRejectionCount reads aibrix_routing_inflight_rejections_total for one model and scope
+// out of the default registry, and reports 0 when it has never been recorded.
 func inflightRejectionCount(t *testing.T, model, scope string) float64 {
 	t.Helper()
-	if inflight.InflightRejections == nil {
-		return 0
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "aibrix_routing_inflight_rejections_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["model"] == model && labels["scope"] == scope {
+				return metric.GetCounter().GetValue()
+			}
+		}
 	}
-	return testutil.ToFloat64(inflight.InflightRejections.WithLabelValues(model, scope))
+	return 0
 }
 
 // loadImbalanceCount reads aibrix_load_imbalance_total for one model out of the default

@@ -36,7 +36,7 @@ const (
 
 var (
 	inflightRejectionsOnce sync.Once
-	InflightRejections     *prometheus.CounterVec
+	inflightRejections     *prometheus.CounterVec
 )
 
 // RecordInflightRejection counts a 429 from the per-replica inflight cap by the set the cap was
@@ -59,9 +59,9 @@ func RecordInflightRejection(model, scope string) {
 			}
 			vec = registered.ExistingCollector.(*prometheus.CounterVec)
 		}
-		InflightRejections = vec
+		inflightRejections = vec
 	})
-	if InflightRejections != nil {
-		InflightRejections.WithLabelValues(model, scope).Inc()
+	if inflightRejections != nil {
+		inflightRejections.WithLabelValues(model, scope).Inc()
 	}
 }
