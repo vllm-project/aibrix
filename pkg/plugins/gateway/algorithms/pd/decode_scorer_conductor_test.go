@@ -176,3 +176,46 @@ func TestConductorDecodePolicy_PrefersLightlyLoadedPod(t *testing.T) {
 	assert.InDelta(t, 820.0, scoreB0, 1e-9)
 	assert.Less(t, scoreA0, scoreB0, "lightly-loaded pod must have lower (better) score under fallback")
 }
+
+// ============================================================
+// ConductorDecodePolicy: ScoreDecodePod — mixed fleet fallback
+// ============================================================
+
+func TestConductorDecodePolicy_MixedFleetFallbackParity(t *testing.T) {
+	p := ConductorDecodePolicy{}
+	ctx := makeDecodeRoutingContext()
+	pod := makeDecodePod(testPodName, testNamespace)
+
+	// Busy measured pod (20 running, 4000 tok/s): (20 + 1) * (1000 / 4000) = 5.25 ms.
+	busyMeasured := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:    20.0,
+		Throughput:     4000.0,
+		FreeGPUPercent: 50.0,
+	})
+	// Idle pod given fleet-median throughput (0 running, 4000 tok/s fallback):
+	// (1 + 1) * (1000 / 4000) = 0.5 ms -> idle wins cleanly over busy.
+	idleFallback := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:        0.0,
+		Throughput:         4000.0,
+		ThroughputFallback: true,
+		FreeGPUPercent:     50.0,
+	})
+	assert.InDelta(t, 5.25, busyMeasured, 1e-9)
+	assert.InDelta(t, 0.5, idleFallback, 1e-9)
+	assert.Less(t, idleFallback, busyMeasured, "idle pod with fleet fallback must beat busy measured pod")
+
+	// Same-load mixed comparison (10 running @ 2000 tok/s measured vs fallback): both score 5.5 ms.
+	measuredSameLoad := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:    10.0,
+		Throughput:     2000.0,
+		FreeGPUPercent: 50.0,
+	})
+	unmeasuredSameLoad := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:        10.0,
+		Throughput:         2000.0,
+		ThroughputFallback: true,
+		FreeGPUPercent:     50.0,
+	})
+	assert.InDelta(t, 5.5, measuredSameLoad, 1e-9)
+	assert.InDelta(t, measuredSameLoad, unmeasuredSameLoad, 1e-9)
+}

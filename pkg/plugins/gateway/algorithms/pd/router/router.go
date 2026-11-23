@@ -1302,6 +1302,12 @@ func (r *pdRouter) scoreDecodePodsWithLedger(routingCtx *types.RoutingContext, f
 		}
 	}
 
+	var conductorMedianTP float64
+	if policyName == pd.DecodePolicyConductor {
+		conductorMedianTP = conductorFleetMedianThroughput(
+			filteredDecodePods, metricsReadyByPod, anyMetricsReady, podThroughputs)
+	}
+
 	// The per-pod score strings exist only for the decode_score_summary log,
 	// so build them only when that log is going to be written; this runs
 	// under selectMu for every request.
@@ -1335,13 +1341,18 @@ func (r *pdRouter) scoreDecodePodsWithLedger(routingCtx *types.RoutingContext, f
 			}
 			continue
 		}
+		rawThroughput := podThroughputs[podKey]
 		in := pd.DecodePodInput{
 			RunningReqs:     podRequestCounts[podKey],
-			Throughput:      podThroughputs[podKey],
+			Throughput:      rawThroughput,
 			FreeGPUPercent:  podFreeGpuUsage[podKey],
 			MaxRequestCount: maxRequestCount,
 			MaxThroughput:   maxThroughput,
 			MaxFreeGPUUsage: maxFreeGPUUsage,
+		}
+		if policyName == pd.DecodePolicyConductor && in.Throughput <= 0 && conductorMedianTP > 0 {
+			in.Throughput = conductorMedianTP
+			in.ThroughputFallback = true
 		}
 		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
 			in.DecodeTokens = scaleByCapacity(r.decodeTokenLoad(podKey, decodeRates[podKey], remoteLedger), decodeCapacities, podKey)
@@ -1350,6 +1361,8 @@ func (r *pdRouter) scoreDecodePodsWithLedger(routingCtx *types.RoutingContext, f
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
 		if pd.InvalidDecodeScore(decodeScore) {
 			if policyName != pd.DecodePolicyLoadBalancing {
+				in.Throughput = rawThroughput
+				in.ThroughputFallback = false
 				decodeScore = loadBalancingDecodePolicy.ScoreDecodePod(routingCtx, pod, in)
 				out.FallbackUsed = true
 			}
@@ -1423,6 +1436,38 @@ func decodeTokenLoadRates(usesDecodeTokenLoad bool, throughputs, requestCounts m
 		}
 	}
 	return rates
+}
+
+// conductorFleetMedianThroughput returns the median positive generation throughput
+// across warm candidate decode pods so conductor scores unmeasured (e.g. idle or
+// newly started) pods in the same ms scale as measured peers instead of falling
+// back directly to DefaultDecodeTBTFallbackMs. Returns 0 when no candidate has a
+// positive measured rate.
+func conductorFleetMedianThroughput(
+	pods []*v1.Pod,
+	metricsReadyByPod map[string]bool,
+	anyMetricsReady bool,
+	throughputs map[string]float64,
+) float64 {
+	measured := make([]float64, 0, len(pods))
+	for _, pod := range pods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		if anyMetricsReady && !metricsReadyByPod[podKey] {
+			continue
+		}
+		if tp := throughputs[podKey]; tp > 0 {
+			measured = append(measured, tp)
+		}
+	}
+	n := len(measured)
+	if n == 0 {
+		return 0
+	}
+	sort.Float64s(measured)
+	if n%2 == 1 {
+		return measured[n/2]
+	}
+	return (measured[n/2-1] + measured[n/2]) / 2.0
 }
 
 // finalPDScore picks the winning prefill/decode pod pair after scorePrefillPods and
