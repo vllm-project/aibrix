@@ -69,10 +69,16 @@ func WebhookNamesForPrefix(prefix string) WebhookNames {
 // CertsManager creates certs for webhooks. namePrefix is the install's name
 // prefix for the webhook Service, Secret and webhook configurations.
 func CertsManager(mgr ctrl.Manager, namespace, namePrefix string, setupFinish chan struct{}) error {
+	return cert.AddRotator(mgr, newCertRotator(namespace, namePrefix, setupFinish))
+}
+
+// newCertRotator configures the rotator for the webhook objects that an
+// install with the given name prefix creates in namespace.
+func newCertRotator(namespace, namePrefix string, setupFinish chan struct{}) *cert.CertRotator {
 	names := WebhookNamesForPrefix(namePrefix)
 	// dnsName is the format of <service name>.<namespace>.svc
 	dnsName := fmt.Sprintf("%s.%s.svc", names.Service, namespace)
-	return cert.AddRotator(mgr, &cert.CertRotator{
+	return &cert.CertRotator{
 		SecretKey: types.NamespacedName{
 			Namespace: namespace,
 			Name:      names.Secret,
@@ -92,5 +98,5 @@ func CertsManager(mgr ctrl.Manager, namespace, namePrefix string, setupFinish ch
 				Name: names.MutatingWebhookConfiguration,
 			},
 		},
-	})
+	}
 }

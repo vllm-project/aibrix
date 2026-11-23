@@ -22,10 +22,12 @@ import (
 	"strings"
 	"testing"
 
+	rotator "github.com/open-policy-agent/cert-controller/pkg/rotator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
 )
 
@@ -49,6 +51,20 @@ func TestWebhookNamesForPrefix(t *testing.T) {
 		ValidatingWebhookConfiguration: "aibrix-lora-validating-webhook-configuration",
 		MutatingWebhookConfiguration:   "aibrix-lora-mutating-webhook-configuration",
 	}, WebhookNamesForPrefix("aibrix-lora-"))
+}
+
+func TestNewCertRotatorUsesThePrefixedNames(t *testing.T) {
+	ready := make(chan struct{})
+	r := newCertRotator("aibrix-system", "aibrix-lora-", ready)
+
+	assert.Equal(t, types.NamespacedName{Namespace: "aibrix-system", Name: "aibrix-lora-webhook-server-cert"}, r.SecretKey)
+	assert.Equal(t, "aibrix-lora-webhook-service.aibrix-system.svc", r.DNSName)
+	assert.Equal(t, []rotator.WebhookInfo{
+		{Type: rotator.Validating, Name: "aibrix-lora-validating-webhook-configuration"},
+		{Type: rotator.Mutating, Name: "aibrix-lora-mutating-webhook-configuration"},
+	}, r.Webhooks)
+	assert.Equal(t, certDir, r.CertDir)
+	assert.Equal(t, ready, r.IsReady)
 }
 
 // TestWebhookBaseNamesMatchManifests checks the base names against the objects
@@ -108,6 +124,11 @@ func TestInstallsPassTheirWebhookNamePrefix(t *testing.T) {
 	}
 }
 
+// kustomization is the part of a kustomization.yaml that the guard reads:
+// the top-level namePrefix, resources and patches. It doesn't follow nested
+// bases or components, and ignores the deprecated patchesStrategicMerge and
+// patchesJson6902 fields. Extend it if an install starts setting its prefix,
+// its webhook resources or its manager args through one of those.
 type kustomization struct {
 	NamePrefix string   `json:"namePrefix"`
 	Resources  []string `json:"resources"`
