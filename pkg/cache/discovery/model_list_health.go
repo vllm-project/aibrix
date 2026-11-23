@@ -41,6 +41,13 @@ const (
 // verified against the required Kubernetes discovery sources.
 var ErrModelListDiscoveryUnavailable = errors.New("model discovery is unavailable")
 
+// ErrModelListVerificationDeferred is returned, without a Kubernetes request,
+// while a recent failed verification's retry delay runs. It wraps
+// ErrModelListDiscoveryUnavailable, so callers that only need "unavailable"
+// can keep matching that.
+var ErrModelListVerificationDeferred = fmt.Errorf("%w: retrying after a recent failed verification",
+	ErrModelListDiscoveryUnavailable)
+
 type objectVersion struct {
 	uid             string
 	resourceVersion string
@@ -59,15 +66,23 @@ type ModelListHealth struct {
 	verifyMu     sync.Mutex
 	applied      sourceVersions
 	lastVerified time.Time
-	retryAfter   time.Time
-	errorEpoch   uint64
-	maxAge       time.Duration
-	snapshot     func(context.Context) (sourceVersions, error)
+	// lastMatched is when the latest successful verification started. Unlike
+	// lastVerified, a failure or a watch error does not clear it, so it can
+	// report how long the cache has gone without matching a LIST.
+	lastMatched time.Time
+	retryAfter  time.Time
+	errorEpoch  uint64
+	maxAge      time.Duration
+	// verifyTimeout bounds one verification, independently of the caller's
+	// context; tests shorten it.
+	verifyTimeout time.Duration
+	snapshot      func(context.Context) (sourceVersions, error)
 }
 
 func newModelListHealth(maxAge time.Duration) *ModelListHealth {
 	return &ModelListHealth{
-		maxAge: maxAge,
+		maxAge:        maxAge,
+		verifyTimeout: modelListVerificationTimeout,
 		applied: sourceVersions{
 			pods:     make(map[string]objectVersion),
 			adapters: make(map[string]objectVersion),
@@ -160,7 +175,7 @@ func (h *ModelListHealth) EnsureVerified(ctx context.Context) error {
 	if fresh, retryLater, _ := h.verificationState(time.Now()); fresh {
 		return nil
 	} else if retryLater {
-		return ErrModelListDiscoveryUnavailable
+		return ErrModelListVerificationDeferred
 	}
 
 	h.verifyMu.Lock()
@@ -168,13 +183,13 @@ func (h *ModelListHealth) EnsureVerified(ctx context.Context) error {
 	if fresh, retryLater, _ := h.verificationState(time.Now()); fresh {
 		return nil
 	} else if retryLater {
-		return ErrModelListDiscoveryUnavailable
+		return ErrModelListVerificationDeferred
 	}
 	_, _, epoch := h.verificationState(time.Now())
 	if h.snapshot == nil {
 		return ErrModelListDiscoveryUnavailable
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, modelListVerificationTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, h.verifyTimeout)
 	defer cancel()
 	started := time.Now()
 	current, err := h.snapshot(checkCtx)
@@ -187,6 +202,7 @@ func (h *ModelListHealth) EnsureVerified(ctx context.Context) error {
 		// The LIST snapshot may be as old as the request start. Count the
 		// freshness bound from that point, not from response completion.
 		h.lastVerified = started
+		h.lastMatched = started
 		h.retryAfter = time.Time{}
 		return nil
 	}
@@ -201,6 +217,15 @@ func (h *ModelListHealth) EnsureVerified(ctx context.Context) error {
 		return fmt.Errorf("verify model discovery: %w", err)
 	}
 	return ErrModelListDiscoveryUnavailable
+}
+
+// LastMatched returns when the latest successful verification started, or the
+// zero time if none has succeeded. It counts verifications from every caller,
+// including /v1/models.
+func (h *ModelListHealth) LastMatched() time.Time {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.lastMatched
 }
 
 // ModelsIfHealthy runs list while required-source event handlers are blocked.

@@ -27,6 +27,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
@@ -72,6 +73,15 @@ type InitOptions struct {
 	// ModelListMaxAge enables on-demand Kubernetes discovery verification for
 	// the gateway model list when positive. Zero preserves the existing behavior.
 	ModelListMaxAge time.Duration
+
+	// DiscoveryCheckInterval enables the gateway's periodic discovery check
+	// (see DiscoveryChecker) when positive. It applies only to Kubernetes
+	// discovery; standalone mode has no API server to check.
+	DiscoveryCheckInterval time.Duration
+
+	// DiscoveryUnreachableThreshold is the age of the last successful discovery
+	// check at which the gateway reports the API server unreachable.
+	DiscoveryUnreachableThreshold time.Duration
 }
 
 const (
@@ -503,6 +513,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		}
 		klog.InfoS("Using discovery provider", "type", provider.Type())
 		if opts.IsGateway {
+			startDiscoveryChecker(store, config, provider, opts, prometheus.DefaultRegisterer, stopCh)
 			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
 				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
 			}
@@ -592,6 +603,46 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 			}
 		}
 	}()
+}
+
+// startDiscoveryChecker starts the periodic discovery check for Kubernetes
+// discovery and returns it, or returns nil when the check is disabled or there
+// is no API server to check. Its metrics are registered only when it starts.
+func startDiscoveryChecker(store *Store, config *rest.Config, provider discovery.Provider, opts InitOptions,
+	reg prometheus.Registerer, stopCh <-chan struct{}) *DiscoveryChecker {
+	if opts.DiscoveryCheckInterval <= 0 {
+		return nil
+	}
+	if _, ok := provider.(*discovery.KubernetesProvider); !ok || config == nil {
+		klog.InfoS("Discovery check disabled: discovery does not use the Kubernetes API server", "provider", provider.Type())
+		return nil
+	}
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.ErrorS(err, "Discovery check disabled: cannot create a Kubernetes client")
+		return nil
+	}
+	checkOpts := DiscoveryCheckOptions{
+		Interval:             opts.DiscoveryCheckInterval,
+		UnreachableThreshold: opts.DiscoveryUnreachableThreshold,
+		Reachability:         PodListReachability(client),
+	}
+	if health := store.modelListHealth; health != nil {
+		checkOpts.Consistency = health
+	}
+	checker, err := NewDiscoveryChecker(checkOpts)
+	if err != nil {
+		klog.ErrorS(err, "Discovery check disabled")
+		return nil
+	}
+	if err := checker.Register(reg); err != nil {
+		klog.ErrorS(err, "Discovery check disabled: cannot register its metrics")
+		return nil
+	}
+	go checker.Run(stopCh)
+	klog.InfoS("Discovery check started", "interval", opts.DiscoveryCheckInterval,
+		"unreachableThreshold", opts.DiscoveryUnreachableThreshold, "consistency", checkOpts.Consistency != nil)
+	return checker
 }
 
 // initDiscoveryProvider initializes the cache using a discovery provider.

@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -249,4 +250,127 @@ func TestModelListHealthSnapshotWaitsForAppliedEvent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("event handler did not resume after model-list read")
 	}
+}
+
+// slowSnapshot blocks until its context ends, like a full LIST on a cluster
+// too large for the verification budget, and counts how often it starts.
+func slowSnapshot(calls *atomic.Int32) func(context.Context) (sourceVersions, error) {
+	return func(ctx context.Context) (sourceVersions, error) {
+		calls.Add(1)
+		<-ctx.Done()
+		return sourceVersions{}, ctx.Err()
+	}
+}
+
+func TestModelListHealthSlowVerificationBacksOffWithoutCallerDeadline(t *testing.T) {
+	// Review D1 on #3555: under a caller deadline shorter than the
+	// verification budget, every call started a new full snapshot and
+	// retryAfter was never set. The discovery checker now calls without a
+	// deadline, so the verification's own budget expires instead, and the
+	// backoff must hold.
+	h := newModelListHealth(time.Minute)
+	h.verifyTimeout = 20 * time.Millisecond
+	var calls atomic.Int32
+	h.snapshot = slowSnapshot(&calls)
+
+	for i := 0; i < 5; i++ {
+		require.Error(t, h.EnsureVerified(context.Background()))
+	}
+	assert.Equal(t, int32(1), calls.Load(), "calls within the retry delay must not start new snapshots")
+	_, retryLater, _ := h.verificationState(time.Now())
+	assert.True(t, retryLater, "a verification that ran out of its own budget sets retryAfter")
+}
+
+func TestModelListHealthCallerDeadlineSkipsBackoff(t *testing.T) {
+	// The contrast case, and the reason the checker must not pass a deadline:
+	// a caller that gives up is treated as gone, so no backoff applies.
+	h := newModelListHealth(time.Minute)
+	var calls atomic.Int32
+	h.snapshot = slowSnapshot(&calls)
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		require.Error(t, h.EnsureVerified(ctx))
+		cancel()
+	}
+	assert.Equal(t, int32(3), calls.Load())
+}
+
+func TestModelListHealthWaiterReusesInFlightVerification(t *testing.T) {
+	// Review contention case: the discovery checker calling while a
+	// /v1/models verification runs waits for it and reuses its proof, with
+	// no second snapshot and no error.
+	h := newModelListHealth(time.Minute)
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h.snapshot = func(context.Context) (sourceVersions, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return sourceVersions{pods: map[string]objectVersion{}, adapters: map[string]objectVersion{}}, nil
+	}
+	first := make(chan error, 1)
+	go func() { first <- h.EnsureVerified(context.Background()) }()
+	<-started
+
+	second := make(chan error, 1)
+	go func() { second <- h.EnsureVerified(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	require.NoError(t, <-first)
+	require.NoError(t, <-second)
+	assert.Equal(t, int32(1), calls.Load())
+}
+
+func emptyVersions() sourceVersions {
+	return sourceVersions{pods: map[string]objectVersion{}, adapters: map[string]objectVersion{}}
+}
+
+func TestModelListHealthDeferredDuringRetryDelay(t *testing.T) {
+	// The discovery checker must tell "this call ran a LIST and it failed"
+	// from "a recent failure's retry delay is running" (review of #3555).
+	h := newModelListHealth(time.Minute)
+	var calls atomic.Int32
+	h.snapshot = func(context.Context) (sourceVersions, error) {
+		calls.Add(1)
+		return sourceVersions{}, errors.New("connection refused")
+	}
+	err := h.EnsureVerified(context.Background())
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrModelListVerificationDeferred)
+
+	err = h.EnsureVerified(context.Background())
+	require.ErrorIs(t, err, ErrModelListVerificationDeferred)
+	require.ErrorIs(t, err, ErrModelListDiscoveryUnavailable, "callers matching unavailable still match")
+	assert.Equal(t, int32(1), calls.Load(), "a deferred call makes no request")
+}
+
+func TestModelListHealthLastMatchedSurvivesFailures(t *testing.T) {
+	h := newModelListHealth(time.Millisecond)
+	assert.True(t, h.LastMatched().IsZero())
+
+	h.snapshot = func(context.Context) (sourceVersions, error) { return emptyVersions(), nil }
+	before := time.Now()
+	require.NoError(t, h.EnsureVerified(context.Background()))
+	matched := h.LastMatched()
+	assert.False(t, matched.Before(before), "counted from the start of the verification")
+
+	time.Sleep(2 * time.Millisecond) // let the 1 ms proof expire
+	h.snapshot = func(context.Context) (sourceVersions, error) {
+		return sourceVersions{}, errors.New("connection refused")
+	}
+	require.Error(t, h.EnsureVerified(context.Background()))
+	h.Invalidate()
+	assert.Equal(t, matched, h.LastMatched(), "a failure or watch error does not move the last match")
+
+	// A fresh proof answered without a LIST does not move it either.
+	h2 := newModelListHealth(time.Minute)
+	var calls atomic.Int32
+	h2.snapshot = func(context.Context) (sourceVersions, error) { calls.Add(1); return emptyVersions(), nil }
+	require.NoError(t, h2.EnsureVerified(context.Background()))
+	first := h2.LastMatched()
+	require.NoError(t, h2.EnsureVerified(context.Background()))
+	assert.Equal(t, int32(1), calls.Load())
+	assert.Equal(t, first, h2.LastMatched())
 }
