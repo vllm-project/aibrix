@@ -795,7 +795,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			//
 			// A failed instance that cannot be replaced stays as it is, so the
 			// claim stays Failed.
-			refusal := r.refusePlacement(ctx, pm, perGPU, usable, claims, ledgers, placementStates,
+			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, usable, claims, ledgers, placementStates,
 				admissible, refusals, failed, selectErr, readings)
 			if portsBlockAllCandidates(pm, usable, portConflicts) {
 				refusal = portPlacementRefusal(pm, portConflicts)
@@ -1109,7 +1109,7 @@ func (r *ModelClaimReconciler) refusePlacement(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	perGPU perGPUBytes,
-	candidates []corev1.Pod,
+	candidates, usable []corev1.Pod,
 	claims *modelv1alpha1.ModelClaimList,
 	ledgers map[string]podLedger,
 	placementStates map[string]PodPlacementState,
@@ -1136,10 +1136,10 @@ func (r *ModelClaimReconciler) refusePlacement(
 		why, making := "", false
 		switch preemptionPolicyOf(pm) {
 		case modelv1alpha1.ModelClaimPreemptionSleepLowerPriority:
-			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, candidates, claims,
+			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, usable, claims,
 				ledgers, placementStates, readings)
 		default:
-			why, making = r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings)
+			why, making = r.makeRoomToPlace(ctx, pm, perGPU, usable, ledgers, readings)
 		}
 		if making {
 			refused.reason, refused.message, refused.eventType = scheduledReasonMakingRoom, why, corev1.EventTypeNormal
