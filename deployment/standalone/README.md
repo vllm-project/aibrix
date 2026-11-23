@@ -160,7 +160,7 @@ See `.env.example` for all available options.
 
 ### Authentication
 
-A bearer token set on the gateway (`AIBRIX_AUTH_BEARER_TOKEN`) is checked by the gateway plugin, so it only protects routes that go through it. `/v1/models`, `/v1/files`, `/v1/batches` and `/metrics` skip the gateway plugin and are **not** covered by that token, the same as the metadata routes in the Kubernetes install. The metadata service has no authentication of its own, and this compose file also publishes it directly on port 8090. Restrict access to these routes at the network level if the stack is reachable by others.
+A bearer token set on the gateway (`AIBRIX_AUTH_BEARER_TOKEN`) is checked by the gateway plugin, so it only protects routes that go through it. `/healthz`, `/v1/models`, `/v1/files`, `/v1/batches`, and `/metrics` skip the gateway plugin and are **not** covered by that token, the same as the metadata routes in the Kubernetes install. The metadata service has no authentication of its own, and this compose file also publishes it directly on port 8090. Restrict access to these routes at the network level if the stack is reachable by others.
 
 ## Commands
 

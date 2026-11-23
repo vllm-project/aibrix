@@ -54,7 +54,12 @@ var extProcDisabledByCluster = map[string]bool{
 // envoyRoute holds only the fields this test reads.
 type envoyRoute struct {
 	Match struct {
-		Prefix string `json:"prefix"`
+		Prefix          string `json:"prefix"`
+		Headers         []any  `json:"headers"`
+		QueryParameters []any  `json:"query_parameters"`
+		RuntimeFraction any    `json:"runtime_fraction"`
+		CaseSensitive   *bool  `json:"case_sensitive"`
+		Grpc            any    `json:"grpc"`
 	} `json:"match"`
 	Route *struct {
 		Cluster string `json:"cluster"`
@@ -64,6 +69,19 @@ type envoyRoute struct {
 	} `json:"typed_per_filter_config"`
 }
 
+func (r envoyRoute) hasExtraMatchConstraints() bool {
+	return len(r.Match.Headers) > 0 ||
+		len(r.Match.QueryParameters) > 0 ||
+		r.Match.RuntimeFraction != nil ||
+		r.Match.CaseSensitive != nil ||
+		r.Match.Grpc != nil
+}
+
+type envoyVirtualHost struct {
+	Name   string       `json:"name"`
+	Routes []envoyRoute `json:"routes"`
+}
+
 type envoyBootstrap struct {
 	StaticResources struct {
 		Listeners []struct {
@@ -71,9 +89,7 @@ type envoyBootstrap struct {
 				Filters []struct {
 					TypedConfig struct {
 						RouteConfig struct {
-							VirtualHosts []struct {
-								Routes []envoyRoute `json:"routes"`
-							} `json:"virtual_hosts"`
+							VirtualHosts []envoyVirtualHost `json:"virtual_hosts"`
 						} `json:"route_config"`
 					} `json:"typed_config"`
 				} `json:"filters"`
@@ -82,8 +98,8 @@ type envoyBootstrap struct {
 	} `json:"static_resources"`
 }
 
-// loadEnvoyRoutes returns every route in every virtual host of the config.
-func loadEnvoyRoutes(t *testing.T, path string) []envoyRoute {
+// loadEnvoyVirtualHosts returns every virtual host declared in the config.
+func loadEnvoyVirtualHosts(t *testing.T, path string) []envoyVirtualHost {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -91,15 +107,24 @@ func loadEnvoyRoutes(t *testing.T, path string) []envoyRoute {
 	var cfg envoyBootstrap
 	require.NoError(t, yaml.Unmarshal(raw, &cfg))
 
-	var routes []envoyRoute
+	var vhs []envoyVirtualHost
 	for _, l := range cfg.StaticResources.Listeners {
 		for _, fc := range l.FilterChains {
 			for _, f := range fc.Filters {
-				for _, vh := range f.TypedConfig.RouteConfig.VirtualHosts {
-					routes = append(routes, vh.Routes...)
-				}
+				vhs = append(vhs, f.TypedConfig.RouteConfig.VirtualHosts...)
 			}
 		}
+	}
+	require.NotEmpty(t, vhs, "no virtual hosts found in %s", path)
+	return vhs
+}
+
+// loadEnvoyRoutes returns every route in every virtual host of the config.
+func loadEnvoyRoutes(t *testing.T, path string) []envoyRoute {
+	t.Helper()
+	var routes []envoyRoute
+	for _, vh := range loadEnvoyVirtualHosts(t, path) {
+		routes = append(routes, vh.Routes...)
 	}
 	require.NotEmpty(t, routes, "no routes found in %s", path)
 	return routes
@@ -118,7 +143,7 @@ func TestEnvoyConfigExtProcDisabledOnNonInferenceRoutes(t *testing.T) {
 					continue
 				}
 				// direct_response routes have no upstream response for ext_proc to parse; their
-				// request headers still go through ext_proc, which this test does not cover.
+				// request headers still go through ext_proc unless explicitly opted out per-route.
 				if r.Route == nil {
 					continue
 				}
@@ -138,24 +163,55 @@ func TestEnvoyConfigExtProcDisabledOnNonInferenceRoutes(t *testing.T) {
 	}
 }
 
-// TestEnvoyConfigNoShadowedPrefixRoutes verifies that no route in the local or
-// standalone Envoy configs is shadowed by an earlier route with a shorter (or
-// equal) prefix. Envoy evaluates routes in declaration order and picks the first
-// match, so placing prefix "/health" before prefix "/healthz" routes "/healthz"
-// to vllm_backend instead of returning Envoy's direct_response (#3536).
+// TestEnvoyConfigNoShadowedPrefixRoutes verifies per virtual host that no
+// prefix route is shadowed by an earlier unconstrained route with a shorter
+// (or equal) prefix. Envoy evaluates routes in declaration order and picks the
+// first match, so placing prefix "/health" before prefix "/healthz" routes
+// "/healthz" to vllm_backend instead of returning Envoy's direct_response (#3536).
 func TestEnvoyConfigNoShadowedPrefixRoutes(t *testing.T) {
 	for _, path := range envoyConfigPaths {
 		t.Run(path, func(t *testing.T) {
-			routes := loadEnvoyRoutes(t, path)
-			for i, later := range routes {
-				require.NotEmpty(t, later.Match.Prefix, "route %d in %s has no prefix match", i, path)
-				for j := 0; j < i; j++ {
-					earlier := routes[j].Match.Prefix
-					assert.Falsef(t, strings.HasPrefix(later.Match.Prefix, earlier),
-						"route %d (prefix %q) in %s is shadowed by earlier route %d (prefix %q)",
-						i, later.Match.Prefix, path, j, earlier)
+			for _, vh := range loadEnvoyVirtualHosts(t, path) {
+				for i, later := range vh.Routes {
+					if !assert.NotEmpty(t, later.Match.Prefix,
+						"route %d in virtual host %q of %s has no prefix match: extend envoyRoute to decode it", i, vh.Name, path) {
+						continue
+					}
+					for j := 0; j < i; j++ {
+						earlier := vh.Routes[j]
+						if earlier.hasExtraMatchConstraints() || earlier.Match.Prefix == "" {
+							continue
+						}
+						assert.Falsef(t, strings.HasPrefix(later.Match.Prefix, earlier.Match.Prefix),
+							"route %d (prefix %q) in virtual host %q of %s is shadowed by earlier route %d (prefix %q)",
+							i, later.Match.Prefix, vh.Name, path, j, earlier.Match.Prefix)
+					}
 				}
 			}
 		})
 	}
+}
+
+// TestEnvoyConfigStandaloneHealthzRoute simulates first-match prefix routing on
+// the standalone config for GET /healthz and verifies it lands on a direct_response
+// route with ext_proc disabled so /healthz reports Envoy's own readiness even when
+// both vllm_backend and gateway-plugins are unavailable (#3536).
+func TestEnvoyConfigStandaloneHealthzRoute(t *testing.T) {
+	vhs := loadEnvoyVirtualHosts(t, "../../../deployment/standalone/configs/envoy.yaml")
+	require.Len(t, vhs, 1)
+
+	var matched *envoyRoute
+	for i := range vhs[0].Routes {
+		r := &vhs[0].Routes[i]
+		if !r.hasExtraMatchConstraints() && strings.HasPrefix("/healthz", r.Match.Prefix) {
+			matched = r
+			break
+		}
+	}
+
+	require.NotNil(t, matched, "no route matched /healthz")
+	assert.Equal(t, "/healthz", matched.Match.Prefix)
+	assert.Nil(t, matched.Route, "/healthz should return Envoy direct_response rather than proxying upstream")
+	assert.True(t, matched.TypedPerFilterConfig[extProcFilterName].Disabled,
+		"/healthz should disable ext_proc so Envoy reports healthy even when the gateway plugin is down")
 }
