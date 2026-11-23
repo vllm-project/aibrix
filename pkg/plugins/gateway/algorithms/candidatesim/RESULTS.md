@@ -1,5 +1,106 @@
 # Candidate-selection simulation results
 
+## K-only default-on evaluation (K=16, 32, 64)
+
+These results evaluate the shipped K-only candidate stage (`AIBRIX_ROUTING_CANDIDATE_K`, 4K+holders scout, best K/2 ranked by in-memory estimate + K/2 random, live stage 2, gate on sample) at `SignalDelay=1s` (matching the default-on `aibrix:rrq:*` remote running reader interval from #3532) against exact-count full scoring (`K=0`, `SignalDelay=0`, matching production `K=0` reading Redis on every request).
+
+Output of `CANDIDATE_SIM=defaultk go test -run 'TestCandidateSelectionDefaultK|TestCandidateSelectionInflightCap|TestCandidateSelectionBlacklist' -v ./pkg/plugins/gateway/algorithms/candidatesim/` (4 gateways, 3 seeds unless noted). Mean and P99 latency ratios are relative to exact `full (K=0)` on the same seed; lower is better (`1.00x` = same as exact full scoring).
+
+### Default-K sweep across fleet size and utilization (delay=1s vs exact full K=0)
+
+#### Utilization = 0.85
+
+| N | Policy | prefix=false (mean / P99) | prefix=true (mean / P99 / hit%) |
+| --- | --- | --- | --- |
+| 200 | full (K=0, exact) | 0.050s / 0.239s | 0.045s / 0.238s / 97.7% |
+| 200 | K-only K=16 (1s RRQ) | 1.07x (1.06..1.09) / 1.06x | 1.16x (1.12..1.19) / 1.12x / 97.4% |
+| 200 | K-only K=32 (1s RRQ) | 1.07x (1.06..1.07) / 1.06x | 1.15x (1.12..1.19) / 1.11x / 97.5% |
+| 200 | K-only K=64 (1s RRQ) | 1.04x (1.01..1.07) / 1.04x | 1.07x (1.01..1.14) / 1.04x / 97.8% |
+| 300 | full (K=0, exact) | 0.051s / 0.244s | 0.043s / 0.225s / 98.9% |
+| 300 | K-only K=16 (1s RRQ) | 1.07x (1.04..1.09) / 1.06x | 1.09x (1.06..1.12) / 1.06x / 98.3% |
+| 300 | K-only K=32 (1s RRQ) | 1.03x (1.02..1.04) / 1.02x | 1.08x (1.03..1.13) / 1.06x / 98.7% |
+| 300 | K-only K=64 (1s RRQ) | 1.01x (1.00..1.02) / 1.01x | 1.14x (1.13..1.15) / 1.14x / 98.7% |
+| 500 | full (K=0, exact) | 0.050s / 0.240s | 0.041s / 0.212s / 99.5% |
+| 500 | K-only K=16 (1s RRQ) | 1.07x (1.06..1.08) / 1.06x | 1.15x (1.08..1.21) / 1.12x / 99.1% |
+| 500 | K-only K=32 (1s RRQ) | 1.03x (1.02..1.04) / 1.03x | 1.07x (0.97..1.18) / 1.04x / 99.3% |
+| 500 | K-only K=64 (1s RRQ) | 1.03x (1.02..1.04) / 1.02x | 1.08x (0.97..1.14) / 1.06x / 99.4% |
+| 2000 | full (K=0, exact) | 0.050s / 0.241s | 0.036s / 0.184s / 99.8% |
+| 2000 | K-only K=16 (1s RRQ) | 1.06x (1.05..1.06) / 1.04x | 1.14x (1.13..1.15) / 1.12x / 99.6% |
+| 2000 | K-only K=32 (1s RRQ) | 1.03x (1.02..1.04) / 1.02x | 1.07x (1.00..1.15) / 1.05x / 99.7% |
+| 2000 | K-only K=64 (1s RRQ) | 1.02x (1.01..1.02) / 1.01x | 0.96x (0.90..1.02) / 0.93x / 99.9% |
+
+#### Utilization = 0.92
+
+| N | Policy | prefix=false (mean / P99) | prefix=true (mean / P99 / hit%) |
+| --- | --- | --- | --- |
+| 200 | full (K=0, exact) | 0.059s / 0.276s | 0.045s / 0.229s / 98.0% |
+| 200 | K-only K=16 (1s RRQ) | 1.12x (1.02..1.22) / 1.16x | 1.21x (1.17..1.24) / 1.21x / 97.7% |
+| 200 | K-only K=32 (1s RRQ) | 1.01x (1.00..1.04) / 1.01x | 1.16x (1.11..1.20) / 1.17x / 97.9% |
+| 200 | K-only K=64 (1s RRQ) | 1.01x (0.97..1.04) / 1.02x | 1.16x (1.10..1.21) / 1.17x / 97.9% |
+| 300 | full (K=0, exact) | 0.058s / 0.274s | 0.044s / 0.226s / 99.2% |
+| 300 | K-only K=16 (1s RRQ) | 1.11x (1.09..1.13) / 1.11x | 1.17x (1.13..1.20) / 1.15x / 98.6% |
+| 300 | K-only K=32 (1s RRQ) | 1.03x (1.01..1.05) / 1.03x | 1.13x (1.07..1.20) / 1.12x / 98.8% |
+| 300 | K-only K=64 (1s RRQ) | 1.01x (0.99..1.03) / 1.00x | 1.13x (1.09..1.18) / 1.13x / 98.9% |
+| 500 | full (K=0, exact) | 0.057s / 0.269s | 0.042s / 0.216s / 99.6% |
+| 500 | K-only K=16 (1s RRQ) | 1.06x (1.05..1.07) / 1.07x | 1.17x (1.13..1.20) / 1.16x / 99.2% |
+| 500 | K-only K=32 (1s RRQ) | 1.05x (1.03..1.07) / 1.04x | 1.12x (0.97..1.22) / 1.12x / 99.4% |
+| 500 | K-only K=64 (1s RRQ) | 1.02x (1.01..1.03) / 1.02x | 1.10x (1.07..1.12) / 1.10x / 99.4% |
+| 2000 | full (K=0, exact) | 0.057s / 0.267s | 0.037s / 0.186s / 99.9% |
+| 2000 | K-only K=16 (1s RRQ) | 1.06x (1.06..1.07) / 1.07x | 1.22x (1.14..1.31) / 1.21x / 99.7% |
+| 2000 | K-only K=32 (1s RRQ) | 1.01x (1.00..1.02) / 1.01x | 1.13x (1.08..1.20) / 1.13x / 99.8% |
+| 2000 | K-only K=64 (1s RRQ) | 1.01x (0.99..1.02) / 1.01x | 0.98x (0.92..1.04) / 0.97x / 99.9% |
+
+### Per-replica `requestsInflight` cap and false-429 evaluation (delay=1s, 3 seeds)
+
+Models the soft in-memory scout exclusion (#3467) followed by the authoritative exact-count cap filter on the K candidates:
+
+| Fleet | Scenario | Policy | 429% | False-429% | Mean Lat Ratio | P99 Ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| N=300 | util=0.85 cap=2 prefix=false | K=16 / K=32 / K=64 | 0.000% / 0.000% / 0.000% | 0.000% / 0.000% / 0.000% | 1.05x / 1.02x / 1.00x | 1.05x / 1.02x / 1.01x |
+| N=300 | util=0.92 cap=4 prefix=false | K=16 / K=32 / K=64 | 0.000% / 0.000% / 0.000% | 0.000% / 0.000% / 0.000% | 1.09x / 1.02x / 1.01x | 1.08x / 1.01x / 1.00x |
+| N=300 | util=0.92 cap=12 prefix=true | K=16 / K=32 / K=64 | 0.000% / 0.000% / 0.000% | 0.000% / 0.000% / 0.000% | 1.17x / 1.12x / 1.13x | 1.15x / 1.11x / 1.13x |
+| N=300 | util=1.05 cap=4 prefix=false | full / K=16 / K=32 / K=64 | 6.316% / 6.233% / 6.329% / 6.495% | 0.000% / 6.233% / 6.308% / 6.026% | 1.00x / 0.97x / 0.99x / 1.00x | 1.00x / 0.95x / 0.98x / 1.01x |
+| N=500 | util=0.85 cap=2 prefix=false | K=16 / K=32 / K=64 | 0.000% / 0.000% / 0.000% | 0.000% / 0.000% / 0.000% | 1.06x / 1.03x / 1.02x | 1.06x / 1.03x / 1.03x |
+| N=500 | util=0.92 cap=4 prefix=false | K=16 / K=32 / K=64 | 0.000% / 0.000% / 0.000% | 0.000% / 0.000% / 0.000% | 1.08x / 1.02x / 1.03x | 1.09x / 1.02x / 1.03x |
+| N=500 | util=0.92 cap=12 prefix=true | K=16 / K=32 / K=64 | 0.000% / 0.000% / 0.000% | 0.000% / 0.000% / 0.000% | 1.17x / 1.12x / 1.10x | 1.16x / 1.12x / 1.10x |
+| N=500 | util=1.05 cap=4 prefix=false | full / K=16 / K=32 / K=64 | 6.296% / 5.836% / 6.126% / 6.092% | 0.000% / 5.836% / 6.126% / 6.079% | 1.00x / 0.96x / 0.99x / 0.99x | 1.00x / 0.94x / 0.98x / 0.99x |
+
+Across all sustainable loads tested (`util=0.85` and `util=0.92`), 429 and false-429 rates are `0.000%`. Under `105%` overload (`util=1.05, cap=4, prefix=false`), overall rejection rate matches `full (K=0)` (~`6.1–6.5%` vs `6.3%`) with no premature rejection cliff.
+
+### Pod blacklist × K-only evaluation (prefix=true, util=0.85, delay=1s)
+
+Models the cap-aware scout blacklist filter plus post-selection `excludeBlacklistedCandidates` and `O(N)` `ReselectCandidates` (#3543), across 3 seeds at `N=300/500` and 2 seeds at `N=2000`:
+
+| Scenario | Policy | Mean Lat Ratio | P99 Ratio | Prefix Hit% | O(N) Reselect% |
+| --- | --- | --- | --- | --- | --- |
+| N=300 BL=15% (uniform) | K=16 / K=32 / K=64 | 1.07x / 1.06x / 1.17x | 1.05x / 1.05x / 1.18x | 98.0% / 98.4% / 98.3% | 0.00% / 0.00% / 0.00% |
+| N=300 BL=40% (uniform) | K=16 / K=32 / K=64 | 1.01x / 0.99x / 1.06x | 0.97x / 0.96x / 1.06x | 96.9% / 97.2% / 97.1% | 0.49% / 0.02% / 0.00% |
+| N=300 BL=40% (correlated hot holders) | K=16 / K=32 / K=64 | 1.31x / 1.28x / 1.46x | 1.47x / 1.28x / 1.80x | 93.5% / 94.2% / 90.8% | 0.94% / 0.04% / 0.00% |
+| N=500 BL=15% (uniform) | K=16 / K=32 / K=64 | 1.10x / 1.02x / 1.06x | 1.05x / 0.98x / 1.04x | 98.9% / 99.1% / 99.2% | 0.00% / 0.00% / 0.00% |
+| N=500 BL=40% (uniform) | K=16 / K=32 / K=64 | 1.06x / 0.94x / 1.08x | 1.04x / 0.92x / 1.07x | 98.3% / 98.7% / 98.7% | 0.50% / 0.06% / 0.00% |
+| N=500 BL=40% (correlated hot holders) | K=16 / K=32 / K=64 | 1.28x / 1.16x / 1.62x | 1.33x / 1.14x / 2.77x | 96.1% / 96.7% / 92.8% | 1.59% / 0.26% / 0.00% |
+| N=2000 BL=40% (correlated hot holders) | K=16 / K=32 / K=64 | 1.39x / 1.30x / 1.24x | 1.48x / 1.39x / 1.28x | 97.9% / 97.4% / 98.4% | 2.74% / 0.68% / 0.15% |
+| N=2000 BL=40% (correlated, random-only 4K cap) | K=32 / K=64 | 1.33x / 1.16x | 1.69x / 1.20x | 95.6% / 98.2% | 0.46% / 0.01% |
+
+Note on the `8K >= N` whole-fleet scout regime: when `8K >= N` (e.g., `K=64` at `N=300` or `N=500`), `candidateScout` estimates the entire ready fleet rather than drawing a per-request `4K` random scout. Under `delay=1s` and heavy correlated hot-holder blacklists (`BL=40%`), all gateways see the same whole-fleet stale estimates and rank the same top `K/2` pods before filling the random half, which raises tail latency (`1.46x`/`1.62x`) even though `O(N)` reselects drop to `0.00%`. Once `8K < N` (`N=2000`), each request draws a fresh `4K` random scout and `K=64` outperforms both `K=16` and `K=32` (`1.24x` mean, `1.28x` P99, `98.4%` hit, `0.15%` reselect).
+
+### Fixed `TestCandidateSelectionKOnly` baseline (`N=300` and `N=500`, 3 seeds)
+
+Output of `CANDIDATE_SIM=konly CANDIDATE_SIM_PODS=300` and `500` after fixing `TestCandidateSelectionKOnly` to run `policyFull` with exact live counts (`SignalDelay=0`) instead of stale `sc.delay`:
+
+| Fleet | Policy | prefix=false delay=100ms | prefix=false delay=1s | prefix=true delay=100ms | prefix=true delay=1s |
+| --- | --- | --- | --- | --- | --- |
+| N=300 | full, live stage 2 | 0.051 s | 0.051 s | 0.043 s / 98.9% | 0.043 s / 98.9% |
+| N=300 | K-only K=16 | 1.04 (1.04 to 1.05); 1.01 | 1.04 (1.04 to 1.05); 1.04 | 1.11 (1.08 to 1.15); 1.08 / 98.2% | 1.11 (1.09 to 1.15); 1.08 / 98.4% |
+| N=300 | K-only K=32 | 1.02 (1.01 to 1.03); 0.99 | 1.03 (1.03 to 1.04); 1.03 | 1.05 (0.99 to 1.16); 1.01 / 98.5% | 1.23 (1.20 to 1.26); 1.21 / 98.6% |
+| N=300 | K-only K=64 | 1.01 (1.00 to 1.02); 0.99 | 1.03 (1.01 to 1.06); 1.02 | 1.17 (1.16 to 1.17); 1.14 / 98.6% | 1.10 (1.07 to 1.12); 1.09 / 98.8% |
+| N=500 | full, live stage 2 | 0.050 s | 0.050 s | 0.041 s / 99.5% | 0.041 s / 99.5% |
+| N=500 | K-only K=16 | 1.05 (1.04 to 1.06); 1.03 | 1.07 (1.06 to 1.08); 1.06 | 1.16 (1.10 to 1.21); 1.11 / 98.9% | 1.16 (1.12 to 1.22); 1.13 / 99.1% |
+| N=500 | K-only K=32 | 1.03 (1.02 to 1.04); 1.01 | 1.03 (1.02 to 1.03); 1.03 | 0.97 (0.92 to 1.02); 0.93 / 99.3% | 1.08 (0.96 to 1.17); 1.05 / 99.3% |
+| N=500 | K-only K=64 | 1.02 (1.02 to 1.04); 1.01 | 1.03 (1.02 to 1.04); 1.03 | 1.12 (0.92 to 1.22); 1.10 / 99.3% | 1.17 (1.15 to 1.18); 1.16 / 99.3% |
+
+---
+
 ## What the candidate stage first shipped with
 
 These results predate the K-only stage. The first candidate stage (#3292: `AIBRIX_ROUTING_CANDIDATE_K` plus `AIBRIX_ROUTING_CANDIDATE_PREFIX_M`, since removed) is policy "A random+prefix" below: K pods drawn at random plus up to M prefix holders, seeded at random among equal matches, then the load-imbalance gate and scoring on those pods only, with exact running counts read for them ("live stage 2, gate on sample"). It needs no index. Defaults simulated: K=16, M=16. The K-only stage that replaced it, policy "K-only" in `TestCandidateSelectionKOnly`, is compared there with this one.
