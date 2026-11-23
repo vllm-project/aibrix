@@ -280,11 +280,9 @@ msgstr "``least-utilization`` ：路由到综合利用率分数最低的 Pod。"
 #: ../../source/features/gateway-routing/gateway-plugins.rst:214
 msgid ""
 "``load-balance``: capacity-aware weighted least-request routing. Faster "
-"hardware is learned dynamically and receives proportionally more traffic."
-" See ``pkg/plugins/gateway/algorithms/load_balance.md`` for details."
-msgstr ""
-"``load-balance`` ：感知容量的加权 least-request 路由。系统会动态学习更快的硬件，并按比例为其分配更多流量。详见 "
-"``pkg/plugins/gateway/algorithms/load_balance.md`` 。"
+"hardware is learned dynamically and receives more traffic. See "
+"``pkg/plugins/gateway/algorithms/load_balance.md`` for details."
+msgstr "``load-balance`` ：感知容量的加权 least-request 路由。系统会动态学习更快的硬件，并为其分配更多流量。详见 ``pkg/plugins/gateway/algorithms/load_balance.md`` 。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:216
 msgid "Each pod is scored, and the pod with the lowest score is selected:"
@@ -292,9 +290,11 @@ msgstr "对每个 Pod 打分，并选择得分最低的 Pod："
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:222
 msgid ""
-"``EWMA(output_tokens_per_second)`` is the gateway-observed rate at which "
-"the pod completes output tokens."
-msgstr "``EWMA(output_tokens_per_second)`` 是网关观测到的该 Pod 完成输出 token 的速率。"
+"``EWMA(output_tokens_per_request_second)`` is the gateway-measured rate at "
+"which one request produces output tokens on the pod: completed output "
+"tokens divided by the time those requests spent on the pod. It does not "
+"grow with the share of traffic a pod receives."
+msgstr "``EWMA(output_tokens_per_request_second)`` 是网关测得的单个请求在该 Pod 上产生输出 token 的速率：已完成的输出 token 数除以这些请求在该 Pod 上花费的时间。它不会随 Pod 获得的流量份额增大而增大。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:223
 msgid "``kv_free`` is the pod's free KV-cache fraction."
@@ -302,21 +302,20 @@ msgstr "``kv_free`` 是该 Pod 空闲 KV cache 的比例。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:224
 msgid ""
-"``λ`` defaults to ``0`` (the running count already includes requests "
-"queued in the engine) and ``α`` to ``2``."
-msgstr "``λ`` 默认为 ``0`` （运行中请求数已包含引擎内排队的请求）， ``α`` 默认为 ``2`` 。"
+"``λ`` defaults to ``0`` (the running count already includes requests queued "
+"in the engine), ``α`` to ``2`` and ``β`` to ``2``."
+msgstr "``λ`` 默认为 ``0`` （运行中请求数已包含引擎内排队的请求）， ``α`` 默认为 ``2`` ， ``β`` 默认为 ``2`` 。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:225
 msgid ""
-"**Tuning:** ``λ``, ``α`` and the free-KV-cache threshold below are set "
-"with ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``, "
+"**Tuning:** ``λ``, ``α`` and the free-KV-cache threshold below are set with "
+"``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``, "
 "``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` and "
-"``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``, respectively."
-msgstr ""
-"**调优：** ``λ`` 、``α`` 以及下文的空闲 KV cache 阈值，分别通过 "
-"``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT`` "
-"、``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` 和 "
-"``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE`` 设置。"
+"``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``, respectively. ``β`` is set with "
+"``AIBRIX_LOAD_BALANCE_CAPACITY_EXPONENT``, and "
+"``AIBRIX_LOAD_BALANCE_CAPACITY_SIGNAL=total`` scores on the pod's total "
+"output-token rate as earlier releases did."
+msgstr "**调优：** ``λ`` 、 ``α`` 以及下文的空闲 KV cache 阈值，分别通过 ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT`` 、 ``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` 和 ``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE`` 设置。 ``β`` 通过 ``AIBRIX_LOAD_BALANCE_CAPACITY_EXPONENT`` 设置；设置 ``AIBRIX_LOAD_BALANCE_CAPACITY_SIGNAL=total`` 后，将像早期版本一样按 Pod 的总输出 token 速率打分。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:227
 msgid "Edge cases:"
@@ -339,9 +338,10 @@ msgstr "**缺少 KV 指标：** 引擎未上报 KV cache 使用量，或上报 `
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:231
 msgid ""
-"**No token-rate estimate yet:** the pod is scored at the mean estimate of"
-" the others (uniform capacity when none has one)."
-msgstr "**尚无 token 速率估计：** 该 Pod 按其他 Pod 的平均估计值打分（若都没有估计值，则视为容量一致）。"
+"**No usable token-rate estimate** (none yet, or not updated for 3 minutes): "
+"the pod is scored at the mean estimate of the others (uniform capacity when "
+"none has one)."
+msgstr "**没有可用的 token 速率估计** （尚无估计值，或已 3 分钟未更新）：该 Pod 按其他 Pod 的平均估计值打分（若都没有估计值，则视为容量一致）。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:232
 msgid ""

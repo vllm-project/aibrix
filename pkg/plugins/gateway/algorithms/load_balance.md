@@ -56,13 +56,13 @@ queued inside the engine; adding `num_requests_waiting` on top would count them 
 
 ### Worked example
 
-| Replica | Running | Tokens/s | KV free | Calculation | Score |
+| Replica | Running | Tokens per request-second | KV free | Calculation | Score |
 |---|---|---|---|---|---|
-| B40 | 30 | 6000 | 50% | 30/6000 × (1 + 2·0.50²) | **0.0075** |
-| A100 | 20 | 4000 | 30% | 20/4000 × (1 + 2·0.70²) | 0.0099 |
-| H20 | 25 | 3000 | 60% | 25/3000 × (1 + 2·0.40²) | 0.0110 |
+| B40 | 30 | 60 | 50% | 30/60² × (1 + 2·0.50²) | **0.0125** |
+| A100 | 20 | 40 | 30% | 20/40² × (1 + 2·0.70²) | 0.0248 |
+| H20 | 25 | 30 | 60% | 25/30² × (1 + 2·0.40²) | 0.0367 |
 
-The B40 wins despite carrying the most requests, because it drains them fastest. This example is
+The B40 wins despite carrying the most requests, because each of them runs fastest there. This example is
 asserted in `TestLoadBalanceScoreAll_HeterogeneousExample`.
 
 ## Why the capacity is squared

@@ -357,7 +357,7 @@ func lbPodMetrics(running, capacity, kvUsage float64) map[string]metrics.MetricV
 }
 
 // TestLoadBalanceScoreAll_HeterogeneousExample checks the documented B40/A100/H20 example
-// end to end: score = running / tokens-per-sec × (1 + 2(1−kvFree)²), lowest wins.
+// end to end: score = running / (tokens per request-second)² × (1 + 2(1−kvFree)²), lowest wins.
 func TestLoadBalanceScoreAll_HeterogeneousExample(t *testing.T) {
 	pods := []*v1.Pod{
 		makeLBPod("b40", "1.1.1.1"),
@@ -365,10 +365,11 @@ func TestLoadBalanceScoreAll_HeterogeneousExample(t *testing.T) {
 		makeLBPod("h20", "3.3.3.3"),
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
-		"b40":  lbPodMetrics(30, 6000, 0.50), // 30/6000 × (1+2·0.50²) = 0.0075
-		"a100": lbPodMetrics(20, 4000, 0.70), // 20/4000 × (1+2·0.70²) = 0.0099
-		"h20":  lbPodMetrics(25, 3000, 0.40), // 25/3000 × (1+2·0.40²) = 0.0110
+		"b40":  lbPodMetrics(30, 60, 0.50), // 30/60² × (1+2·0.50²) = 0.0125
+		"a100": lbPodMetrics(20, 40, 0.70), // 20/40² × (1+2·0.70²) = 0.0248
+		"h20":  lbPodMetrics(25, 30, 0.40), // 25/30² × (1+2·0.40²) = 0.0367
 	})
+	withCapacityExponent(t, loadBalanceCapacityExponentDefault)
 	r := &loadBalanceRouter{cache: c}
 
 	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
@@ -380,9 +381,9 @@ func TestLoadBalanceScoreAll_HeterogeneousExample(t *testing.T) {
 	for i, pod := range podList.All() {
 		byName[pod.Name] = scores[i]
 	}
-	assert.InDelta(t, 0.0075, byName["b40"], 1e-6)
-	assert.InDelta(t, 0.0099, byName["a100"], 1e-6)
-	assert.InDelta(t, 0.0110, byName["h20"], 1e-6)
+	assert.InDelta(t, 0.0125, byName["b40"], 1e-6)
+	assert.InDelta(t, 0.02475, byName["a100"], 1e-6)
+	assert.InDelta(t, 0.036667, byName["h20"], 1e-6)
 
 	target, err := r.Route(ctx, podsFromCache(c))
 	assert.NoError(t, err)
