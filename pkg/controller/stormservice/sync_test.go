@@ -755,9 +755,10 @@ func TestUpdateStatusExcludesTerminatingRoleSetFromReadiness(t *testing.T) {
 		wantReadyCount   int32
 		wantNotReady     int32
 		wantUpdatedReady int32
+		wantRoleReady    int32
 	}{
-		{name: "active ready roleset", terminating: false, wantReady: true, wantReadyCount: 1, wantNotReady: 0, wantUpdatedReady: 1},
-		{name: "terminating roleset with a stale Ready condition", terminating: true, wantReady: false, wantReadyCount: 0, wantNotReady: 1, wantUpdatedReady: 0},
+		{name: "active ready roleset", terminating: false, wantReady: true, wantReadyCount: 1, wantNotReady: 0, wantUpdatedReady: 1, wantRoleReady: 1},
+		{name: "terminating roleset with a stale Ready condition", terminating: true, wantReady: false, wantReadyCount: 0, wantNotReady: 1, wantUpdatedReady: 0, wantRoleReady: 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -766,9 +767,16 @@ func TestUpdateStatusExcludesTerminatingRoleSetFromReadiness(t *testing.T) {
 			_ = orchestrationv1alpha1.AddToScheme(scheme)
 
 			stormService := newPooledStormServiceWithSurge(0)
+			// The StormService was ready before the RoleSet started terminating.
+			stormService.Status.Conditions = orchestrationv1alpha1.Conditions{
+				*ctrlutils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""),
+			}
 			roleSet := pooledRoleSet(stormService, "pooled-storm-roleset-a", revision, tt.terminating)
 			roleSet.Status.Conditions = orchestrationv1alpha1.Conditions{
 				*ctrlutils.NewCondition(orchestrationv1alpha1.RoleSetReady, corev1.ConditionTrue, "Ready", ""),
+			}
+			roleSet.Status.Roles = []orchestrationv1alpha1.RoleStatus{
+				{Name: "engine", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, UpdatedReadyReplicas: 1},
 			}
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
@@ -793,6 +801,10 @@ func TestUpdateStatusExcludesTerminatingRoleSetFromReadiness(t *testing.T) {
 			assert.Equal(t, tt.wantUpdatedReady, current.Status.UpdatedReadyReplicas)
 			condition := ctrlutils.GetCondition(current.Status.Conditions, orchestrationv1alpha1.StormServiceReady)
 			assert.Equal(t, tt.wantReady, condition != nil && condition.Status == corev1.ConditionTrue)
+			if assert.Len(t, current.Status.RoleStatuses, 1) {
+				assert.Equal(t, int32(1), current.Status.RoleStatuses[0].Replicas)
+				assert.Equal(t, tt.wantRoleReady, current.Status.RoleStatuses[0].ReadyReplicas)
+			}
 		})
 	}
 }
