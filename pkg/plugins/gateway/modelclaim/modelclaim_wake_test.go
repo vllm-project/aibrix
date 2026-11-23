@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package modelclaim
 
 import (
 	"context"
@@ -43,21 +43,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
-
-type modelWakeCall struct {
-	pod     *v1.Pod
-	model   string
-	binding utils.ModelClaimBinding
-}
-
-type recordingModelWakeRequester struct {
-	calls []modelWakeCall
-}
-
-func (r *recordingModelWakeRequester) RequestWake(pod *v1.Pod, binding utils.ModelClaimBinding) bool {
-	r.calls = append(r.calls, modelWakeCall{pod: pod, model: binding.Model, binding: binding})
-	return true
-}
 
 func TestRuntimeModelWakeRequesterDeduplicatesAcrossPodResourceVersions(t *testing.T) {
 	type wakePayload struct {
@@ -94,7 +79,7 @@ func TestRuntimeModelWakeRequesterDeduplicatesAcrossPodResourceVersions(t *testi
 	require.NoError(t, err)
 	port, err := strconv.Atoi(rawPort)
 	require.NoError(t, err)
-	requester := newRuntimeModelWakeRequester(server.Client(), port, nil)
+	requester := NewRuntimeModelWakeRequester(server.Client(), port, nil)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "warm-1", Namespace: "default", UID: types.UID("pod-uid"), ResourceVersion: "42",
@@ -150,7 +135,7 @@ func TestRuntimeModelWakeRequesterUsesUniqueOperationIDsAcrossAttempts(t *testin
 	require.NoError(t, err)
 	port, err := strconv.Atoi(rawPort)
 	require.NoError(t, err)
-	requester := newRuntimeModelWakeRequester(server.Client(), port, nil)
+	requester := NewRuntimeModelWakeRequester(server.Client(), port, nil)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "warm-1", Namespace: "default", UID: types.UID("pod-uid"), ResourceVersion: "42",
@@ -197,7 +182,7 @@ func TestRuntimeModelWakeRequesterAsksTheControllerOnThePod(t *testing.T) {
 		Status:     v1.PodStatus{PodIP: host},
 	}
 	pods := fake.NewSimpleClientset(pod.DeepCopy())
-	requester := newRuntimeModelWakeRequester(client, port, pods)
+	requester := NewRuntimeModelWakeRequester(client, port, pods)
 	asked := time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
 	requester.now = func() time.Time { return asked }
 	binding := utils.ModelClaimBinding{
@@ -241,7 +226,7 @@ func TestRuntimeModelWakeRequesterForgetsOldWakeRequests(t *testing.T) {
 		Status:     v1.PodStatus{PodIP: host},
 	}
 	pods := fake.NewSimpleClientset(gone.DeepCopy(), next.DeepCopy())
-	requester := newRuntimeModelWakeRequester(client, port, pods)
+	requester := NewRuntimeModelWakeRequester(client, port, pods)
 	now := time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
 	requester.now = func() time.Time { return now }
 	binding := utils.ModelClaimBinding{
@@ -297,7 +282,7 @@ func TestRuntimeModelWakeRequesterWritesAgainOnceTheControllerTookTheRequestBack
 				Status: v1.PodStatus{PodIP: host},
 			}
 			pods := fake.NewSimpleClientset(pod.DeepCopy())
-			requester := newRuntimeModelWakeRequester(client, port, pods)
+			requester := NewRuntimeModelWakeRequester(client, port, pods)
 			asked := time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
 			requester.now = func() time.Time { return asked }
 			binding := utils.ModelClaimBinding{
@@ -367,7 +352,7 @@ func TestRuntimeModelWakeRequesterWritesOnlyOverThePodVersionItRead(t *testing.T
 		}
 		return false, nil, nil
 	})
-	requester := newRuntimeModelWakeRequester(client, port, pods)
+	requester := NewRuntimeModelWakeRequester(client, port, pods)
 	requester.now = func() time.Time { return time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC) }
 	binding := utils.ModelClaimBinding{
 		Model: "qwen", State: constants.ModelClaimRoutingStateSleeping, Claim: "qwen-claim", WakeByRequest: true,
@@ -411,7 +396,7 @@ func TestRuntimeModelWakeRequesterDoesNotAskAgainWhileThePodCarriesTheRequest(t 
 		Status: v1.PodStatus{PodIP: host},
 	}
 	pods := fake.NewSimpleClientset(pod.DeepCopy())
-	requester := newRuntimeModelWakeRequester(client, port, pods)
+	requester := NewRuntimeModelWakeRequester(client, port, pods)
 
 	assert.False(t, requester.RequestWake(pod, utils.ModelClaimBinding{
 		Model: "qwen", State: constants.ModelClaimRoutingStateSleeping, Claim: "qwen-claim", WakeByRequest: true,
@@ -442,9 +427,9 @@ func TestRuntimeModelWakeRequesterWakesTheRuntimeWhenTheControllerDoesNot(t *tes
 				Status:     v1.PodStatus{PodIP: host},
 			}
 			pods := fake.NewSimpleClientset(pod.DeepCopy())
-			requester := newRuntimeModelWakeRequester(server.Client(), port, pods)
+			requester := NewRuntimeModelWakeRequester(server.Client(), port, pods)
 			if wakeByRequest {
-				requester = newRuntimeModelWakeRequester(server.Client(), port, nil)
+				requester = NewRuntimeModelWakeRequester(server.Client(), port, nil)
 			}
 
 			assert.True(t, requester.RequestWake(pod, utils.ModelClaimBinding{

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package inflight
 
 import (
 	"sync"
@@ -30,18 +30,18 @@ import (
 // what tells an operator whether a 429 came from the sampled set (candidates) or from a fleet
 // that is entirely at the cap (fleet).
 const (
-	inflightScopeCandidates = "candidates"
-	inflightScopeFleet      = "fleet"
+	InflightScopeCandidates = "candidates"
+	InflightScopeFleet      = "fleet"
 )
 
 var (
 	inflightRejectionsOnce sync.Once
-	inflightRejections     *prometheus.CounterVec
+	InflightRejections     *prometheus.CounterVec
 )
 
-// recordInflightRejection counts a 429 from the per-replica inflight cap by the set the cap was
-// evaluated on. See inflightScopeCandidates and inflightScopeFleet.
-func recordInflightRejection(model, scope string) {
+// RecordInflightRejection counts a 429 from the per-replica inflight cap by the set the cap was
+// evaluated on. See InflightScopeCandidates and InflightScopeFleet.
+func RecordInflightRejection(model, scope string) {
 	inflightRejectionsOnce.Do(func() {
 		vec := prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -59,9 +59,9 @@ func recordInflightRejection(model, scope string) {
 			}
 			vec = registered.ExistingCollector.(*prometheus.CounterVec)
 		}
-		inflightRejections = vec
+		InflightRejections = vec
 	})
-	if inflightRejections != nil {
-		inflightRejections.WithLabelValues(model, scope).Inc()
+	if InflightRejections != nil {
+		InflightRejections.WithLabelValues(model, scope).Inc()
 	}
 }

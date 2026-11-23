@@ -31,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/auth"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -465,8 +466,8 @@ func TestHandleRequestHeaders_PriorityTierIsTrimmed(t *testing.T) {
 func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 	t.Run("valid bearer token is accepted and preserved for upstream", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 
@@ -495,8 +496,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("missing bearer token is rejected", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 
@@ -523,8 +524,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("non-bearer authorization header is rejected", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 
@@ -551,8 +552,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("wrong bearer token is rejected", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 

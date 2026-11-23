@@ -37,6 +37,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/modelclaim"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -529,9 +530,9 @@ func modelClaimRetryAfter(state, reason string, wakeRequested bool) int {
 		return seconds
 	}
 	if wakeRequested && state == constants.ModelClaimRoutingStateSleeping && reason == "" {
-		return modelClaimWakeRetryAfterSeconds
+		return modelclaim.ModelClaimWakeRetryAfterSeconds
 	}
-	return modelClaimRetryAfterSeconds
+	return modelclaim.ModelClaimRetryAfterSeconds
 }
 
 func modelClaimRetried(reason string) bool {

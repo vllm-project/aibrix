@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package modelclaim
 
 import (
 	"bytes"
@@ -40,14 +40,14 @@ import (
 )
 
 const (
-	defaultModelClaimRuntimePort = 8080
+	DefaultModelClaimRuntimePort = 8080
 	modelClaimWakePath           = "/v1/runtime/models/wake"
 	modelClaimWakeTimeout        = 2 * time.Minute
-	modelClaimRetryAfterSeconds  = 10
+	ModelClaimRetryAfterSeconds  = 10
 	// A sleeping model gets an earlier chance to be retried than one that starts
 	// from scratch. Whether it is ready is still up to the controller and the
 	// gateway cache.
-	modelClaimWakeRetryAfterSeconds = 3
+	ModelClaimWakeRetryAfterSeconds = 3
 	// A wake request is a single patch of the pod's annotations.
 	modelClaimWakeRequestTimeout = 10 * time.Second
 	// A wake request written this recently is not written again while the
@@ -55,7 +55,7 @@ const (
 	modelClaimWakeRequestRecheck = 30 * time.Second
 )
 
-type modelWakeRequester interface {
+type ModelWakeRequester interface {
 	// RequestWake asks for a sleeping engine to be woken, without holding the
 	// current request. The bool is false when the request is invalid, or when
 	// the same wake has already been asked for.
@@ -75,12 +75,12 @@ type runtimeModelWakeRequester struct {
 	now   func() time.Time
 }
 
-func newRuntimeModelWakeRequester(client *http.Client, port int, pods kubernetes.Interface) *runtimeModelWakeRequester {
+func NewRuntimeModelWakeRequester(client *http.Client, port int, pods kubernetes.Interface) *runtimeModelWakeRequester {
 	if client == nil {
 		client = &http.Client{Timeout: modelClaimWakeTimeout}
 	}
 	if port <= 0 {
-		port = defaultModelClaimRuntimePort
+		port = DefaultModelClaimRuntimePort
 	}
 	return &runtimeModelWakeRequester{client: client, port: port, pods: pods, now: time.Now}
 }
@@ -234,4 +234,4 @@ func (r *runtimeModelWakeRequester) wake(podIP, model, operationID string) error
 	return nil
 }
 
-var _ modelWakeRequester = (*runtimeModelWakeRequester)(nil)
+var _ ModelWakeRequester = (*runtimeModelWakeRequester)(nil)

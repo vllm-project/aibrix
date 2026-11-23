@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package auth
 
 import (
 	"testing"
@@ -26,9 +26,9 @@ import (
 func TestLoadAPIKeyAuthConfigFromEnv(t *testing.T) {
 	t.Setenv(envAuthBearerToken, "token-a")
 
-	cfg := loadAPIKeyAuthConfig()
+	cfg := LoadAPIKeyAuthConfig()
 
-	assert.Equal(t, "token-a", cfg.token)
+	assert.Equal(t, "token-a", cfg.Token)
 }
 
 func TestExtractBearerToken(t *testing.T) {

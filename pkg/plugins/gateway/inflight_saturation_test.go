@@ -39,6 +39,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	v1 "k8s.io/api/core/v1"
+
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 )
 
 // inflightProfile returns the resolved config profile a capped request carries: the per-replica
@@ -91,12 +93,12 @@ func TestSelectTargetPod_AllCandidatesSaturated(t *testing.T) {
 	t.Cleanup(routeCtx.Delete)
 	routeCtx.ConfigProfile = inflightProfile(1, 2)
 
-	before := inflightRejectionCount(t, "m", inflightScopeCandidates)
+	before := inflightRejectionCount(t, "m", inflight.InflightScopeCandidates)
 	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 	require.True(t, errors.Is(err, errReplicaInflightExceeded),
 		"every candidate is at the cap, so the request is rejected with the existing overload error")
-	require.NotNil(t, inflightRejections, "the rejection counter is registered on first use")
-	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflightScopeCandidates),
+	require.NotNil(t, inflight.InflightRejections, "the rejection counter is registered on first use")
+	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflight.InflightScopeCandidates),
 		"the rejection is counted against the candidate set")
 	require.Len(t, readSizes, 1, "the decision reads the running counts once")
 	assert.LessOrEqual(t, readSizes[0], 2,
@@ -164,12 +166,12 @@ func TestSelectTargetPod_PDSaturatedRejectsBeforeEngineValidation(t *testing.T) 
 	t.Cleanup(routeCtx.Delete)
 	routeCtx.ConfigProfile = inflightProfile(1, 0)
 
-	before := inflightRejectionCount(t, "m", inflightScopeFleet)
+	before := inflightRejectionCount(t, "m", inflight.InflightScopeFleet)
 	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 	require.True(t, errors.Is(err, errReplicaInflightExceeded),
 		"the cap is checked before engine validation, so mixed engines do not mask the 429: %v", err)
-	require.NotNil(t, inflightRejections, "the rejection counter is registered on first use")
-	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflightScopeFleet),
+	require.NotNil(t, inflight.InflightRejections, "the rejection counter is registered on first use")
+	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflight.InflightScopeFleet),
 		"an exclusive strategy checks the cap on the ready set, so the rejection is fleet scoped")
 	assert.NotContains(t, err.Error(), "inconsistent LLM engines")
 }
@@ -338,10 +340,10 @@ func TestSelectTargetPod_GateRunsAfterFilter(t *testing.T) {
 // created on first use, and the test that calls this has already caused a rejection.
 func inflightRejectionCount(t *testing.T, model, scope string) float64 {
 	t.Helper()
-	if inflightRejections == nil {
+	if inflight.InflightRejections == nil {
 		return 0
 	}
-	return testutil.ToFloat64(inflightRejections.WithLabelValues(model, scope))
+	return testutil.ToFloat64(inflight.InflightRejections.WithLabelValues(model, scope))
 }
 
 // loadImbalanceCount reads aibrix_load_imbalance_total for one model out of the default
