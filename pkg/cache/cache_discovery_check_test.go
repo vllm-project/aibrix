@@ -463,3 +463,34 @@ func TestDiscoveryCheckerConsistencyRunsWhenReachabilityRecovers(t *testing.T) {
 	require.Eventually(t, func() bool { return checker.ConsistencyAge() < 100*time.Millisecond },
 		time.Second, 5*time.Millisecond)
 }
+
+func TestDiscoveryCheckerReconnectResetsBackoffEvenWhenCheckFails(t *testing.T) {
+	// If the check run on a reconnect wake fails too (the cache has not
+	// caught up yet), the next attempt must come one doubled interval later,
+	// not after the doubled outage-era backoff.
+	reach := &switchableCheck{}
+	consistency := &switchableCheck{}
+	consistency.set(discovery.ErrModelListDiscoveryUnavailable)
+	checker, err := NewDiscoveryChecker(DiscoveryCheckOptions{
+		Interval: 20 * time.Millisecond, StaleThreshold: time.Hour,
+		Reachability: reach.check, Consistency: consistency.check,
+	})
+	require.NoError(t, err)
+	checker.maxBackoff = time.Hour
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	go checker.Run(stopCh)
+
+	// Waits of 20, 40, 80, 160 ms: the backoff is now 320 ms.
+	time.Sleep(400 * time.Millisecond)
+	reach.set(errors.New("connection refused"))
+	time.Sleep(60 * time.Millisecond)
+	before := consistency.callCount()
+	reach.set(nil)
+
+	// The wake runs one check at once (still failing), then waits 40 ms.
+	// Without the reset it would wait 640 ms.
+	require.Eventually(t, func() bool { return consistency.callCount() >= before+2 },
+		250*time.Millisecond, 5*time.Millisecond, "backoff was not reset on reconnect")
+}

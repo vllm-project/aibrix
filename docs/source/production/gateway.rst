@@ -254,7 +254,9 @@ Only reachability drives the stale gauge. The consistency check requires an
 exact match, so a Pod or ModelAdapter change during its LIST fails it on a
 healthy replica; a single failure is expected during rollouts. A consistency
 age that keeps rising, while reachability succeeds, means the cache is not
-converging.
+converging. Because failed checks back off for up to five minutes, a few
+failures in a row can raise the age to about five minutes plus the max age on a
+healthy replica, so set any alert on it above that.
 
 Alert on the stale gauge. A replica that is stale while others are not has
 lost its own connection; every replica stale at once points at the API server:
