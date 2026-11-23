@@ -106,7 +106,8 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 		utilruntime.Must(rayclusterv1.AddToScheme(scheme))
 	}
 
-	if distributedInferenceEnabled || kvCacheEnabled || stormServiceEnabled || modelRouteEnabled {
+	if distributedInferenceEnabled || kvCacheEnabled || stormServiceEnabled || modelRouteEnabled || podAutoscalerEnabled {
+		// pod-autoscaler-controller reads and patches StormService objects via WorkloadScale.
 		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
 	}
 
