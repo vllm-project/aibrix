@@ -211,7 +211,9 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 
 ## Candidate Stage (`algorithms/candidates.go`)
 
-Defaults to `64` (deployments with 64 or fewer ready pods are unaffected; set `0` to disable). When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` narrows the ready
+Defaults to `64` (evaluated per model, per request on routable pods: models with 64 or fewer
+routable pods are unaffected; a model autoscaling across 64 replicas switches paths mid-traffic,
+visible in `aibrix_routing_candidate_selections_total`; set `0` to disable). When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` narrows the ready
 pods to K pods before the load-imbalance gate and the router run. The gate and every strategy then
 read running counts, from Redis when it is configured, for those K pods only, which bounds the
 per-request routing work by K instead of the number of ready pods (RFC #3188). When the
@@ -237,10 +239,13 @@ few pods on every request, and keeps the candidates representative of the fleet 
 that compare a pod with its pool (with three quarters ranked, the gate fires against hot prefix
 holders in simulation). A request's prefix holders, its least-loaded pods and the pods with
 the most KV headroom therefore compete for the same K slots. Estimating only the scout keeps the
-stage's own work bounded by K once N > 8K (for K < N <= 8K, such as 64 < N <= 512 at the default
-K=64, the whole-fleet scout still estimates every ready pod in memory, so the stage narrows
-per-request Redis reads rather than gateway CPU or allocations; estimating every pod costs about a
-microsecond per pod and strategy). Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
+stage's own work bounded by K once N > 8K. For K < N <= 8K (such as 64 < N <= 512 at the default
+K=64), the whole-fleet scout still estimates every ready pod in memory, so the stage narrows
+per-request Redis reads rather than gateway CPU or allocations (estimating every pod costs about a
+microsecond per pod and strategy, and single-gateway or no-Redis setups see little benefit below 8K
+pods); in simulation (`algorithms/candidatesim/RESULTS.md`), `K=64` with `prefix-cache` and 1 s
+remote-running refresh also carries roughly 7–15% mean/median latency overhead in that mid-size
+band (while `prefix=false` stays within 1–4%). Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
 
 The stage applies only when every strategy in the resolved strategy, including the auto-blend,
 is candidate-safe: it judges pods only by the pods it is given, with no fleet-wide state of its
@@ -322,7 +327,7 @@ published).
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
-| `AIBRIX_ROUTING_CANDIDATE_K` | int | `64` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders, or the whole ready set when 8K >= N) on the strategies' in-memory estimates, and half drawn at random. Deployments with K or fewer ready pods bypass the stage unchanged. Set `0` to disable the candidate stage (opt-out). | [algorithms/candidates.go](algorithms/candidates.go) |
+| `AIBRIX_ROUTING_CANDIDATE_K` | int | `64` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders, or the whole ready set when 8K >= N) on the strategies' in-memory estimates, and half drawn at random. Evaluated per model, per request on routable pods (models with K or fewer routable pods bypass the stage unchanged; autoscaling across K switches paths mid-traffic, visible in `aibrix_routing_candidate_selections_total`). Set `0` to disable the candidate stage (opt-out). | [algorithms/candidates.go](algorithms/candidates.go) |
 | `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `true` | Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot (skipping snapshot `SCAN`/reads while keeping `aibrix:pod:*` writes for mixed rollouts and rollbacks; until stage (c) removes those writes, this provides fresh remote counts rather than lower Redis write load at scale). Accepts the case-insensitive spellings above with surrounding whitespace trimmed; unset or empty uses the default (`true`). Set `false`/`0`/`off`/`no`/`disabled` to roll back to snapshot reads (note: at G=8, N >= 2000 fleet scale, snapshot sync may time out before publishing, falling back to local-only estimates and withholding `realtime_num_requests_running`). Invalid values, including whitespace-only values, log an error and fail closed to disabled (with the same large-scale local-only consequence). Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 | `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` | duration | `1s` | How often the reader sweeps known ready pods (`utils.FilterReadyPod`) when `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`; also each sweep's Redis-phase time budget. Clamped to a minimum of `100ms` (with a warning). Pods refreshed within the last half interval are skipped, and a pod's count is used for 3 × this interval after it was read. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 

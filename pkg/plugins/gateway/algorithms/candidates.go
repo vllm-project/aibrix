@@ -43,14 +43,23 @@ import (
 // compete for the same K slots, as they compete in the router's blend. Estimating only a scout
 // keeps the stage's own work bounded by K too: estimating every ready pod costs about a
 // microsecond per pod and strategy, which at 2,000 pods is as much as full scoring in process.
+
 // defaultRoutingCandidateK is the default candidate set size when AIBRIX_ROUTING_CANDIDATE_K
-// is unset (Refs #3188). Deployments with at most K ready pods bypass the stage unchanged;
+// is unset (Refs #3188). Models with at most K routable pods bypass the stage unchanged;
 // set AIBRIX_ROUTING_CANDIDATE_K=0 (or routingConfig.candidate.k=0) to disable it.
 const defaultRoutingCandidateK = 64
 
-// Defaults to 64; set AIBRIX_ROUTING_CANDIDATE_K=0 to opt out, or override per request
-// through routingConfig.candidate.k.
-var routingCandidateK = utils.LoadEnvInt("AIBRIX_ROUTING_CANDIDATE_K", defaultRoutingCandidateK)
+// loadRoutingCandidateK reads AIBRIX_ROUTING_CANDIDATE_K, accepting an explicit 0 as the
+// process-wide opt-out while falling back to defaultRoutingCandidateK on unset, negative,
+// or unparseable values.
+func loadRoutingCandidateK() int {
+	return utils.LoadEnvNonNegativeInt("AIBRIX_ROUTING_CANDIDATE_K", defaultRoutingCandidateK)
+}
+
+// routingCandidateK is the process default for the candidate stage (defaultRoutingCandidateK);
+// set AIBRIX_ROUTING_CANDIDATE_K=0 to opt out, or override per request via
+// routingConfig.candidate.k.
+var routingCandidateK = loadRoutingCandidateK()
 
 // candidateScoutFactor sets the random scout to candidateScoutFactor*K ready pods. Ranking K
 // of 4K random pods already keeps most of the gain of ranking every pod (the
