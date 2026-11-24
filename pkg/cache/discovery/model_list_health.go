@@ -26,13 +26,19 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-
-	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/metadata"
 )
 
 const (
-	modelListPageSize            = 500
+	// modelListPageSize is the LIST page size for the consistency check. Each
+	// page costs one token from the client rate limiter, and the whole snapshot
+	// must finish within modelListVerificationTimeout. At the default
+	// --kube-api-qps 5 and --kube-api-burst 10, the 10 s budget allows about
+	// 60 pages, so 500-item pages failed above about 30,000 Pods. A metadata
+	// item is under 1 KB, so a 5,000-item page is a few MB, and 100,000 Pods
+	// need 20 pages.
+	modelListPageSize            = 5000
 	modelListVerificationTimeout = 10 * time.Second
 	modelListVerificationRetry   = 5 * time.Second
 )
@@ -239,33 +245,30 @@ func (h *ModelListHealth) ModelsIfHealthy(list func() []string) ([]string, bool)
 	return list(), true
 }
 
-func listPodVersions(ctx context.Context, client kubernetes.Interface) (map[string]objectVersion, error) {
-	versions := make(map[string]objectVersion)
-	opts := metav1.ListOptions{Limit: modelListPageSize}
-	for {
-		page, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, opts)
-		if err != nil {
-			return nil, err
-		}
-		for i := range page.Items {
-			key, version := objectIdentity(&page.Items[i])
-			versions[key] = version
-		}
-		if page.Continue == "" {
-			return versions, nil
-		}
-		if page.Continue == opts.Continue {
-			return nil, errors.New("repeated Pod list continuation token")
-		}
-		opts.Continue = page.Continue
-	}
+// The consistency check compares only namespace, name, UID and resourceVersion,
+// so it lists object metadata: the API server serializes, and the gateway
+// decodes, no spec or status.
+var (
+	podsResource          = v1.SchemeGroupVersion.WithResource("pods")
+	modelAdaptersResource = modelv1alpha1.GroupVersion.WithResource("modeladapters")
+)
+
+func listPodVersions(ctx context.Context, client metadata.Interface) (map[string]objectVersion, error) {
+	return listObjectVersions(ctx, client, podsResource, "Pod")
 }
 
-func listAdapterVersions(ctx context.Context, client v1alpha1.Interface) (map[string]objectVersion, error) {
+func listAdapterVersions(ctx context.Context, client metadata.Interface) (map[string]objectVersion, error) {
+	return listObjectVersions(ctx, client, modelAdaptersResource, "ModelAdapter")
+}
+
+// listObjectVersions pages through every object of resource, in all namespaces,
+// with a metadata-only LIST.
+func listObjectVersions(ctx context.Context, client metadata.Interface, resource schema.GroupVersionResource,
+	kind string) (map[string]objectVersion, error) {
 	versions := make(map[string]objectVersion)
 	opts := metav1.ListOptions{Limit: modelListPageSize}
 	for {
-		page, err := client.ModelV1alpha1().ModelAdapters(metav1.NamespaceAll).List(ctx, opts)
+		page, err := client.Resource(resource).Namespace(metav1.NamespaceAll).List(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -277,7 +280,7 @@ func listAdapterVersions(ctx context.Context, client v1alpha1.Interface) (map[st
 			return versions, nil
 		}
 		if page.Continue == opts.Continue {
-			return nil, errors.New("repeated ModelAdapter list continuation token")
+			return nil, fmt.Errorf("repeated %s list continuation token", kind)
 		}
 		opts.Continue = page.Continue
 	}

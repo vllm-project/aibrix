@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -96,19 +97,19 @@ func (p *KubernetesProvider) WatchApplied(handler func(WatchEvent) bool, stopCh 
 	return p.watch(handler, stopCh)
 }
 
-func (p *KubernetesProvider) configureModelListHealth(k8sClientSet kubernetes.Interface, crdClientSet v1alpha1.Interface) {
+func (p *KubernetesProvider) configureModelListHealth(metadataClient metadata.Interface) {
 	health := p.modelListHealth
 	if health == nil {
 		return
 	}
 	health.snapshot = func(ctx context.Context) (sourceVersions, error) {
-		pods, err := listPodVersions(ctx, k8sClientSet)
+		pods, err := listPodVersions(ctx, metadataClient)
 		if err != nil {
 			return sourceVersions{}, err
 		}
 		adapters := make(map[string]objectVersion)
 		if p.watchModelAdapters {
-			adapters, err = listAdapterVersions(ctx, crdClientSet)
+			adapters, err = listAdapterVersions(ctx, metadataClient)
 			if err != nil {
 				return sourceVersions{}, err
 			}
@@ -148,7 +149,16 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 			claimInformer = crdFactory.Model().V1alpha1().ModelClaims().Informer()
 		}
 	}
-	p.configureModelListHealth(k8sClientSet, crdClientSet)
+	if p.modelListHealth != nil {
+		// The metadata client has its own rate limiter, built from the same
+		// QPS and Burst, so verification LISTs don't compete with informer
+		// relists for tokens.
+		metadataClient, err := metadata.NewForConfig(p.config)
+		if err != nil {
+			return err
+		}
+		p.configureModelListHealth(metadataClient)
+	}
 
 	// Wire handler directly into informer callbacks.
 	// Events flow from the start — including during the initial list phase.
