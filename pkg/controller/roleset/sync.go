@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -125,6 +126,81 @@ func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestration
 		}
 	}
 	return manager.Next(ctx, roleSet)
+}
+
+// cleanupStaleRoles deletes RoleSet-owned Pods and PodSets whose role label is not in the current
+// Spec.Roles. When a role is removed from a StormService that updates in place -- Pooled mode
+// (which forces InPlaceUpdate) or Replica + InPlaceUpdate -- updateRoleSet rewrites the RoleSet
+// spec in place, but syncPods (the rolling managers) and status only iterate Spec.Roles, so the
+// dropped role's Pods/PodSets are never reconciled away; and the RoleSet is not deleted, so
+// owner-reference GC never reclaims them either. They would then consume capacity for the lifetime
+// of the StormService. RollingUpdate replaces whole RoleSets and so is unaffected, but the sweep
+// is safe there too: it only ever removes objects whose role is absent from the spec.
+//
+// Deletion matches the existing orphan-cleanup helpers (cleanupOrphanPods/cleanupOrphanPodSets)
+// and finalize rather than the rolling drain path, because the role is gone entirely -- there is
+// no surviving role replica count to drain down to. Returns whether anything was deleted.
+func (r *RoleSetReconciler) cleanupStaleRoles(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (bool, error) {
+	activeRoles := make(map[string]struct{}, len(roleSet.Spec.Roles))
+	for i := range roleSet.Spec.Roles {
+		activeRoles[roleSet.Spec.Roles[i].Name] = struct{}{}
+	}
+
+	isStale := func(obj client.Object) bool {
+		role := obj.GetLabels()[constants.RoleNameLabelKey]
+		if role == "" {
+			return false // never sweep an object with no role label
+		}
+		if _, ok := activeRoles[role]; ok {
+			return false // role is still in the spec
+		}
+		return isOwnedByRoleSet(obj, roleSet)
+	}
+
+	selectorOpt := client.MatchingLabels{constants.RoleSetNameLabelKey: roleSet.Name}
+	changed := false
+	var errs []error
+
+	// PodSets first (Pooled / podGroupSize > 1): deleting a PodSet garbage-collects its child Pods.
+	podSets := &orchestrationv1alpha1.PodSetList{}
+	if err := r.List(ctx, podSets, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
+		return false, err
+	}
+	for i := range podSets.Items {
+		ps := &podSets.Items[i]
+		if !isStale(ps) {
+			continue
+		}
+		klog.Infof("[cleanupStaleRoles] deleting podset %s/%s of removed role %q (roleset %s)",
+			ps.Namespace, ps.Name, ps.Labels[constants.RoleNameLabelKey], roleSet.Name)
+		if err := r.Delete(ctx, ps); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, err)
+		} else {
+			changed = true
+		}
+	}
+
+	// Pods (Pod mode, and the direct Pods of a Replica-mode role).
+	pods := &v1.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
+		errs = append(errs, err)
+		return changed, utilerrors.NewAggregate(errs)
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if !isStale(pod) {
+			continue
+		}
+		klog.Infof("[cleanupStaleRoles] deleting pod %s/%s of removed role %q (roleset %s)",
+			pod.Namespace, pod.Name, pod.Labels[constants.RoleNameLabelKey], roleSet.Name)
+		if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, err)
+		} else {
+			changed = true
+		}
+	}
+
+	return changed, utilerrors.NewAggregate(errs)
 }
 
 func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, managedErrors []error, podGroupSyncErr error) (*orchestrationv1alpha1.RoleSetStatus, error) {
