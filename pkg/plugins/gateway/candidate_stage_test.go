@@ -43,6 +43,14 @@ import (
 // By default (AIBRIX_ROUTING_CANDIDATE_K=64) and with a smaller routingConfig.candidate.k,
 // only the candidates are read, so the command count stops depending on the fleet size.
 func TestSelectTargetPod_CandidateStageBoundsRedisReads(t *testing.T) {
+	// Pin the process default K=64 so this test does not depend on AIBRIX_ROUTING_CANDIDATE_K
+	// in the caller's environment.
+	restoreDefaults := types.DefaultRoutingOverrides()
+	pinned := *restoreDefaults
+	pinned.Candidate.K = 64
+	types.SetDefaultRoutingOverrides(&pinned)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restoreDefaults) })
+
 	const n = 200
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})

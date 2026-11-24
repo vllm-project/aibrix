@@ -20,6 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -491,6 +495,52 @@ func TestLoadRoutingCandidateK(t *testing.T) {
 	ctx.Algorithm = RouterLeastRequest
 	ResolveRoutingOverrides(ctx)
 	assert.Len(t, SelectCandidates(ctx, nil, nil, pods, nil), len(pods), "AIBRIX_ROUTING_CANDIDATE_K=0 must disable candidate narrowing")
+}
+
+// TestRoutingCandidateK_PackageInitFromEnv pins package-level initialization of
+// routingCandidateK and types.DefaultRoutingOverrides().Candidate.K in a fresh
+// process so reverting routingCandidateK to utils.LoadEnvInt is caught even when
+// loadRoutingCandidateK itself is unchanged.
+func TestRoutingCandidateK_PackageInitFromEnv(t *testing.T) {
+	baseEnv := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "AIBRIX_ROUTING_CANDIDATE_K=") {
+			baseEnv = append(baseEnv, kv)
+		}
+	}
+	cases := []struct {
+		name string
+		env  string
+		want int
+	}{
+		{name: "unset defaults to 64", env: "", want: defaultRoutingCandidateK},
+		{name: "explicit zero disables at init", env: "0", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestRoutingCandidateK_PackageInitSubprocess$")
+			env := append(append([]string(nil), baseEnv...),
+				"AIBRIX_TEST_CANDIDATE_K_SUBPROCESS=1",
+				"AIBRIX_TEST_CANDIDATE_K_WANT="+strconv.Itoa(tc.want),
+			)
+			if tc.env != "" {
+				env = append(env, "AIBRIX_ROUTING_CANDIDATE_K="+tc.env)
+			}
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "subprocess failed:\n%s", string(out))
+		})
+	}
+}
+
+func TestRoutingCandidateK_PackageInitSubprocess(t *testing.T) {
+	if os.Getenv("AIBRIX_TEST_CANDIDATE_K_SUBPROCESS") == "" {
+		return
+	}
+	want, err := strconv.Atoi(os.Getenv("AIBRIX_TEST_CANDIDATE_K_WANT"))
+	require.NoError(t, err)
+	assert.Equal(t, want, routingCandidateK, "package var routingCandidateK must honor AIBRIX_ROUTING_CANDIDATE_K at init")
+	assert.Equal(t, want, types.DefaultRoutingOverrides().Candidate.K, "DefaultRoutingOverrides().Candidate.K must match package init")
 }
 
 func TestDefaultRoutingCandidateK_BoundaryAndNonCandidateSafeBypass(t *testing.T) {

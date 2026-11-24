@@ -244,8 +244,8 @@ K=64), the whole-fleet scout still estimates every ready pod in memory, so the s
 per-request Redis reads rather than gateway CPU or allocations (estimating every pod costs about a
 microsecond per pod and strategy, and single-gateway or no-Redis setups see little benefit below 8K
 pods); in simulation (`algorithms/candidatesim/RESULTS.md`), `K=64` with `prefix-cache` and 1 s
-remote-running refresh also carries roughly 7–15% mean/median latency overhead in that mid-size
-band (while `prefix=false` stays within 1–4%). Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
+remote-running refresh also carries roughly 7–16% mean/median latency overhead in that mid-size
+band (more under heavy-tailed load, while `prefix=false` stays within 1–4%). Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
 
 The stage applies only when every strategy in the resolved strategy, including the auto-blend,
 is candidate-safe: it judges pods only by the pods it is given, with no fleet-wide state of its

@@ -53,6 +53,14 @@ import (
 // detector, which CI runs, and the test would then measure that timeout rather than the ordering.
 // The counts scale with the ready set, so the comparison between the four cases is unaffected.
 func TestSelectTargetPod_RedisCommandsPerDecision(t *testing.T) {
+	// Pin the process default K=64 so the default rows do not depend on
+	// AIBRIX_ROUTING_CANDIDATE_K in the caller's environment.
+	restoreDefaults := types.DefaultRoutingOverrides()
+	pinned := *restoreDefaults
+	pinned.Candidate.K = 64
+	types.SetDefaultRoutingOverrides(&pinned)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restoreDefaults) })
+
 	const n = 1000
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
