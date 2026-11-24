@@ -579,11 +579,12 @@ func revertedRolloutDrainingPods(activePods, toDelete []*v1.Pod, templateHash st
 		if pod == nil {
 			continue
 		}
-		deleteSet[pod.Namespace+"/"+pod.Name] = struct{}{}
+		deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
 	}
 	reverted := make([]*v1.Pod, 0)
 	for _, pod := range activePods {
-		if pod == nil || !podutil.IsPodDraining(pod) {
+		// IsPodDraining guards nil, so no separate nil check is needed here.
+		if !podutil.IsPodDraining(pod) {
 			continue
 		}
 		if pod.Annotations[aibrixconst.PodDrainReasonAnnotationKey] != aibrixconst.PodDrainReasonRollout {
@@ -592,7 +593,7 @@ func revertedRolloutDrainingPods(activePods, toDelete []*v1.Pod, templateHash st
 		if pod.Labels[constants.RoleTemplateHashLabelKey] != templateHash {
 			continue
 		}
-		if _, deleting := deleteSet[pod.Namespace+"/"+pod.Name]; deleting {
+		if _, deleting := deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)]; deleting {
 			continue
 		}
 		reverted = append(reverted, pod)
