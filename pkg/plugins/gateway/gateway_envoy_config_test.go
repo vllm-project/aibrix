@@ -73,8 +73,16 @@ func (r envoyRoute) hasExtraMatchConstraints() bool {
 	return len(r.Match.Headers) > 0 ||
 		len(r.Match.QueryParameters) > 0 ||
 		r.Match.RuntimeFraction != nil ||
-		r.Match.CaseSensitive != nil ||
 		r.Match.Grpc != nil
+}
+
+// prefixMatches reports whether r's prefix matches target, honoring Envoy's
+// case_sensitive setting (default true).
+func (r envoyRoute) prefixMatches(target string) bool {
+	if r.Match.CaseSensitive != nil && !*r.Match.CaseSensitive {
+		return strings.HasPrefix(strings.ToLower(target), strings.ToLower(r.Match.Prefix))
+	}
+	return strings.HasPrefix(target, r.Match.Prefix)
 }
 
 type envoyVirtualHost struct {
@@ -182,7 +190,7 @@ func TestEnvoyConfigNoShadowedPrefixRoutes(t *testing.T) {
 						if earlier.hasExtraMatchConstraints() || earlier.Match.Prefix == "" {
 							continue
 						}
-						assert.Falsef(t, strings.HasPrefix(later.Match.Prefix, earlier.Match.Prefix),
+						assert.Falsef(t, earlier.prefixMatches(later.Match.Prefix),
 							"route %d (prefix %q) in virtual host %q of %s is shadowed by earlier route %d (prefix %q)",
 							i, later.Match.Prefix, vh.Name, path, j, earlier.Match.Prefix)
 					}
@@ -203,7 +211,12 @@ func TestEnvoyConfigStandaloneHealthzRoute(t *testing.T) {
 	var matched *envoyRoute
 	for i := range vhs[0].Routes {
 		r := &vhs[0].Routes[i]
-		if !r.hasExtraMatchConstraints() && strings.HasPrefix("/healthz", r.Match.Prefix) {
+		if r.prefixMatches("/healthz") {
+			// Fail rather than skipping if a prefix-matching route adds header/query/runtime
+			// constraints (e.g. present_match or invert_match) that this loop does not evaluate.
+			require.Falsef(t, r.hasExtraMatchConstraints(),
+				"route %d (prefix %q) matches /healthz with extra constraints this simulation cannot evaluate",
+				i, r.Match.Prefix)
 			matched = r
 			break
 		}
