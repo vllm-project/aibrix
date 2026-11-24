@@ -121,6 +121,8 @@ func TestUpdateByPaTypes_Annotations(t *testing.T) {
 				types.ScaleDownCooldownWindowLabel: "30s",
 
 				types.ScaleToZeroLabel: "true",
+
+				types.HoldScaleDownOnMetricFailureLabel: "true",
 			},
 		},
 	}
@@ -142,6 +144,7 @@ func TestUpdateByPaTypes_Annotations(t *testing.T) {
 	require.NotEqual(t, expectedScaleUpCooldownWindow, ctx.ScaleUpCooldownWindow)
 	require.NotEqual(t, expectedScaleDownCooldownWindow, ctx.ScaleDownCooldownWindow)
 	require.False(t, ctx.ScaleToZero)
+	require.False(t, ctx.HoldScaleDownOnMetricFailure)
 
 	err := ctx.UpdateByPaTypes(pa)
 
@@ -154,6 +157,7 @@ func TestUpdateByPaTypes_Annotations(t *testing.T) {
 	assert.Equal(t, expectedScaleUpCooldownWindow, ctx.ScaleUpCooldownWindow)
 	assert.Equal(t, expectedScaleDownCooldownWindow, ctx.ScaleDownCooldownWindow)
 	assert.True(t, ctx.ScaleToZero)
+	assert.True(t, ctx.HoldScaleDownOnMetricFailure)
 }
 
 func TestUpdateByPaTypes_InvalidTargetValue(t *testing.T) {
@@ -217,6 +221,7 @@ func TestUpdateByPaTypes_RejectsUnusableAnnotationValues(t *testing.T) {
 		{name: "scale-up cooldown not a duration", key: types.ScaleUpCooldownWindowLabel, value: "30", want: "must be a duration"},
 		{name: "scale-down cooldown negative", key: types.ScaleDownCooldownWindowLabel, value: "-5m", want: "must not be negative"},
 		{name: "scale-to-zero not a boolean", key: types.ScaleToZeroLabel, value: "maybe", want: "must be a boolean"},
+		{name: "hold scale-down not a boolean", key: types.HoldScaleDownOnMetricFailureLabel, value: "maybe", want: "must be a boolean"},
 	}
 
 	for _, tt := range tests {

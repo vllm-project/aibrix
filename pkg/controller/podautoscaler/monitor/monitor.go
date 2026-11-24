@@ -31,6 +31,11 @@ type Monitor interface {
 	// ForgetScaleAction removes every scale action series recorded for a
 	// PodAutoscaler, so a deleted one stops being exported.
 	ForgetScaleAction(namespace, name string)
+
+	// RecordMetricSourceHealth exports how many metric sources of a
+	// PodAutoscaler failed in its latest reconcile, and whether a scale-down
+	// was held because of them, so an outage or a stuck hold can be alerted on.
+	RecordMetricSourceHealth(namespace, name string, failedSources int, scaleDownHeld bool)
 }
 
 type podAutoscalerKey struct {
@@ -76,8 +81,17 @@ func (m *monitor) ForgetScaleAction(namespace, name string) {
 	defer m.mu.Unlock()
 
 	delete(m.lastScaleAction, podAutoscalerKey{namespace: namespace, name: name})
-	autoscalerScaleAction.DeletePartialMatch(prometheus.Labels{
-		"namespace": namespace,
-		"name":      name,
-	})
+	labels := prometheus.Labels{"namespace": namespace, "name": name}
+	autoscalerScaleAction.DeletePartialMatch(labels)
+	autoscalerFailedMetricSources.DeletePartialMatch(labels)
+	autoscalerScaleDownHeld.DeletePartialMatch(labels)
+}
+
+func (m *monitor) RecordMetricSourceHealth(namespace, name string, failedSources int, scaleDownHeld bool) {
+	autoscalerFailedMetricSources.WithLabelValues(namespace, name).Set(float64(failedSources))
+	held := 0.0
+	if scaleDownHeld {
+		held = 1
+	}
+	autoscalerScaleDownHeld.WithLabelValues(namespace, name).Set(held)
 }

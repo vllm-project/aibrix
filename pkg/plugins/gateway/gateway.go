@@ -48,11 +48,15 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/auth"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/modelclaim"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -63,11 +67,10 @@ import (
 )
 
 const (
-	defaultAIBrixNamespace = "aibrix-system"
-	metricHeaderErr        = "metric-header-err"
-	gatewayRespBody        = "gateway_rsp_body"
-	gatewayRespHeaders     = "gateway_rsp_headers"
-	gatewayReqBody         = "gateway_req_body"
+	metricHeaderErr    = "metric-header-err"
+	gatewayRespBody    = "gateway_rsp_body"
+	gatewayRespHeaders = "gateway_rsp_headers"
+	gatewayReqBody     = "gateway_req_body"
 	// Keep error normalization bounded even when an upstream emits a large body.
 	maxUpstreamErrorBodySize = 64 * 1024
 	defaultHTTPRouteCacheTTL = 30 * time.Second
@@ -87,16 +90,17 @@ type Server struct {
 	modelRateLimiter    ratelimiter.RateLimiter
 	disableRateLimiting bool
 	priorityTier        bool
-	apiKeyAuth          *apiKeyAuthConfig
+	apiKeyAuth          *auth.APIKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
+	gatewayNamespace    string
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	modelListMode       ModelListMode
 	verifyModelList     bool
 	routerManager       *routing.RouterManager
 	inFlightObserver    func(int)
-	wakeRequester       modelWakeRequester
+	wakeRequester       modelclaim.ModelWakeRequester
 	httpServer          *http.Server
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
@@ -373,22 +377,24 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		modelRateLimiter:    mr,
 		disableRateLimiting: options.DisableRateLimiting,
 		priorityTier:        options.PriorityTier,
-		apiKeyAuth:          loadAPIKeyAuthConfig(),
+		apiKeyAuth:          auth.LoadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
+		gatewayNamespace:    config.LoadGatewayNamespace(),
 		requestCountTracker: map[string]int{},
 		cache:               c,
 		modelListMode:       mode,
 		verifyModelList:     options.VerifyModelList,
 		routerManager:       routerManager,
 		inFlightObserver:    options.InFlightObserver,
-		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort, client),
+		wakeRequester:       modelclaim.NewRuntimeModelWakeRequester(nil, modelclaim.DefaultModelClaimRuntimePort, client),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
 		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
 		encodeExecutor:      newEncodeExecutor(),
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
+	klog.InfoS("HTTPRoute lookup namespace configured", "namespace", s.gatewayNamespace)
 	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
 	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
@@ -1025,7 +1031,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// For exclusive strategies the set is the full ready set, and the filter runs before
 		// engine validation so a request that will be rejected for saturation is not failed on
 		// a pod it never uses.
-		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflightScopeFleet); err != nil {
+		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet); err != nil {
 			return "", err
 		}
 		if isPD {
@@ -1048,9 +1054,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// The scope is what the filter actually ran on, not which branch ran: with the candidate
 		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
 		// It is read before the blacklist drops pods, which says nothing about what was sampled.
-		scope := inflightScopeFleet
+		scope := inflight.InflightScopeFleet
 		if len(readyPods) < readyBeforeCandidates {
-			scope = inflightScopeCandidates
+			scope = inflight.InflightScopeCandidates
 		}
 		readyPods = s.excludeBlacklistedCandidates(routeCtx, router, allReady, readyPods)
 		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, scope); err != nil {
@@ -1264,10 +1270,16 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
+		// Tests may construct Server directly, bypassing the constructor default.
+		namespace := s.gatewayNamespace
+		if namespace == "" {
+			namespace = config.DefaultGatewayNamespace
+		}
 		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
 		defer cancel()
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(lookupCtx, name, metav1.GetOptions{})
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(namespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
+			err = fmt.Errorf("httproute %s/%s: %w", namespace, name, err)
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				ttl := s.httprouteErrorTTL
 				if ttl <= 0 {
@@ -1278,7 +1290,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			return nil, err
 		}
 
-		result := httpRouteStatusError(defaultAIBrixNamespace, name, httproute.Status.Parents)
+		result := httpRouteStatusError(namespace, name, httproute.Status.Parents)
 		ttl := s.httprouteCacheTTL
 		if result != nil {
 			ttl = s.httprouteErrorTTL

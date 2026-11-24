@@ -205,6 +205,85 @@ Apply the route only when you intend to expose the plugin's list. Confirm its
 does not change whether the plugin returns ``known`` or ``ready-pods``; that
 choice comes from ``--model-list-mode``.
 
+Gateway Plugin Discovery Staleness
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each gateway replica keeps its own copy of the Pod list, fed by a Kubernetes
+watch. If one replica loses its connection to the API server, the watch is
+retried in the background and the replica keeps routing on the Pod list it had,
+including Pods that have since been deleted. Its health status does not change,
+and at the default log level nothing is logged.
+
+To make this visible, every replica checks the API server independently of
+watch events:
+
+- **Reachability** (always on): one ``LIST pods`` with ``limit=1`` every
+  interval, as a consistent read (the API server confirms etcd's current
+  revision). Each check is bounded by half the interval, so checks never
+  overlap. It costs one small request per interval per replica and needs no
+  permission beyond what the gateway role already has.
+- **Consistency** (only with ``--model-list-discovery-max-age``): the
+  verification described in the previous section, run on its own schedule
+  instead of only when ``/v1/models`` is called. It makes a full LIST at most
+  once per max age, now even when nobody calls ``/v1/models``, and keeps that
+  verification's ten-second timeout. After a failure it waits twice as long
+  before the next attempt, up to five minutes, so a LIST that is too slow for a
+  large cluster is not repeated every interval. When reachability recovers
+  after a failure, the wait starts over at one interval plus a random delay of
+  up to one interval, so replicas do not all send a full LIST at once.
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --discovery-check-interval=10s   # default; 0 disables the check
+          - --discovery-unreachable-threshold=30s  # default; at least twice the interval
+
+The check exports these metrics:
+
+- ``aibrix_gateway_discovery_reachability_age_seconds``: seconds since the
+  reachability check last succeeded.
+- ``aibrix_gateway_discovery_unreachable``: 1 once that age reaches
+  ``--discovery-unreachable-threshold``, otherwise 0.
+- ``aibrix_gateway_discovery_consistency_last_verified_age_seconds``: seconds
+  since the cache last matched a full LIST, whether this check or a
+  ``/v1/models`` request ran it. Only with the consistency check.
+- ``aibrix_gateway_discovery_verification_failures_total``: failed checks, by
+  ``check`` (``reachability`` or ``consistency``).
+
+Only reachability drives the unreachable gauge. The consistency check requires
+an exact match, so a Pod or ModelAdapter change during its LIST fails it on a
+healthy replica; a single failure is expected during rollouts. A consistency
+age that keeps rising, while reachability succeeds, means the cache is not
+converging. Because failed checks back off for up to five minutes, a few
+failures in a row can raise the age to about five minutes plus the max age on a
+healthy replica, so set any alert on it above that.
+
+Alert on the unreachable gauge. One replica reporting it while others do not
+has lost its own connection; every replica at once points at the API server:
+
+.. code-block:: yaml
+
+    - alert: AIBrixGatewayDiscoveryUnreachable
+      expr: max by (pod) (aibrix_gateway_discovery_unreachable) == 1
+      for: 1m
+
+The threshold absorbs a normal watch reconnect, so keep it above the time one
+takes. The ``for`` clause then requires it to stay unreachable, so with the
+defaults the alert fires after about 90 seconds without a successful check.
+
+What the check does not prove:
+
+- Reachability proves the API server answers this replica. It does not prove
+  the watch is delivering events. A watch that is connected but stuck shows
+  only in the consistency age.
+- Reporting unreachable does not change readiness or routing. The replica
+  stays in the Service endpoints and keeps routing on its last known Pod list.
+
+In standalone mode there is no API server, so no check runs and no discovery
+metric is reported.
+
 Envoy Proxy
 ~~~~~~~~~~~
 

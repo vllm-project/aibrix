@@ -380,6 +380,22 @@ helm install aibrix dist/chart -f my-values.yaml -n aibrix-system --create-names
 ```
 
 
+### Gateway and model HTTPRoute namespace
+
+The chart sets `AIBRIX_GATEWAY_NAMESPACE` to `.Release.Namespace` in both the
+controller manager and gateway plugin, matching the packaged Gateway. For
+example, `helm install aibrix dist/chart -n gateway-system --create-namespace`
+configures both components to create and read model HTTPRoutes in
+`gateway-system`. Use release name `aibrix` (or `fullnameOverride: aibrix`) to
+retain the existing Gateway name expected by ModelRouter, `aibrix-eg`.
+
+Do not override this variable through component `container.envs`; the chart
+rejects such overrides to prevent the writer and reader from using different
+namespaces. This setting covers routing objects; other component namespace
+requirements and workload discovery are unchanged. See the
+[gateway configuration reference](../../pkg/plugins/gateway/ENV_VARS.md#general-gateway)
+for defaults and manually managed deployments.
+
 ### Verification
 
 ```

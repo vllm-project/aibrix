@@ -704,8 +704,9 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Create server with mock cache
 			server := &Server{
-				cache:         mockCache,
-				gatewayClient: mockGW,
+				cache:            mockCache,
+				gatewayClient:    mockGW,
+				gatewayNamespace: "aibrix-system",
 			}
 
 			// Create request for the test case
@@ -2162,4 +2163,19 @@ func TestHandleRequestBody_PDRoutingTimeEndsAtPrefillStart(t *testing.T) {
 			assert.Contains(t, logs(), `routing_time_taken="`+want.String()+`"`)
 		})
 	}
+}
+
+type modelWakeCall struct {
+	pod     *v1.Pod
+	model   string
+	binding utils.ModelClaimBinding
+}
+
+type recordingModelWakeRequester struct {
+	calls []modelWakeCall
+}
+
+func (r *recordingModelWakeRequester) RequestWake(pod *v1.Pod, binding utils.ModelClaimBinding) bool {
+	r.calls = append(r.calls, modelWakeCall{pod: pod, model: binding.Model, binding: binding})
+	return true
 }

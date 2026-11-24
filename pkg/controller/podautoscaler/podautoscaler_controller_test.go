@@ -53,6 +53,10 @@ type fakeWorkloadScaleClient struct {
 	selector labels.Selector
 	// replicasErr, when set, is returned by GetCurrentReplicasFromScale.
 	replicasErr error
+	// counts, when set, is returned by GetCurrentReplicasFromScale instead of 1 replica.
+	counts *ReplicaCounts
+	// scaledTo records each SetDesiredReplicas call.
+	scaledTo []int32
 }
 
 func (f *fakeWorkloadScaleClient) Validate(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error {
@@ -60,12 +64,16 @@ func (f *fakeWorkloadScaleClient) Validate(ctx context.Context, pa *autoscalingv
 }
 
 func (f *fakeWorkloadScaleClient) SetDesiredReplicas(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, replicas int32) error {
+	f.scaledTo = append(f.scaledTo, replicas)
 	return nil
 }
 
 func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (ReplicaCounts, error) {
 	if f.replicasErr != nil {
 		return ReplicaCounts{}, f.replicasErr
+	}
+	if f.counts != nil {
+		return *f.counts, nil
 	}
 	return ReplicaCounts{Configured: 1, Observed: 1}, nil
 }
@@ -1434,12 +1442,19 @@ func TestFilterHPAObjectIgnoresUnmanagedHPA(t *testing.T) {
 	}
 }
 
-// fakeMonitor records which PodAutoscalers had their metric series removed.
+// fakeMonitor records which PodAutoscalers had their metric series removed,
+// and the last metric source health reported.
 type fakeMonitor struct {
-	forgotten []ktypes.NamespacedName
+	forgotten     []ktypes.NamespacedName
+	failedSources int
+	scaleDownHeld bool
 }
 
 func (f *fakeMonitor) RecordScaleAction(string, string, string, string, int32) {}
+
+func (f *fakeMonitor) RecordMetricSourceHealth(_, _ string, failedSources int, scaleDownHeld bool) {
+	f.failedSources, f.scaleDownHeld = failedSources, scaleDownHeld
+}
 
 func (f *fakeMonitor) ForgetScaleAction(namespace, name string) {
 	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})
@@ -1473,6 +1488,10 @@ func TestReconcileDeletedPodAutoscalerReleasesState(t *testing.T) {
 			deleted: "apps/v1.Deployment/ns1/deleted",
 			other:   "apps/v1.Deployment/ns1/other",
 		},
+		metricHealth: map[ktypes.NamespacedName]metricSourceHealth{
+			deleted: {failed: []string{"queue_length"}},
+			other:   {failed: []string{"queue_length"}},
+		},
 	}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: deleted}); err != nil {
@@ -1481,6 +1500,9 @@ func TestReconcileDeletedPodAutoscalerReleasesState(t *testing.T) {
 
 	if _, ok := r.recommendations[deleted.String()]; ok {
 		t.Errorf("recommendation history for %s was not released", deleted)
+	}
+	if _, ok := r.metricHealth[deleted]; ok {
+		t.Errorf("metric source health for %s was not released", deleted)
 	}
 	if _, ok := r.paToScalingKey[deleted]; ok {
 		t.Errorf("scaling target claim for %s was not released", deleted)
@@ -1498,6 +1520,9 @@ func TestReconcileDeletedPodAutoscalerReleasesState(t *testing.T) {
 	// State of a PodAutoscaler that still exists must not be touched.
 	if _, ok := r.recommendations[other.String()]; !ok {
 		t.Errorf("recommendation history for %s was removed", other)
+	}
+	if _, ok := r.metricHealth[other]; !ok {
+		t.Errorf("metric source health for %s was removed", other)
 	}
 	if r.paToScalingKey[other] != "apps/v1.Deployment/ns1/other" ||
 		r.scalingTargetToPA["apps/v1.Deployment/ns1/other"] != other {

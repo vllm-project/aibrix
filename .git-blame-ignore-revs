@@ -1,0 +1,6 @@
+# Revisions to ignore in `git blame` (pure file moves and splits; see #3557).
+# Configure locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# PR 4a of #3557: move auth, modelclaim and inflight helpers into subpackages (#3573)
+11d80413ef865fe0eb52c3e493373c0ea89597cf

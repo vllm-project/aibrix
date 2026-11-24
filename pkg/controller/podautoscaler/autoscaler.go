@@ -78,6 +78,9 @@ type ReplicaComputeResult struct {
 	Reason                    string
 	Valid                     bool
 	PendingReplicaGuardActive bool
+	// FailedMetrics names the metric sources that failed while the others
+	// produced this recommendation, so callers can say it rests on partial data.
+	FailedMetrics []string
 }
 
 // DefaultAutoScaler implements the complete scaling pipeline
@@ -216,6 +219,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 
 	var validResults []*ReplicaComputeResult // to record the recommended result calculated in the current round
 	var anyValid bool
+	var failedMetrics []string
 
 	for _, metricSource := range metricsSources {
 		// Extract per-request configuration
@@ -234,6 +238,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 				"metric", metricSource.TargetMetric,
 				"metricSourceType", metricSource.MetricSourceType)
 			// Continue processing other metrics — one failure shouldn't block all
+			failedMetrics = append(failedMetrics, metricSource.TargetMetric)
 			continue
 		}
 
@@ -255,7 +260,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 	}
 
 	if !anyValid {
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("all %d metric sources failed for "+
+		return &ReplicaComputeResult{Valid: false, FailedMetrics: failedMetrics}, fmt.Errorf("all %d metric sources failed for "+
 			"PodAutoscaler %s/%s", len(metricsSources), pa.Namespace, pa.Name)
 	}
 
@@ -289,6 +294,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		Reason:                    bestResult.Reason,
 		Valid:                     true,
 		PendingReplicaGuardActive: bestResult.PendingReplicaGuardActive,
+		FailedMetrics:             failedMetrics,
 	}, nil
 }
 
