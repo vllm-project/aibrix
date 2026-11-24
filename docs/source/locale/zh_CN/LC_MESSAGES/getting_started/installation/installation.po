@@ -131,6 +131,15 @@ msgstr "在测试环境中安装 AIBrix"
 msgid "Install Individual AIBrix Components"
 msgstr "安装单个 AIBrix 组件"
 
+#: ../../source/getting_started/installation/installation.rst:137
+msgid ""
+"Each component below installs into the ``aibrix-system`` namespace, which "
+"its manifests don't create. Create the namespace first if it doesn't "
+"exist:"
+msgstr ""
+"以下各组件都会安装到 ``aibrix-system`` 命名空间，但其清单不会创建该命名空间。"
+"如果该命名空间尚不存在，请先创建："
+
 #: ../../source/getting_started/installation/installation.rst:139
 msgid "Autoscaler"
 msgstr "Autoscaler"
