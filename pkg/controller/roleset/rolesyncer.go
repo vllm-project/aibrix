@@ -574,14 +574,19 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 // RolloutByStep for a role whose pods are all updated and ready. Pods this
 // pass deletes anyway are left alone.
 func revertedRolloutDrainingPods(activePods, toDelete []*v1.Pod, templateHash string) []*v1.Pod {
-	deleteSet := make(map[string]struct{}, len(toDelete))
-	for _, pod := range toDelete {
-		if pod == nil {
-			continue
+	// In steady state there is nothing to delete and nothing reverted, so avoid
+	// allocating the lookup map and the result slice unless they are needed.
+	var deleteSet map[string]struct{}
+	if len(toDelete) > 0 {
+		deleteSet = make(map[string]struct{}, len(toDelete))
+		for _, pod := range toDelete {
+			if pod == nil {
+				continue
+			}
+			deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
 		}
-		deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
 	}
-	reverted := make([]*v1.Pod, 0)
+	var reverted []*v1.Pod
 	for _, pod := range activePods {
 		// IsPodDraining guards nil, so no separate nil check is needed here.
 		if !podutil.IsPodDraining(pod) {
@@ -593,8 +598,10 @@ func revertedRolloutDrainingPods(activePods, toDelete []*v1.Pod, templateHash st
 		if pod.Labels[constants.RoleTemplateHashLabelKey] != templateHash {
 			continue
 		}
-		if _, deleting := deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)]; deleting {
-			continue
+		if deleteSet != nil {
+			if _, deleting := deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)]; deleting {
+				continue
+			}
 		}
 		reverted = append(reverted, pod)
 	}
