@@ -122,6 +122,13 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	sem := make(chan struct{}, maxConcurrentPodScrapes)
 	var wg sync.WaitGroup
 	for _, idx := range order {
+		// Once the overall budget is spent, record the rest as timed out without launching. This
+		// is checked first because a ready select has no priority: with a free slot and a done
+		// context, select could still take the sem case and spawn a pointless goroutine.
+		if err := collectCtx.Err(); err != nil {
+			results[idx] = podResult{err: err}
+			continue
+		}
 		// Acquire a slot in Ready-first order; stop launching once the overall budget is spent
 		// (the remaining pods are then recorded as timed out rather than scraped).
 		select {
