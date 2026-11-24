@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+# 	http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -83,6 +83,15 @@ async def harness():
         h.headers = {
             "content-type": upload.headers["content-type"],
         }
+        h.expected = httpx.Request(
+            "POST",
+            f"http://frontend{PATH}",
+            headers=h.headers,
+            files=[
+                ("model", (None, "minimax-h3")),
+                ("input_references", ("first.png", b"image\x00\xff", "image/png")),
+            ],
+        ).read()
 
     h.set_form = set_form
     h.set_form()
@@ -104,24 +113,27 @@ async def test_video_sync_null_output_returns_native_mp4(harness):
     response = await h.client.post(PATH, content=h.body, headers=h.headers)
     assert response.status_code == 200 and response.content == VIDEO
     assert response.headers["content-type"] == "video/mp4"
-    assert h.forwarded.content == h.body
+    assert h.forwarded.content == h.expected
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "missing_boundary", [False, True], ids=["invalid-output", "missing-boundary"]
-)
-async def test_video_sync_native_error_precedes_output_validation(
-    harness, missing_boundary
-):
+async def test_video_sync_native_error_precedes_output_validation(harness):
     h = harness
     h.set_form("{")
-    if missing_boundary:
-        h.headers["content-type"] = "multipart/form-data"
     h.status = 422
     h.content = b'{"detail":"Invalid video form"}'
     response = await h.client.post(PATH, content=h.body, headers=h.headers)
     assert response.status_code == 422 and response.content == h.content
     assert response.headers["content-type"] == "application/json"
-    assert h.forwarded.content == h.body
+    assert h.forwarded.content == h.expected
     assert h.forwarded.headers["content-type"] == h.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_video_sync_rejects_missing_boundary_before_forwarding(harness):
+    h = harness
+    h.headers["content-type"] = "multipart/form-data"
+    h.status = 422
+    response = await h.client.post(PATH, content=h.body, headers=h.headers)
+    assert response.status_code == 400, response.text
+    assert h.forwarded is None

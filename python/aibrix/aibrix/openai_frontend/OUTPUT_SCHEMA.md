@@ -141,8 +141,8 @@ curl http://localhost:8000/v1/videos/sync \
   -F 'output={"url":"tos://my-bucket/results"}'
 ```
 
-The MP4 is saved as `<id>-0.mp4`; HTTP returns the receipt after upload completes.
-Omitting `output` or sending `output=null` keeps the native MP4 response.
+The video is saved as `<id>-0.<extension>`; HTTP returns the receipt after upload completes.
+Omitting `output` or sending `output=null` keeps the native video response.
 
 ### Storage configuration
 

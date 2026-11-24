@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -109,9 +110,6 @@ class ProxyProcess:
                 **os.environ,
                 "PYTHONPATH": PKG_ROOT,
                 "PYTHONUNBUFFERED": "1",
-                "VLLM_OMNI_SERVER_STORAGE__PATH": os.path.join(
-                    tmp_dir, "video-storage"
-                ),
             },
             stdout=self._log,
             stderr=subprocess.STDOUT,
@@ -717,8 +715,46 @@ class TestVideoSyncMultipartCrossProcess:
         assert media.startswith(b"\x00\x00\x00\x18ftypmp42")
         payload = json.loads(media[12:])
         assert payload["model"] == "minimax-h3"
+        assert payload["output"] is None
         assert [ref["filename"] for ref in payload["references"]] == [
             "first.png",
             "second.png",
         ]
+        assert ready_proxy.metric("proxy_in_flight_requests") == 0
+
+    def test_large_video_upload_removes_output_with_bounded_memory(
+        self, ready_proxy, tmp_path
+    ):
+        output_dir = tmp_path / "videos"
+        output = json.dumps({"url": str(output_dir)})
+        url = f"{ready_proxy.url}/v1/videos/sync"
+        # Warm up the parser and local writer before measuring upload memory.
+        httpx.post(
+            url,
+            files=[("model", (None, "minimax-h3")), ("output", (None, output))],
+            timeout=30,
+        ).raise_for_status()
+        size = 48 * MiB
+        chunks, sha = _audio_chunks(size)
+        with (
+            io.BytesIO(b"".join(chunks)) as upload,
+            _PeakRSS(ready_proxy.proc.pid) as rss,
+        ):
+            response = httpx.post(
+                url,
+                files=[
+                    ("output", (None, output)),
+                    ("model", (None, "minimax-h3")),
+                    ("input_references", ("first.png", upload, "image/png")),
+                ],
+                timeout=120,
+            )
+        assert response.status_code == 200, response.text
+        (artifact,) = response.json()["output"]["artifacts"]
+        payload = json.loads((output_dir / artifact).read_bytes()[12:])
+        assert payload["output"] is None
+        assert payload["references"] == [
+            {"filename": "first.png", "size": size, "sha256": sha}
+        ]
+        assert rss.growth < 16 * MiB
         assert ready_proxy.metric("proxy_in_flight_requests") == 0

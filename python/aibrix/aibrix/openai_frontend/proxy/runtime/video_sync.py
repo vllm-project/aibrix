@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+# 	http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,6 +17,7 @@
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import uuid
 from pathlib import Path
@@ -36,22 +37,6 @@ VIDEO_SYNC_TIMEOUT_SECONDS = float(os.getenv("VLLM_OMNI_VIDEO_SYNC_TIMEOUT", "36
 VIDEO_JOB_ID_TIMEOUT_SECONDS = 10.0
 VIDEO_DELETE_TIMEOUT_SECONDS = 30.0
 VIDEO_POLL_INTERVAL_SECONDS = 0.5
-
-
-def video_storage_path(engine_env: Optional[dict[str, str]] = None) -> Path:
-    """Resolve the file backend settings inherited by the local Omni process."""
-    env = {key.upper(): value for key, value in os.environ.items()}
-    env.update({key.upper(): value for key, value in (engine_env or {}).items()})
-    storage = json.loads(env.get("VLLM_OMNI_SERVER_STORAGE", "{}"))
-    if not isinstance(storage, dict):
-        raise ValueError("VLLM_OMNI_SERVER_STORAGE must be a JSON object")
-    path = env.get(
-        "VLLM_OMNI_SERVER_STORAGE__PATH",
-        env.get("VLLM_OMNI_STORAGE_PATH", storage.get("path", "/tmp/storage")),
-    )
-    if not isinstance(path, str):
-        raise ValueError("vLLM-Omni storage path must be a string")
-    return Path(path).resolve()
 
 
 class VideoSyncJob:
@@ -113,8 +98,13 @@ class VideoSyncJob:
             raise ServerError(
                 f"Inner engine video output is unavailable: {path}"
             ) from exc
-        # Omni saves under the job ID; file_name is only the download label.
-        return VideoSyncResult(file_path=str(path))
+        # Omni saves under an extensionless job ID. The download filename
+        # identifies the media format, but is never used to locate the file.
+        file_name = self._job.get("file_name")
+        media_type = (
+            mimetypes.guess_type(file_name)[0] if isinstance(file_name, str) else None
+        )
+        return VideoSyncResult(file_path=str(path), media_type=media_type)
 
     async def run(
         self,

@@ -316,9 +316,9 @@ def add_proxy_args(parser: argparse.ArgumentParser):
         "--proxy-media-dir",
         type=str,
         default=None,
-        help="Directory for media the proxy downloads on behalf of the engine "
-        "(default: a private temp dir). Passed to vLLM as "
-        "--allowed-local-media-path.",
+        help="Directory for downloaded media and vLLM-Omni generated videos "
+        "(default: a private temp dir, even when fetching is disabled). "
+        "Passed to vLLM as --allowed-local-media-path.",
     )
     proxy_group.add_argument(
         "--proxy-fetch-media",

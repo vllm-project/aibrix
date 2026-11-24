@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+# 	http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -39,22 +39,23 @@ JOB = {
 }
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "env, expected",
+    "env",
     [
-        ({}, "/tmp/storage"),
-        ({"VLLM_OMNI_STORAGE_PATH": "/tmp/legacy"}, "/tmp/legacy"),
-        ({"VLLM_OMNI_SERVER_STORAGE": '{"path":"/tmp/json"}'}, "/tmp/json"),
-        (
-            {
-                "VLLM_OMNI_STORAGE_PATH": "/tmp/legacy",
-                "VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/current",
-            },
-            "/tmp/current",
-        ),
+        {},
+        {"VLLM_OMNI_STORAGE_PATH": "/tmp/legacy"},
+        {"VLLM_OMNI_SERVER_STORAGE": '{"path":"/tmp/json"}'},
+        {
+            "VLLM_OMNI_STORAGE_PATH": "/tmp/legacy",
+            "VLLM_OMNI_SERVER_STORAGE__PATH": "/tmp/current",
+        },
     ],
 )
-def test_video_storage_path_matches_engine_environment(monkeypatch, env, expected):
+async def test_video_storage_uses_existing_absolute_media_dir(
+    monkeypatch, tmp_path, env
+):
+    monkeypatch.chdir(tmp_path)
     for key in (
         "VLLM_OMNI_STORAGE_PATH",
         "VLLM_OMNI_SERVER_STORAGE",
@@ -63,25 +64,69 @@ def test_video_storage_path_matches_engine_environment(monkeypatch, env, expecte
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    assert video_sync.video_storage_path() == Path(expected).resolve()
+    engine_env = {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
+    engine = ProxyEngine(
+        ["unused"],
+        spec=VLLM_OMNI_SPEC,
+        engine_env=engine_env,
+        media_dir="media/videos",
+        fetch_media=False,
+        artifact_fetcher=object(),
+    )
+    media_dir = tmp_path / "media" / "videos"
+    try:
+        assert Path(engine._media_dir) == media_dir
+        assert media_dir.is_dir()
+        assert engine._subprocess._env["VLLM_OMNI_SERVER_STORAGE__PATH"] == str(
+            media_dir
+        )
+        assert engine._subprocess._cmd[-2:] == [
+            "--allowed-local-media-path",
+            str(media_dir),
+        ]
+        assert engine_env == {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
+        (media_dir / "existing.mp4").write_bytes(b"video")
+    finally:
+        await engine.aclose()
+    assert (media_dir / "existing.mp4").read_bytes() == b"video"
 
 
 @pytest.mark.asyncio
-async def test_video_storage_path_passes_absolute_path_to_engine(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("VLLM_OMNI_SERVER_STORAGE__PATH", "/tmp/current")
-    engine_env = {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
-    engine = ProxyEngine(
-        ["unused"], spec=VLLM_OMNI_SPEC, engine_env=engine_env, fetch_media=False
-    )
+async def test_default_video_media_dir_survives_until_engine_stops(monkeypatch):
+    engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
+    media_dir = Path(engine._media_dir)
+    events = []
+
+    def stop():
+        assert media_dir.is_dir()
+        # A worker can finish writing while its process tree is being stopped.
+        (media_dir / "last.mp4").write_bytes(b"video")
+        events.append("stop")
+
+    cleanup_all = engine._fetcher.cleanup_all
+
+    def cleanup():
+        assert (media_dir / "last.mp4").read_bytes() == b"video"
+        events.append("cleanup")
+        cleanup_all()
+
+    async def close_client():
+        assert not media_dir.exists()
+        events.append("close_client")
+
+    monkeypatch.setattr(engine._subprocess, "shutdown", stop)
+    monkeypatch.setattr(engine._fetcher, "cleanup_all", cleanup)
+    monkeypatch.setattr(engine._subprocess, "close_client", close_client)
     try:
-        assert engine._video_storage_path == tmp_path / "videos"
+        assert media_dir.is_dir()
         assert engine._subprocess._env["VLLM_OMNI_SERVER_STORAGE__PATH"] == str(
-            tmp_path / "videos"
+            media_dir
         )
-        assert engine_env == {"VLLM_OMNI_SERVER_STORAGE__PATH": "videos"}
     finally:
         await engine.aclose()
+    await engine.aclose()
+    assert events == ["stop", "cleanup", "close_client"]
+    assert not media_dir.exists()
 
 
 def make_request(messages):
@@ -546,12 +591,14 @@ async def test_video_sync_abort_over_http_then_new_inference(monkeypatch, phase)
             head = (await reader.readuntil(b"\r\n\r\n")).decode()
             method, path, _ = head.split("\r\n", 1)[0].split()
             if method == "POST":
-                length = next(
-                    int(line.split(":", 1)[1])
-                    for line in head.split("\r\n")
-                    if line.lower().startswith("content-length:")
-                )
-                assert await reader.readexactly(length) == b"--b--\r\n"
+                assert "transfer-encoding: chunked" in head.lower()
+                assert "content-length:" not in head.lower()
+                body = bytearray()
+                while size := int(await reader.readline(), 16):
+                    body.extend(await reader.readexactly(size))
+                    assert await reader.readexactly(2) == b"\r\n"
+                assert await reader.readline() == b"\r\n"
+                assert body == b"--b--\r\n"
                 creates.append(f"video_gen_{len(creates) + 1}")
                 if len(creates) == 1 and phase == "create":
                     entered.set()

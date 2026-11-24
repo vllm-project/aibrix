@@ -879,8 +879,7 @@ class TestProxyEngineMediaE2E:
             model="m", messages=[{"role": "user", "content": parts}], top_k=5
         )
         if mode == "disabled":
-            assert engine._media_dir is None
-            assert "--allowed-local-media-path" not in engine._subprocess._cmd
+            assert Path(engine._media_dir).is_dir()
         await engine.start()
         try:
             if mode in {"invalid_inline", "missing"}:

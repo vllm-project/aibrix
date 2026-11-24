@@ -78,7 +78,7 @@ from aibrix.openai_frontend.proxy.media.request_rewriter import (
     _set_at_path,
 )
 from aibrix.openai_frontend.proxy.output.multipart_output import (
-    MultipartOutputExtractor,
+    MultipartOutputFilter,
 )
 from aibrix.openai_frontend.proxy.output.output_writer import (
     OutputWriteError,
@@ -106,10 +106,7 @@ from aibrix.openai_frontend.proxy.runtime.video_job import (
     VideoJobContext,
     VideoOutputJob,
 )
-from aibrix.openai_frontend.proxy.runtime.video_sync import (
-    VideoSyncJob,
-    video_storage_path,
-)
+from aibrix.openai_frontend.proxy.runtime.video_sync import VideoSyncJob
 from aibrix.openai_frontend.proxy.runtime.ws_bridge import (
     bridge_websocket,
     deny_websocket,
@@ -565,15 +562,6 @@ class ProxyEngine(LLMEngine):
         if not math.isfinite(video_output_timeout) or video_output_timeout <= 0:
             raise ValueError("video_output_timeout must be a finite positive number")
         self._spec = spec or EngineSpec(name="default")
-        self._video_storage_path = (
-            video_storage_path(engine_env) if self._spec.name == "vllm-omni" else None
-        )
-        if self._video_storage_path is not None:
-            # Keep the shared directory stable if the engine script changes cwd.
-            engine_env = {
-                **(engine_env or {}),
-                "VLLM_OMNI_SERVER_STORAGE__PATH": str(self._video_storage_path),
-            }
         self._processor_registry = processor_registry or ProcessorRegistry()
         self._enable_processors = enable_processors
         self._processor_executor = ProcessorExecutor(
@@ -590,11 +578,19 @@ class ProxyEngine(LLMEngine):
         if materialize_inline_media:
             self._fetch_media = True
         self._owned_media_dir: Optional[tempfile.TemporaryDirectory] = None
-        if (self._fetch_media or enable_processors) and media_dir is None:
-            # Pre requests may localize media even when ordinary fetching is off.
+        if media_dir is None:
+            # Generated videos also need local storage when fetching is off.
             self._owned_media_dir = tempfile.TemporaryDirectory(prefix="aibrix_media_")
             media_dir = self._owned_media_dir.name
-        self._media_dir = os.path.realpath(media_dir) if media_dir else None
+        self._media_dir = os.path.realpath(media_dir)
+        os.makedirs(self._media_dir, exist_ok=True)
+        if self._spec.name == "vllm-omni":
+            # The engine and frontend share one absolute path, even if the
+            # engine script changes cwd or inherits other storage settings.
+            engine_env = {
+                **(engine_env or {}),
+                "VLLM_OMNI_SERVER_STORAGE__PATH": self._media_dir,
+            }
 
         self._subprocess = SubprocessEngine(
             cmd=[*engine_cmd, *self._spec.spawn_args(self._media_dir)],
@@ -826,23 +822,24 @@ class ProxyEngine(LLMEngine):
                 self._video_writers_stopped.set()
             await self._release_retained_resources()
         finally:
-            # Writers and request cleanup have settled before deleting paths.
-            try:
-                cleanup_all = getattr(self._fetcher, "cleanup_all", None)
-                if callable(cleanup_all):
-                    cleanup_all()
-            except Exception:
-                logger.warning("artifact fetcher cleanup_all failed", exc_info=True)
-            if self._owned_media_dir is not None:
-                try:
-                    self._owned_media_dir.cleanup()
-                except Exception:
-                    logger.warning("owned media dir cleanup failed", exc_info=True)
-                self._owned_media_dir = None
             try:
                 if not self._video_writers_stopped.is_set():
                     await asyncio.to_thread(self._subprocess.shutdown)
                     self._video_writers_stopped.set()
+                # The engine, upload readers, and request cleanup must finish
+                # before removing the shared media directory.
+                try:
+                    cleanup_all = getattr(self._fetcher, "cleanup_all", None)
+                    if callable(cleanup_all):
+                        cleanup_all()
+                except Exception:
+                    logger.warning("artifact fetcher cleanup_all failed", exc_info=True)
+                if self._owned_media_dir is not None:
+                    try:
+                        self._owned_media_dir.cleanup()
+                    except Exception:
+                        logger.warning("owned media dir cleanup failed", exc_info=True)
+                    self._owned_media_dir = None
             finally:
                 await self._subprocess.close_client()
         self._set_state(EngineState.STOPPED)
@@ -1079,15 +1076,16 @@ class ProxyEngine(LLMEngine):
         """Proxy a multipart/form upload (audio transcription or video generation).
 
         Both directions are streamed: the client's body is relayed to the
-        engine chunk by chunk as it arrives (never buffered or re-encoded, so
-        every form field and the query string survive byte-for-byte), and the
-        engine's response -- JSON, SSE, or binary media -- is relayed back the
-        same way. vLLM-Omni sync video uses an internal async job so disconnect
-        can abort generation. Peak memory per upload is one transport chunk.
+        engine chunk by chunk as it arrives. The engine's response -- JSON,
+        SSE, or binary media -- is relayed back the same way. vLLM-Omni sync
+        video uses an internal async job so disconnect can abort generation.
 
-        Sync video reads only ``output`` and ``model`` while forwarding the
-        original chunks. With ``output``, the completed MP4 is persisted and
-        returned as a receipt. Engine errors take precedence over output options.
+        Sync video removes every ``output`` part while reading bounded metadata
+        and rebuilding multipart framing. Other fields and file bytes retain
+        their order and content; uploads are never spooled. With ``output``, the
+        completed MP4 is persisted and returned as a receipt. Engine errors take
+        precedence over output options. Other multipart endpoints retain the
+        original request framing.
         """
         kind = self._spec.require(path)
         if kind != ForwardKind.MULTIPART:
@@ -1103,12 +1101,12 @@ class ProxyEngine(LLMEngine):
         label = self._kind_label(path)
         req_id, t0 = self._requests_begin()
         form_fields = (
-            MultipartOutputExtractor(content_type)
-            if path == "/v1/videos/sync"
-            else None
+            MultipartOutputFilter(content_type) if path == "/v1/videos/sync" else None
         )
         streamed_body = _StreamedBody(
-            request, observe=form_fields.feed if form_fields is not None else None
+            form_fields.stream(request.stream())
+            if form_fields is not None
+            else request.stream()
         )
         video_job = (
             VideoSyncJob(self._forward_with_retry, streamed_body.upload_done)
@@ -1117,7 +1115,10 @@ class ProxyEngine(LLMEngine):
         )
 
         headers: Dict[str, str] = {}
-        if (length := request.headers.get("content-length")) is not None:
+        if (
+            form_fields is None
+            and (length := request.headers.get("content-length")) is not None
+        ):
             # Keep the client's framing: no chunked re-encoding when the
             # length is known up front.
             headers["Content-Length"] = length
@@ -1168,16 +1169,19 @@ class ProxyEngine(LLMEngine):
                                 raise ClientError(
                                     "Synchronous video output requires the vllm-omni proxy spec"
                                 )
-                            assert self._video_storage_path is not None
                             result = await self._persist_output(
                                 req_id,
                                 output,
                                 raw_resp,
-                                video_job.local_output(self._video_storage_path),
+                                video_job.local_output(Path(self._media_dir)),
                                 envelope={
-                                    "id": f"video-{uuid.uuid4().hex}",
                                     "model": form_fields.model,
+                                    **raw_resp.json(),
+                                    "id": f"video-{uuid.uuid4().hex}",
                                 },
+                                # The async job body is metadata; only the
+                                # declared local video belongs in persistence.
+                                result_keys=(),
                             )
                 if scope.cancel_called or raw_resp is None:
                     raise ClientDisconnect()
@@ -2410,8 +2414,8 @@ class ProxyEngine(LLMEngine):
         writer_options: Dict[str, Any] = {}
         if processor_dir is not None:
             writer_options["processor_workdir"] = Path(processor_dir.name)
-        if isinstance(parsed, VideoSyncResult):
-            writer_options["media_types"] = {parsed.file_path: "video/mp4"}
+        if isinstance(parsed, VideoSyncResult) and parsed.media_type is not None:
+            writer_options["media_types"] = {parsed.file_path: parsed.media_type}
         result = await self._write_output(
             req_id,
             spec,
@@ -2426,10 +2430,9 @@ class ProxyEngine(LLMEngine):
             # after upload rather than exposed for subsequent retrieval.
             receipt = VideoResponse.model_validate(
                 {
-                    "id": envelope["id"],
                     "status": VideoStatus.COMPLETED.value,
-                    "model": envelope.get("model"),
                     "created_at": int(time.time()),
+                    **envelope,
                     "output": result,
                 }
             )
@@ -2757,11 +2760,8 @@ class _StreamedBody:
     streamed body cannot be replayed).
     """
 
-    def __init__(
-        self, request: Request, *, observe: Optional[Callable[[bytes], None]] = None
-    ) -> None:
-        self._body = request.stream()
-        self._observe = observe
+    def __init__(self, body: AsyncIterator[bytes]) -> None:
+        self._body = body
         self.upload_done = asyncio.Event()
         self.started = False
         self.bytes_sent = 0
@@ -2775,8 +2775,6 @@ class _StreamedBody:
         async for chunk in self._body:
             if not chunk:
                 continue
-            if self._observe is not None:
-                self._observe(chunk)
             self.bytes_sent += len(chunk)
             self.chunks += 1
             yield chunk
