@@ -34,6 +34,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	podutil "github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -149,4 +150,73 @@ func TestStatelessRolloutDeletesExpiredDrainBeforeStartingAnother(t *testing.T) 
 	err = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "test-ns", Name: "pod-2"}, &v1.Pod{})
 	assert.True(t, client.IgnoreNotFound(err) == nil && err != nil, "the pod whose drain expired should be deleted, got err=%v", err)
 	assert.Zero(t, countDrainingPods(t, fakeClient), "no new drain should start while the deleted pod's replacement isn't there yet")
+}
+
+// newStatefulDrainRolloutFixture mirrors newDrainRolloutFixture for the
+// StatefulRoleSyncer: replicas ready outdated pods in slots 0..replicas-1,
+// created in the same second, with drain configured.
+func newStatefulDrainRolloutFixture(t *testing.T, replicas int32, maxUnavailable int, seed int64) (*StatefulRoleSyncer, client.Client, *orchestrationv1alpha1.RoleSet, *orchestrationv1alpha1.RoleSpec) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", replicas, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(maxUnavailable)))
+	timeout := int32(60)
+	role.Drain = &orchestrationv1alpha1.RoleDrainSpec{TimeoutSeconds: &timeout}
+
+	var objs []client.Object
+	for i := int32(0); i < replicas; i++ {
+		pod := newTestPodWithHash(fmt.Sprintf("pod-%d", i), "test-ns", true, false, oldHash)
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		pod.Annotations[constants.RoleReplicaIndexAnnotationKey] = fmt.Sprintf("%d", i)
+		objs = append(objs, pod)
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	syncer := &StatefulRoleSyncer{
+		cli:             &shuffledListClient{Client: fakeClient, rng: rand.New(rand.NewSource(seed))},
+		computeHashFunc: fakeComputeHashFunc,
+		recorder:        record.NewFakeRecorder(1000),
+	}
+	return syncer, fakeClient, roleSet, role
+}
+
+// TestStatefulRolloutDrainsAtMostMaxUnavailable records that the StatefulRoleSyncer
+// does not share #3571's overshoot. It processes slots in deterministic index
+// order (podSlotForRole keys by the replica-index annotation), so already-draining
+// slots are always the lowest-index outdated ones and are re-selected first; the
+// budget self-limits to maxUnavailable even when the pod list comes back shuffled.
+// Unlike the stateless case this passes on main too; it is a guard and the answer
+// to the review question about the stateful path.
+func TestStatefulRolloutDrainsAtMostMaxUnavailable(t *testing.T) {
+	for _, maxUnavailable := range []int{1, 2} {
+		for seed := int64(1); seed <= 5; seed++ {
+			t.Run(fmt.Sprintf("maxUnavailable=%d/seed=%d", maxUnavailable, seed), func(t *testing.T) {
+				syncer, fakeClient, roleSet, role := newStatefulDrainRolloutFixture(t, 4, maxUnavailable, seed)
+				for pass := 1; pass <= 10; pass++ {
+					_, err := syncer.Rollout(context.Background(), roleSet, role)
+					require.NoError(t, err)
+					assert.LessOrEqual(t, countDrainingPods(t, fakeClient), maxUnavailable, "pass %d", pass)
+				}
+				assert.Equal(t, maxUnavailable, countDrainingPods(t, fakeClient))
+			})
+		}
+	}
+}
+
+func TestStatefulRolloutByStepDrainsAtMostMaxUnavailable(t *testing.T) {
+	for seed := int64(1); seed <= 5; seed++ {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			syncer, fakeClient, roleSet, role := newStatefulDrainRolloutFixture(t, 4, 1, seed)
+			for pass := 1; pass <= 10; pass++ {
+				_, err := syncer.RolloutByStep(context.Background(), roleSet, role, 1)
+				require.NoError(t, err)
+				assert.LessOrEqual(t, countDrainingPods(t, fakeClient), 1, "pass %d", pass)
+			}
+			assert.Equal(t, 1, countDrainingPods(t, fakeClient))
+		})
+	}
 }
