@@ -33,6 +33,7 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -45,10 +46,21 @@ const (
 	// HandleResponseBody calls, so a malformed or malicious upstream that never emits
 	// a newline cannot grow streamBuffers without bound.
 	maxStreamBufferSize = 1024 * 1024 // 1MB
+	// defaultMaxResponseBodySize bounds the per-request buffer that
+	// processLanguageResponse accumulates for a non-streamed response before token
+	// usage is extracted. The default is generous enough for ordinary chat/completions,
+	// responses and large embeddings bodies while still bounding per-request memory;
+	// operators can tune it with AIBRIX_GATEWAY_MAX_RESPONSE_BODY_BYTES.
+	defaultMaxResponseBodySize = 50 * 1024 * 1024 // 50MiB
 )
 
 var (
 	ttftThreshold = time.Duration(utils.LoadEnvInt("AIBRIX_TTFT_THRESHOLD_S", defaultTTFTThreshold)) * time.Second
+	// maxResponseBodySize is the configurable cap (in bytes) on the non-streamed
+	// response body processLanguageResponse buffers per request. A value <= 0 disables
+	// the cap. It is a package variable so tests can exercise the limit without
+	// allocating the full default.
+	maxResponseBodySize = utils.LoadEnvNonNegativeInt(constants.EnvGatewayMaxResponseBodyBytes, defaultMaxResponseBodySize)
 )
 
 // effectiveTTFTThreshold returns the first-token delay threshold for this request:
@@ -477,6 +489,25 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	buffer := buf.(*bytes.Buffer)
 	// Append data to per-request buffer
 	buffer.Write(b.ResponseBody.Body)
+
+	// Bound the per-request buffer. The default router streams the main language routes
+	// (response body: Streamed), so Envoy does not cap the body, and without a limit here a
+	// large non-streamed response -- a big max_tokens generation, a large embeddings batch,
+	// or a misbehaving/malicious upstream -- accumulates in requestBuffers without bound.
+	// Under concurrency that grows gateway memory process-wide. When the cap is exceeded,
+	// reject the request with a clear error and delete the map entry so no buffer is left
+	// behind. The check runs on every chunk so an oversize body fails fast rather than being
+	// fully accumulated first.
+	if maxResponseBodySize > 0 && buffer.Len() > maxResponseBodySize {
+		klog.Warningf("requestID %s: non-streamed response body exceeded %d bytes (received %d); rejecting", requestID, maxResponseBodySize, buffer.Len())
+		requestBuffers.Delete(requestID)
+		complete = true
+		processingRes = buildErrorResponse(
+			envoyTypePb.StatusCode_BadGateway,
+			fmt.Sprintf("upstream response body exceeded the %d byte limit", maxResponseBodySize),
+			"", "", HeaderErrorResponseTooLarge, "true")
+		return
+	}
 
 	if !b.ResponseBody.EndOfStream {
 		// Partial data received, wait for more chunks, we just return a common response here.

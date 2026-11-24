@@ -2529,3 +2529,116 @@ func TestHandleResponseBody_ContinuousUsageStatsFinalizesAtStreamEnd(t *testing.
 		})
 	}
 }
+
+// TestProcessLanguageResponse_OversizeBodyCap covers the configurable cap on the
+// per-request non-streamed response buffer (requestBuffers). An oversize body must be
+// rejected with a clear error and must leave no buffer behind, while a body under the
+// cap -- and any body when the cap is disabled -- is still metered as before.
+func TestProcessLanguageResponse_OversizeBodyCap(t *testing.T) {
+	// hasHeader reports whether an ImmediateResponse carries the given error header.
+	hasHeader := func(res *extProcPb.ProcessingResponse, key string) bool {
+		for _, h := range res.GetImmediateResponse().GetHeaders().GetSetHeaders() {
+			if h.Header.Key == key {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("oversize body rejected mid-stream and buffer released", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 64
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-oversize-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		// First chunk stays under the cap: a normal "wait for more" response, buffer retained.
+		first := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: bytes.Repeat([]byte("a"), 32), EndOfStream: false},
+		}
+		res, complete, _, _, _ := processLanguageResponse(requestID, first)
+		assert.False(t, complete)
+		assert.Nil(t, res.GetImmediateResponse(), "a chunk under the cap must not be an error")
+		_, buffered := requestBuffers.Load(requestID)
+		assert.True(t, buffered, "the partial body should still be buffered")
+
+		// Second chunk pushes the buffer past the cap before end-of-stream: fail fast.
+		second := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: bytes.Repeat([]byte("b"), 64), EndOfStream: false},
+		}
+		res, complete, _, _, _ = processLanguageResponse(requestID, second)
+		assert.True(t, complete, "an oversize response is terminal")
+		require.NotNil(t, res.GetImmediateResponse(), "an oversize body must be rejected with an immediate error")
+		assert.Equal(t, envoyTypePb.StatusCode_BadGateway, res.GetImmediateResponse().GetStatus().GetCode())
+		assert.True(t, hasHeader(res, HeaderErrorResponseTooLarge), "expected %s header", HeaderErrorResponseTooLarge)
+
+		_, buffered = requestBuffers.Load(requestID)
+		assert.False(t, buffered, "the oversize buffer must be released, not left behind")
+	})
+
+	t.Run("single oversize final chunk rejected and buffer released", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 64
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-oversize-final-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: bytes.Repeat([]byte("x"), 128), EndOfStream: true},
+		}
+		res, complete, _, _, _ := processLanguageResponse(requestID, req)
+		assert.True(t, complete)
+		require.NotNil(t, res.GetImmediateResponse())
+		assert.Equal(t, envoyTypePb.StatusCode_BadGateway, res.GetImmediateResponse().GetStatus().GetCode())
+		assert.True(t, hasHeader(res, HeaderErrorResponseTooLarge))
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered, "the oversize buffer must be released, not left behind")
+	})
+
+	t.Run("body under the cap is metered normally", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 1024
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-undersize-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model":"m","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
+				EndOfStream: true,
+			},
+		}
+		// processLanguageResponse leaves finalization (complete) to HandleResponseBody,
+		// which sets it from the usage; here we assert the body was accepted and metered.
+		res, _, pt, ct, tt2 := processLanguageResponse(requestID, req)
+		assert.Nil(t, res.GetImmediateResponse(), "a body under the cap must not be rejected")
+		assert.Equal(t, int64(10), pt)
+		assert.Equal(t, int64(5), ct)
+		assert.Equal(t, int64(15), tt2)
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered, "the buffer is released after final processing")
+	})
+
+	t.Run("cap disabled lets a large body through", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 0 // disabled
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-capdisabled-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		large := append([]byte(`{"model":"m","content":"`), bytes.Repeat([]byte("z"), 4096)...)
+		large = append(large, []byte(`","usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)...)
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: large, EndOfStream: true},
+		}
+		res, _, _, _, tt2 := processLanguageResponse(requestID, req)
+		assert.Nil(t, res.GetImmediateResponse(), "with the cap disabled no size error is raised")
+		assert.Equal(t, int64(3), tt2)
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered)
+	})
+}

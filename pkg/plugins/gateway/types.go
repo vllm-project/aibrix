@@ -32,6 +32,7 @@ const (
 	HeaderErrorRequestBodyProcessing = "x-error-request-body-processing"
 	HeaderErrorResponseUnmarshal     = "x-error-response-unmarshal"
 	HeaderErrorResponseUnknown       = "x-error-response-unknown"
+	HeaderErrorResponseTooLarge      = "x-error-response-too-large"
 	// HeaderErrorPDPrefill marks a response caused by the prefill leg of a PD
 	// request, so the failure is distinguishable from a 5xx the decode pod
 	// produced itself. It is set for transport failures and 5xx engine

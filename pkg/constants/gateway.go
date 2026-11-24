@@ -23,4 +23,11 @@ const (
 	// HeaderSessionKey carries a caller-owned opaque key, used by session-affinity
 	// routing and by the PD router's session-delta prefill charge.
 	HeaderSessionKey = "x-aibrix-session-key"
+
+	// EnvGatewayMaxResponseBodyBytes caps the size, in bytes, of a non-streamed
+	// response body that the gateway buffers per request before extracting token
+	// usage. A body that grows past the cap is rejected with a clear error and its
+	// buffer is released, instead of being accumulated without bound. A value of 0
+	// (or negative) disables the cap, restoring the previous unbounded behavior.
+	EnvGatewayMaxResponseBodyBytes = "AIBRIX_GATEWAY_MAX_RESPONSE_BODY_BYTES"
 )
