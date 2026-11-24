@@ -48,10 +48,12 @@ const (
 	maxStreamBufferSize = 1024 * 1024 // 1MB
 	// defaultMaxResponseBodySize bounds the per-request buffer that
 	// processLanguageResponse accumulates for a non-streamed response before token
-	// usage is extracted. The default is generous enough for ordinary chat/completions,
-	// responses and large embeddings bodies while still bounding per-request memory;
-	// operators can tune it with AIBRIX_GATEWAY_MAX_RESPONSE_BODY_BYTES.
-	defaultMaxResponseBodySize = 50 * 1024 * 1024 // 50MiB
+	// usage is extracted. Over the cap the body is passed through (not failed) and only
+	// its usage accounting is lost, so the default can be modest: 16MiB comfortably covers
+	// ordinary chat/completions and responses while bounding per-request memory. A workload
+	// with very large non-streamed bodies (e.g. big embeddings batches) that it wants metered
+	// can raise it with AIBRIX_GATEWAY_MAX_RESPONSE_BODY_BYTES.
+	defaultMaxResponseBodySize = 16 * 1024 * 1024 // 16MiB
 )
 
 var (

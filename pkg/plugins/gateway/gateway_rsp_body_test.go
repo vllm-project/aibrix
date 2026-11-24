@@ -2646,6 +2646,30 @@ func TestProcessLanguageResponse_OversizeBodyCap(t *testing.T) {
 		assert.False(t, buffered, "the buffer is released after final processing")
 	})
 
+	t.Run("body exactly at the cap is buffered and metered, not passed through", func(t *testing.T) {
+		// The cap is exclusive (len > cap), so a body whose size equals the cap is still buffered.
+		// Guards the boundary: the `>`-to-`>=` mutant would pass this body through and lose usage.
+		body := []byte(`{"model":"m","usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)
+		orig := maxResponseBodySize
+		maxResponseBodySize = len(body) // cap exactly equals the body size
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-atcap-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: body, EndOfStream: true},
+		}
+		res, _, pt, ct, tt2 := processLanguageResponse(requestID, req)
+		assert.Nil(t, res.GetImmediateResponse())
+		// Non-zero usage proves the body was buffered and parsed, not passed through (which skips usage).
+		assert.Equal(t, int64(1), pt)
+		assert.Equal(t, int64(2), ct)
+		assert.Equal(t, int64(3), tt2, "a body exactly at the cap must be metered, not passed through")
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered, "the buffer is released after final processing")
+	})
+
 	t.Run("cap disabled buffers and meters a large body", func(t *testing.T) {
 		orig := maxResponseBodySize
 		maxResponseBodySize = 0 // disabled
