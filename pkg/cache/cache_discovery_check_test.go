@@ -87,7 +87,119 @@ func newTestDiscoveryChecker(t *testing.T, opts DiscoveryCheckOptions) (*Discove
 	checker.now = clock.Now
 	checker.started = clock.Now()
 	checker.lastVerified = clock.Now()
+	checker.watchProgressed = clock.Now()
 	return checker, clock
+}
+
+// fakeResourceVersion stands in for the Pod informer's LastSyncResourceVersion.
+type fakeResourceVersion struct {
+	mu    sync.Mutex
+	rv    string
+	calls int
+}
+
+func (f *fakeResourceVersion) set(rv string) {
+	f.mu.Lock()
+	f.rv = rv
+	f.mu.Unlock()
+}
+
+func (f *fakeResourceVersion) get() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.rv
+}
+
+func (f *fakeResourceVersion) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+const watchProgressMetric = "aibrix_gateway_discovery_watch_progress_age_seconds"
+
+func TestWatchProgressAgeGrowsWhileTheVersionStandsAndResetsWhenItMoves(t *testing.T) {
+	source := &fakeResourceVersion{rv: "100"}
+	checker, clock := newTestDiscoveryChecker(t, DiscoveryCheckOptions{
+		Interval: 10 * time.Second, UnreachableThreshold: 30 * time.Second,
+		Reachability: (&switchableCheck{}).check, WatchResourceVersion: source.get,
+	})
+	reg := prometheus.NewRegistry()
+	require.NoError(t, checker.Register(reg))
+	gauge := func() float64 { return testutil.ToFloat64(checker.watchProgress) }
+
+	// The version stands still: every sample sees "100", so the age keeps
+	// counting from the start.
+	for range 9 {
+		clock.Advance(10 * time.Second)
+		checker.SampleWatchProgress()
+	}
+	assert.Equal(t, 90*time.Second, checker.WatchProgressAge())
+	assert.Equal(t, 90.0, gauge())
+
+	// A bookmark moves it: the next sample restarts the age.
+	source.set("107")
+	clock.Advance(10 * time.Second)
+	checker.SampleWatchProgress()
+	assert.Equal(t, time.Duration(0), checker.WatchProgressAge())
+
+	// Between samples the age grows with the clock.
+	clock.Advance(4 * time.Second)
+	assert.Equal(t, 4.0, gauge())
+
+	// Any change counts, not only an increase: a relist after a reconnect
+	// may land on a version that compares lower as a string.
+	source.set("99")
+	clock.Advance(6 * time.Second)
+	checker.SampleWatchProgress()
+	assert.Equal(t, time.Duration(0), checker.WatchProgressAge())
+
+	// Neither check moves the other: a successful reachability check leaves
+	// the watch progress age growing, and that age leaves reachability alone.
+	clock.Advance(25 * time.Second)
+	require.True(t, checker.CheckOnce(context.Background()))
+	checker.SampleWatchProgress()
+	assert.Equal(t, 25*time.Second, checker.WatchProgressAge())
+	assert.False(t, checker.Unreachable())
+	assert.Equal(t, 0.0, testutil.ToFloat64(checker.unreachable))
+}
+
+func TestWatchProgressAgeCountsFromStartWhenTheVersionNeverMoves(t *testing.T) {
+	// The version seen at creation is the baseline: a source that is still
+	// empty, or set already, does not count as a change at the first sample.
+	for _, rv := range []string{"", "42"} {
+		source := &fakeResourceVersion{rv: rv}
+		checker, clock := newTestDiscoveryChecker(t, DiscoveryCheckOptions{
+			Interval: 10 * time.Second, UnreachableThreshold: 30 * time.Second,
+			Reachability: (&switchableCheck{}).check, WatchResourceVersion: source.get,
+		})
+		clock.Advance(10 * time.Second)
+		checker.SampleWatchProgress()
+		assert.Equal(t, 10*time.Second, checker.WatchProgressAge(), "rv %q", rv)
+	}
+}
+
+func TestRunSamplesWatchProgressEveryInterval(t *testing.T) {
+	source := &fakeResourceVersion{rv: "1"}
+	checker, err := NewDiscoveryChecker(DiscoveryCheckOptions{
+		Interval: 20 * time.Millisecond, UnreachableThreshold: time.Second,
+		Reachability: (&switchableCheck{}).check, WatchResourceVersion: source.get,
+	})
+	require.NoError(t, err)
+	created := source.callCount()
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	go checker.Run(stopCh)
+	require.Eventually(t, func() bool { return source.callCount() >= created+3 },
+		2*time.Second, 5*time.Millisecond)
+
+	// A move is picked up by the loop, with no direct call to SampleWatchProgress.
+	time.Sleep(50 * time.Millisecond)
+	source.set("2")
+	require.Eventually(t, func() bool { return checker.WatchProgressAge() < 40*time.Millisecond },
+		2*time.Second, 5*time.Millisecond)
 }
 
 func TestDiscoveryCheckerUnreachableAfterFailuresAndRecovers(t *testing.T) {
@@ -250,6 +362,21 @@ func TestDiscoveryCheckerMetricNames(t *testing.T) {
 	n, err := testutil.GatherAndCount(reg, "aibrix_gateway_discovery_verification_failures_total")
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "only the reachability series exists while consistency is off")
+	assert.Equal(t, time.Duration(0), checker.WatchProgressAge(), "no watch progress without a source")
+	checker.SampleWatchProgress() // no source: a no-op
+}
+
+func TestDiscoveryCheckerRegistersWatchProgressOnlyWithASource(t *testing.T) {
+	checker, err := NewDiscoveryChecker(DiscoveryCheckOptions{
+		Interval: time.Second, UnreachableThreshold: 3 * time.Second, Reachability: (&switchableCheck{}).check,
+		WatchResourceVersion: (&fakeResourceVersion{}).get,
+	})
+	require.NoError(t, err)
+	reg := prometheus.NewRegistry()
+	require.NoError(t, checker.Register(reg))
+	n, err := testutil.GatherAndCount(reg, watchProgressMetric)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
 }
 
 func TestPodListReachabilityListsOnePod(t *testing.T) {
@@ -298,7 +425,10 @@ func TestStartDiscoveryCheckerOnlyForKubernetes(t *testing.T) {
 			families, err := reg.Gather()
 			require.NoError(t, err)
 			if tc.started {
-				assert.Len(t, families, 3)
+				assert.Len(t, families, 4)
+				n, err := testutil.GatherAndCount(reg, watchProgressMetric)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "the Kubernetes provider's Pod watch is sampled")
 			} else {
 				assert.Empty(t, families, "no discovery metric is reported when the check does not run")
 			}
@@ -323,7 +453,7 @@ func TestStartDiscoveryCheckerWiresTheModelListHealth(t *testing.T) {
 
 	families, err := reg.Gather()
 	require.NoError(t, err)
-	assert.Len(t, families, 4)
+	assert.Len(t, families, 5, "the four discovery gauges and the failure counter")
 	n, err := testutil.GatherAndCount(reg, "aibrix_gateway_discovery_verification_failures_total")
 	require.NoError(t, err)
 	assert.Equal(t, 2, n, "reachability and consistency series")

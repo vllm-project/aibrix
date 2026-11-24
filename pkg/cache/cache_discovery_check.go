@@ -87,6 +87,12 @@ type DiscoveryCheckOptions struct {
 	// reachability deadline: a full LIST must bound itself, as
 	// ModelListHealth.EnsureVerified does. Its result does not affect Unreachable.
 	Consistency ConsistencyVerifier
+	// WatchResourceVersion is optional. It returns the resource version the
+	// Pod informer has reached, as KubernetesProvider.PodWatchResourceVersion
+	// does, and must not make an API request. The checker samples it once per
+	// Interval and exports the time since it last changed. It does not affect
+	// Unreachable.
+	WatchResourceVersion func() string
 }
 
 // DiscoveryChecker verifies, on a ticker and independently of informer
@@ -101,6 +107,7 @@ type DiscoveryChecker struct {
 	maxBackoff   time.Duration
 	reachability func(context.Context) error
 	consistency  ConsistencyVerifier
+	watchRV      func() string
 	now          func() time.Time
 	// wait blocks for d, or until a reconnect wake or ctx ends, and reports
 	// which. jitter returns the extra delay after a wake. Tests replace both
@@ -126,11 +133,16 @@ type DiscoveryChecker struct {
 	reachabilityFailed bool
 	// reconnected wakes the consistency loop when reachability recovers.
 	reconnected chan struct{}
+	// lastWatchRV is the Pod watch resource version seen by the latest
+	// sample, and watchProgressed when a sample first saw it.
+	lastWatchRV     string
+	watchProgressed time.Time
 
 	failures       *prometheus.CounterVec
 	age            prometheus.GaugeFunc
 	unreachable    prometheus.GaugeFunc
 	consistencyAge prometheus.GaugeFunc
+	watchProgress  prometheus.GaugeFunc
 }
 
 // NewDiscoveryChecker returns a checker whose last success is now, because it
@@ -155,6 +167,7 @@ func NewDiscoveryChecker(opts DiscoveryCheckOptions) (*DiscoveryChecker, error) 
 		maxBackoff:   max(opts.Interval, discoveryConsistencyMaxBackoff),
 		reachability: opts.Reachability,
 		consistency:  opts.Consistency,
+		watchRV:      opts.WatchResourceVersion,
 		now:          time.Now,
 		wait:         waitOrWake,
 		reconnected:  make(chan struct{}, 1),
@@ -180,7 +193,7 @@ func NewDiscoveryChecker(opts DiscoveryCheckOptions) (*DiscoveryChecker, error) 
 	c.unreachable = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Subsystem: constants.AibrixSubsystemName,
 		Name:      "gateway_discovery_unreachable",
-		Help:      "1 when aibrix_gateway_discovery_reachability_age_seconds has reached --discovery-unreachable-threshold: this replica cannot read from the Kubernetes API server and keeps routing on its last known Pod list; 0 otherwise. A watch that is connected but stuck does not show here; see aibrix_gateway_discovery_consistency_last_verified_age_seconds",
+		Help:      "1 when aibrix_gateway_discovery_reachability_age_seconds has reached --discovery-unreachable-threshold: this replica cannot read from the Kubernetes API server and keeps routing on its last known Pod list; 0 otherwise. A watch that is connected but stuck does not show here; see aibrix_gateway_discovery_watch_progress_age_seconds and aibrix_gateway_discovery_consistency_last_verified_age_seconds",
 	}, func() float64 {
 		if c.Unreachable() {
 			return 1
@@ -195,6 +208,15 @@ func NewDiscoveryChecker(opts DiscoveryCheckOptions) (*DiscoveryChecker, error) 
 			Help:      "Seconds since the cached Pods and ModelAdapters last matched a full LIST, counted from the start of that LIST, whichever caller (this check or /v1/models) ran it; from gateway start if none has. Only with --model-list-discovery-max-age. It rises by up to the max age between LISTs; a rise well beyond that means the cache is not converging",
 		}, func() float64 { return c.ConsistencyAge().Seconds() })
 	}
+	if c.watchRV != nil {
+		c.lastWatchRV = c.watchRV()
+		c.watchProgressed = c.started
+		c.watchProgress = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "gateway_discovery_watch_progress_age_seconds",
+			Help:      "Seconds since the Pod informer's resource version last moved (a watch event, a bookmark, or a relist), sampled every --discovery-check-interval, so it can read up to one interval high; from gateway start if it has not moved. With no Pod changes it relies on the reachability check's LIST to keep watch bookmarks advancing about once a minute. A rise well beyond that while aibrix_gateway_discovery_unreachable is 0 suggests a stuck Pod watch. Export only: readiness does not use it",
+		}, func() float64 { return c.WatchProgressAge().Seconds() })
+	}
 	return c, nil
 }
 
@@ -203,6 +225,9 @@ func (c *DiscoveryChecker) Register(reg prometheus.Registerer) error {
 	collectors := []prometheus.Collector{c.failures, c.age, c.unreachable}
 	if c.consistencyAge != nil {
 		collectors = append(collectors, c.consistencyAge)
+	}
+	if c.watchProgress != nil {
+		collectors = append(collectors, c.watchProgress)
 	}
 	for _, collector := range collectors {
 		if err := reg.Register(collector); err != nil {
@@ -235,10 +260,38 @@ func (c *DiscoveryChecker) ConsistencyAge() time.Duration {
 	return c.now().Sub(matched)
 }
 
+// WatchProgressAge is the time since a sample first saw the current Pod watch
+// resource version, or since the checker started if none has changed. It is 0
+// without a WatchResourceVersion source.
+func (c *DiscoveryChecker) WatchProgressAge() time.Duration {
+	if c.watchRV == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now().Sub(c.watchProgressed)
+}
+
+// SampleWatchProgress reads the Pod watch resource version and restarts the
+// watch progress age if it moved. Run calls it once per interval.
+func (c *DiscoveryChecker) SampleWatchProgress() {
+	if c.watchRV == nil {
+		return
+	}
+	rv := c.watchRV()
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if rv != c.lastWatchRV {
+		c.lastWatchRV = rv
+		c.watchProgressed = now
+	}
+}
+
 // Unreachable reports whether ReachabilityAge has reached the threshold. It
 // means this replica cannot read from the API server, not that its watch is
-// stuck: a watch that is connected but not delivering events shows only in
-// the consistency age. It depends on reachability alone: the consistency
+// stuck: a watch that is connected but not delivering events shows in the
+// watch progress and consistency ages instead. It depends on reachability alone: the consistency
 // check is exact, so churn during its LIST can fail it on a healthy replica.
 func (c *DiscoveryChecker) Unreachable() bool {
 	return c.ReachabilityAge() >= c.threshold
@@ -272,6 +325,8 @@ func (c *DiscoveryChecker) Run(stopCh <-chan struct{}) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Sampled before the check, so a slow check does not delay it.
+			c.SampleWatchProgress()
 			c.CheckOnce(ctx)
 		}
 	}

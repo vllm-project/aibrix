@@ -249,6 +249,10 @@ The check exports these metrics:
 - ``aibrix_gateway_discovery_consistency_last_verified_age_seconds``: seconds
   since the cache last matched a full LIST, whether this check or a
   ``/v1/models`` request ran it. Only with the consistency check.
+- ``aibrix_gateway_discovery_watch_progress_age_seconds``: seconds since the
+  Pod informer's resource version last moved, whether by a watch event, a watch
+  bookmark, or a relist. It is sampled once per interval, so it can read up to
+  one interval high. It covers the Pod watch only, not ModelAdapters.
 - ``aibrix_gateway_discovery_verification_failures_total``: failed checks, by
   ``check`` (``reachability`` or ``consistency``).
 
@@ -259,6 +263,30 @@ age that keeps rising, while reachability succeeds, means the cache is not
 converging. Because failed checks back off for up to five minutes, a few
 failures in a row can raise the age to about five minutes plus the max age on a
 healthy replica, so set any alert on it above that.
+
+The watch progress age is the signal for a watch that is connected but stuck,
+and it costs no request: the check reads how far the informer has got. Every
+Pod change resets it. With no Pod changes, it moves only on watch bookmarks,
+which the API server sends about once a minute, and a bookmark carries a newer
+resource version only if something advanced the API server's Pod watch cache
+since the last one. The reachability LIST does that. On idle test API servers
+(Kubernetes 1.31 and 1.37), the version moved about every 60 seconds while the
+check ran and never stood still for more than 63 seconds. Without the check, an
+idle Pod watch on 1.31 got no advancing bookmark in 300 seconds. That is why the
+gauge exists only when the check runs.
+
+Alert when it exceeds three minutes, about three bookmark periods, while the
+replica still reaches the API server:
+
+.. code-block:: yaml
+
+    - alert: AIBrixGatewayDiscoveryWatchStalled
+      expr: |
+        max by (pod) (aibrix_gateway_discovery_watch_progress_age_seconds) > 180
+          and on (pod) max by (pod) (aibrix_gateway_discovery_unreachable) == 0
+
+The bookmark period is internal to the API server and cannot be configured, so
+keep the threshold a multiple of it rather than tightening it.
 
 Alert on the unreachable gauge. One replica reporting it while others do not
 has lost its own connection; every replica at once points at the API server:
@@ -276,8 +304,13 @@ defaults the alert fires after about 90 seconds without a successful check.
 What the check does not prove:
 
 - Reachability proves the API server answers this replica. It does not prove
-  the watch is delivering events. A watch that is connected but stuck shows
-  only in the consistency age.
+  the watch is delivering events. A watch that is connected but stuck shows in
+  the watch progress age, and in the consistency age when that check is on.
+- A watch progress age that stays low proves the Pod watch delivered at least
+  a bookmark recently, not that every Pod event arrived. Only the consistency
+  check compares the cache with the API server. A stuck watch on a reachable
+  API server could not be reproduced in testing, so the alert above has not
+  been seen to fire on one.
 - Reporting unreachable does not change readiness or routing. The replica
   stays in the Service endpoints and keeps routing on its last known Pod list.
 
