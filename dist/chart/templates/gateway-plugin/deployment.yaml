@@ -141,6 +141,8 @@ spec:
                   name: {{ include "aibrix.fullname" . }}-gateway-plugin-auth
                   key: bearer-token
             {{- end }}
+            - name: AIBRIX_GATEWAY_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
