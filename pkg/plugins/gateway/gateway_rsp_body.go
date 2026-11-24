@@ -516,9 +516,16 @@ func passThroughOversizeResponse(requestID string, b *extProcPb.ProcessingReques
 // nolint:nakedret
 func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse, complete bool, promptTokens, completionTokens, totalTokens int64) {
 	var res *OpenAIResponse
-	// Use request ID as a key to store per-request buffer
-	// Retrieve or create buffer
-	buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+	// Retrieve or create the per-request buffer, keyed by request ID. Load first so a fresh
+	// &bytes.Buffer{} is not allocated and immediately discarded on every chunk after the first:
+	// LoadOrStore evaluates its argument on every call, even on a hit, so a multi-chunk response
+	// would otherwise churn one throwaway buffer per chunk. Only construct one when this request
+	// has no buffer yet. Chunks for a given request arrive sequentially, but LoadOrStore still
+	// resolves the create safely.
+	buf, ok := requestBuffers.Load(requestID)
+	if !ok {
+		buf, _ = requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+	}
 	buffer := buf.(*bytes.Buffer)
 
 	// If this response already exceeded the cap on an earlier chunk, it is in pass-through
