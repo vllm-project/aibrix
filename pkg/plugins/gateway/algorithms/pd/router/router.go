@@ -301,10 +301,12 @@ type pdRouter struct {
 	// the registration that would have made them visible to each other only
 	// happened after selection returned.
 	//
-	// Only load-dependent work runs under it: the imbalance fast paths, the
-	// per-pod scoring, finalPDScore and the two tracker registrations.
-	// Tokenization and prefix matching (PrefillScorePolicy.Prepare) depend
-	// only on the request and run before the lock is taken. countersMu is
+	// Only in-memory load-dependent work runs under it: the imbalance fast
+	// paths, the per-pod scoring, finalPDScore and the tracker registrations.
+	// Tokenization and prefix matching (PrefillScorePolicy.Prepare), the
+	// bucket-serve plan, combined-pod spillover checks, and the cross-gateway
+	// running-request / shared decode-ledger Redis read run before the lock is
+	// taken so network I/O never serializes concurrent selections. countersMu is
 	// taken inside selectMu (in finalPDScore) and never the other way round.
 	selectMu sync.Mutex
 }
@@ -742,10 +744,12 @@ func (r *pdRouter) emitBucketServeMetric(routingCtx *types.RoutingContext, name 
 //  8. Register — the chosen decode pod is recorded in pendingDecodeTracker and the
 //     chosen prefill pod in prefillRequestTracker (and, under the token_load
 //     prefill or decode policy, charged to tokenLoadTracker) before returning, so
-//     the next selection sees this one. Steps 3b-8 read tracker state and run under
-//     selectMu; steps 1-3a, the policy Prepare step (tokenization, prefix
-//     matching) and the bucket-serve plan (which takes only the tracker lock)
-//     run before the lock is taken. Route owns the matching removals.
+//     the next selection sees this one. Steps 4-8 read in-memory tracker state and
+//     run under selectMu; steps 1-3, the policy Prepare step (tokenization, prefix
+//     matching), the bucket-serve plan (which takes only the tracker lock), and the
+//     cross-gateway running-request / shared decode-ledger read run before the lock
+//     is taken so Redis I/O does not serialize concurrent selections. Route owns
+//     the matching removals.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	pdOverrides := routingCtx.PDOverrides()
 	bucketing := pdOverrides.PromptLengthBucketing
@@ -800,12 +804,11 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		bandRoleset, bandMax = r.bucketServeBand(routingCtx, readyPods, promptLength)
 	}
 
-	// Everything below reads tracker state that concurrent selections mutate.
-	r.selectMu.Lock()
-	defer r.selectMu.Unlock()
-
 	if bucketing {
 		// Bucket match exists; check if load imbalance favours a combined pod instead.
+		// shouldPickCombined and scoreCombinedPods read only cached metrics (not tracker
+		// state), so running them before the Redis read and selectMu avoids both an
+		// unused Redis round trip and lock contention on combined spillover.
 		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods) {
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
@@ -815,6 +818,23 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			}
 		}
 	}
+
+	// Prefetch cross-gateway running-request counts (and shared decode ledger
+	// when token_load uses it) before acquiring selectMu so synchronous Redis
+	// pipelines never serialize concurrent selections. When no shared decode
+	// ledger is needed, decodeRunningRequests reads through
+	// routingCtx.RunningRequests to reuse any per-decision snapshot already
+	// populated by narrowToInflightCapacity.
+	var remoteDecodeLedger map[string]cache.RemoteDecodeLoad
+	var remoteOut *map[string]cache.RemoteDecodeLoad
+	if r.sharedDecodeLedger != nil && pd.UsesDecodeTokenLoad(decodePol) {
+		remoteOut = &remoteDecodeLedger
+	}
+	runningReqCounts, runningErr := r.decodeRunningRequests(routingCtx, decodePods, remoteOut)
+
+	// Everything below reads tracker state that concurrent selections mutate.
+	r.selectMu.Lock()
+	defer r.selectMu.Unlock()
 
 	// check for prefill and decode imbalance
 	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods,
@@ -831,12 +851,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		}
 	}
 
-	var remoteDecodeLedger map[string]cache.RemoteDecodeLoad
-	var remoteOut *map[string]cache.RemoteDecodeLoad
-	if r.sharedDecodeLedger != nil && pd.UsesDecodeTokenLoad(decodePol) {
-		remoteOut = &remoteDecodeLedger
-	}
-	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePodWithLedger(routingCtx, decodePods, remoteOut)
+	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePodFromCounts(routingCtx, decodePods, runningReqCounts, runningErr)
 	targetPod = decodeFastPathPick(routingCtx, targetPod, decodePol)
 	if targetPod != nil {
 		decodePods = []*v1.Pod{targetPod}
@@ -989,14 +1004,16 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // prefillPods to the selected pod's roleset. KV cache headroom uses KVCacheUsagePerc
 // (missing metric is treated as 0% usage = 100% free).
 func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
-	return r.loadImbalanceSelectDecodePodWithLedger(ctx, filteredDecodePods, nil)
+	runningReqCounts, runningErr := r.decodeRunningRequests(ctx, filteredDecodePods, nil)
+	return r.loadImbalanceSelectDecodePodFromCounts(ctx, filteredDecodePods, runningReqCounts, runningErr)
 }
 
-// loadImbalanceSelectDecodePodWithLedger is loadImbalanceSelectDecodePod that,
-// when remoteLedger is not nil, also reads the decode ledger the other gateway
-// replicas hold on each pod into it, in the same Redis round trip as the
-// running-request counts.
-func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod, remoteLedger *map[string]cache.RemoteDecodeLoad) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
+// loadImbalanceSelectDecodePodFromCounts runs loadImbalanceSelectDecodePod using
+// pre-fetched running-request counts (which may cover a superset of
+// filteredDecodePods, e.g. from RoutingContext.RunningRequests or before
+// prefill imbalance narrowed decodePods; entries are only looked up by pod key
+// and never mutated).
+func (r *pdRouter) loadImbalanceSelectDecodePodFromCounts(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod, runningReqCounts map[string]int64, runningErr error) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
 	spreads := ctx.PDOverrides().Spreads
 	loadMinSpread := spreads.DecodeLoadImbalanceMinSpread
 	throughputMinSpread := spreads.DecodeThroughputImbalanceMinSpread
@@ -1016,13 +1033,6 @@ func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingCont
 	maxObservedThroughput := float64(0)
 	minObservedThroughput := math.MaxFloat64
 	utils.Shuffle(filteredDecodePods)
-
-	// Live cross-gateway running-request count (see cache_running_requests.go) for the
-	// whole candidate list in one Redis round trip, rather than
-	// GetMetricValueByPod(RealtimeNumRequestsRunning) per pod: that metric slot is a
-	// periodically synced cache that, between scrape ticks, only reflects this
-	// gateway's local view.
-	runningReqCounts, runningErr := r.decodeRunningRequests(filteredDecodePods, remoteLedger)
 
 	for _, pod := range filteredDecodePods {
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
@@ -1805,10 +1815,12 @@ func (r *pdRouter) shareDecodeLedger() {
 
 // decodeRunningRequests reads the live running-request counts of pods and, when
 // remoteLedger is not nil, the other replicas' decode ledgers in the same round
-// trip.
-func (r *pdRouter) decodeRunningRequests(pods []*v1.Pod, remoteLedger *map[string]cache.RemoteDecodeLoad) (map[string]int64, error) {
+// trip. When remoteLedger is not needed, it reads through
+// routingCtx.RunningRequests so one routing decision shares a single Redis read
+// (e.g. reusing the snapshot already populated by narrowToInflightCapacity).
+func (r *pdRouter) decodeRunningRequests(routingCtx *types.RoutingContext, pods []*v1.Pod, remoteLedger *map[string]cache.RemoteDecodeLoad) (map[string]int64, error) {
 	if remoteLedger == nil || r.sharedDecodeLedger == nil {
-		return r.cache.GetPodsRunningRequests(pods)
+		return routingCtx.RunningRequests(pods, r.cache.GetPodsRunningRequests)
 	}
 	counts, ledger, err := r.sharedDecodeLedger.GetPodsRunningRequestsAndDecodeLedger(pods)
 	*remoteLedger = ledger
