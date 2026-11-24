@@ -850,7 +850,7 @@ func TestHandleVideoJobResponseBody_RegistersCreateAndRewritesID(t *testing.T) {
 	require.Len(t, records, 1)
 	assert.Equal(t, publicID, records[0].PublicJobID)
 	assert.Equal(t, "video_gen_abc", records[0].BackendJobID)
-	assert.Equal(t, asyncJobTargetKindPod, records[0].RoutingTarget.Kind)
+	assert.Equal(t, "pod", records[0].RoutingTarget.Kind)
 	assert.Equal(t, "pod-a", records[0].RoutingTarget.Pod.Name)
 	assert.Equal(t, "ns-a", records[0].RoutingTarget.Pod.Namespace)
 	assert.EqualValues(t, pod.UID, records[0].RoutingTarget.Pod.UID)

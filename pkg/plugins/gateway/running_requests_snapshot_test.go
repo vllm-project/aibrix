@@ -22,10 +22,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -287,4 +289,39 @@ func (c *fleetReadConn) Write(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// readRESPCommand reads one RESP array of bulk strings, which is how a client
+// sends a command. Inline commands are not supported: go-redis never sends them.
+func readRESPCommand(reader *bufio.Reader) ([]string, error) {
+	header, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	header = strings.TrimRight(header, "\r\n")
+	if !strings.HasPrefix(header, "*") {
+		return nil, fmt.Errorf("unsupported RESP frame %q", header)
+	}
+	count, err := strconv.Atoi(strings.TrimPrefix(header, "*"))
+	if err != nil {
+		return nil, err
+	}
+
+	command := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		sizeLine, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		size, err := strconv.Atoi(strings.TrimRight(strings.TrimPrefix(sizeLine, "$"), "\r\n"))
+		if err != nil {
+			return nil, err
+		}
+		payload := make([]byte, size+2) // +2 for the trailing CRLF
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return nil, err
+		}
+		command = append(command, string(payload[:size]))
+	}
+	return command, nil
 }
