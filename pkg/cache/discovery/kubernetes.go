@@ -150,6 +150,9 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 		}
 	}
 	if p.modelListHealth != nil {
+		// The metadata client has its own rate limiter, built from the same
+		// QPS and Burst, so verification LISTs don't compete with informer
+		// relists for tokens.
 		metadataClient, err := metadata.NewForConfig(p.config)
 		if err != nil {
 			return err

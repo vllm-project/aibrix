@@ -22,6 +22,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -223,6 +225,70 @@ func TestListPodVersionsUsesCompletePaginatedSnapshot(t *testing.T) {
 		// metadata; this is what keeps spec and status off the wire.
 		assert.Contains(t, accept, "as=PartialObjectMetadataList")
 	}
+}
+
+// TestModelListSnapshotFitsTheBudgetAtDefaultRateLimit lists 100,000 Pods and
+// 200 ModelAdapters with the default client rate limit inside the real
+// verification budget. Each page costs one token, so with too small a page the
+// rate limiter refuses to wait past the deadline and the LIST fails.
+func TestModelListSnapshotFitsTheBudgetAtDefaultRateLimit(t *testing.T) {
+	const pods, adapters = 100_000, 200
+	totals := map[string]int{
+		"/api/v1/pods": pods,
+		"/apis/model.aibrix.ai/v1alpha1/modeladapters": adapters,
+	}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		total, ok := totals[r.URL.Path]
+		if !ok {
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		if !strings.Contains(r.Header.Get("Accept"), "as=PartialObjectMetadataList") {
+			http.Error(w, "full objects requested", http.StatusBadRequest)
+			return
+		}
+		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+		if err != nil || limit <= 0 {
+			http.Error(w, "missing limit", http.StatusBadRequest)
+			return
+		}
+		start := 0
+		if token := r.URL.Query().Get("continue"); token != "" {
+			start, _ = strconv.Atoi(token)
+		}
+		end := min(start+limit, total)
+		list := &metav1.PartialObjectMetadataList{
+			TypeMeta: metav1.TypeMeta{APIVersion: "meta.k8s.io/v1", Kind: "PartialObjectMetadataList"},
+			Items:    make([]metav1.PartialObjectMetadata, 0, end-start),
+		}
+		for i := start; i < end; i++ {
+			list.Items = append(list.Items, metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Name: strconv.Itoa(i), UID: types.UID(strconv.Itoa(i)), ResourceVersion: "1",
+			}})
+		}
+		if end < total {
+			list.Continue = strconv.Itoa(end)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(list)
+	}))
+	defer server.Close()
+	client, err := metadata.NewForConfig(&rest.Config{
+		Host: server.URL, QPS: rest.DefaultQPS, Burst: rest.DefaultBurst,
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), modelListVerificationTimeout)
+	defer cancel()
+	podVersions, err := listPodVersions(ctx, client)
+	require.NoError(t, err)
+	adapterVersions, err := listAdapterVersions(ctx, client)
+	require.NoError(t, err)
+	assert.Len(t, podVersions, pods)
+	assert.Len(t, adapterVersions, adapters)
+	assert.Equal(t, int32((pods+modelListPageSize-1)/modelListPageSize+1), requests.Load())
 }
 
 func metadataObject(apiVersion, kind, namespace, name, uid, rv string) *metav1.PartialObjectMetadata {

@@ -31,7 +31,14 @@ import (
 )
 
 const (
-	modelListPageSize            = 500
+	// modelListPageSize is the LIST page size for the consistency check. Each
+	// page costs one token from the client rate limiter, and the whole snapshot
+	// must finish within modelListVerificationTimeout. At the default
+	// --kube-api-qps 5 and --kube-api-burst 10, the 10 s budget allows about
+	// 60 pages, so 500-item pages failed above about 30,000 Pods. A metadata
+	// item is under 1 KB, so a 5,000-item page is a few MB, and 100,000 Pods
+	// need 20 pages.
+	modelListPageSize            = 5000
 	modelListVerificationTimeout = 10 * time.Second
 	modelListVerificationRetry   = 5 * time.Second
 )
