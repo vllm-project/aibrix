@@ -53,6 +53,14 @@ import (
 // detector, which CI runs, and the test would then measure that timeout rather than the ordering.
 // The counts scale with the ready set, so the comparison between the four cases is unaffected.
 func TestSelectTargetPod_RedisCommandsPerDecision(t *testing.T) {
+	// Pin the process default K=64 so the default rows do not depend on
+	// AIBRIX_ROUTING_CANDIDATE_K in the caller's environment.
+	restoreDefaults := types.DefaultRoutingOverrides()
+	pinned := *restoreDefaults
+	pinned.Candidate.K = 64
+	types.SetDefaultRoutingOverrides(&pinned)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restoreDefaults) })
+
 	const n = 1000
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -102,28 +110,35 @@ func TestSelectTargetPod_RedisCommandsPerDecision(t *testing.T) {
 	// on each opens a new connection, which the counter sees as three setup commands. Warm both
 	// paths once so the rows below are the steady-state cost of a decision, which is what the
 	// table in #3463 quotes, rather than a first-call artifact.
-	route("warmup", 0, "")
-	route("warmup-cap", limit, "")
+	route("warmup", 0, `{"candidate":{"k":0}}`)
+	route("warmup-cap", limit, `{"candidate":{"k":0}}`)
 
-	baseline := route("baseline", 0, "")
+	baseline := route("baseline", 0, `{"candidate":{"k":0}}`)
+	defaultOnly := route("default", 0, "")
 	sampled := route("candidate", 0, `{"candidate":{"k":16}}`)
-	inflight := route("inflight", limit, "")
+	inflight := route("inflight", limit, `{"candidate":{"k":0}}`)
+	defaultBoth := route("default-both", limit, "")
 	both := route("both", limit, `{"candidate":{"k":16}}`)
 
 	t.Logf("Redis commands for one decision over %d ready pods:", n)
-	t.Logf("  neither setting            %5d", baseline)
+	t.Logf("  k=0 opt-out                %5d", baseline)
+	t.Logf("  default (k=64) only        %5d", defaultOnly)
 	t.Logf("  candidate k=16 only        %5d", sampled)
-	t.Logf("  requestsInflight only      %5d", inflight)
-	t.Logf("  both                       %5d", both)
+	t.Logf("  requestsInflight (k=0)     %5d", inflight)
+	t.Logf("  requestsInflight + default %5d", defaultBoth)
+	t.Logf("  both (k=16)                %5d", both)
 
-	assert.GreaterOrEqual(t, baseline, n, "without any setting every ready pod is read")
+	assert.GreaterOrEqual(t, baseline, n, "with k=0 opt-out every ready pod is read")
 	assert.Less(t, baseline, 2*n, "one read of the ready set, not two")
+	assert.LessOrEqual(t, defaultOnly, 64+24, "the default candidate stage (K=64) bounds the read")
 	assert.LessOrEqual(t, sampled, 40, "the candidate stage alone bounds the read")
 	assert.GreaterOrEqual(t, inflight, n,
-		"without the candidate stage the inflight filter reads every ready pod")
+		"with k=0 opt-out the inflight filter reads every ready pod")
 	// The upper bound is what catches a filter that reads Redis itself instead of through the
 	// per-decision snapshot: that doubles the read, so the count would land near 2n.
 	assert.Less(t, inflight, 2*n, "the filter shares the snapshot instead of reading twice")
+	assert.LessOrEqual(t, defaultBoth, 64+24,
+		"with requestsInflight and default K=64 the filter runs on the candidate set")
 	// The reason #3463 exists, now fixed: the cap's filter used to read the full ready set
 	// first, which filled the snapshot the candidate stage would have read, so the two
 	// settings did not compose. It runs on the candidate set now, so this is bounded by K
