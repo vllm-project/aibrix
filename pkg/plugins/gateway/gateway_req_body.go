@@ -37,7 +37,6 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/modelclaim"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -510,6 +509,14 @@ var modelClaimReasonsNotRetried = map[string]struct{}{
 	"InvalidPerGPU":                              {},
 }
 
+const (
+	modelClaimRetryAfterSeconds = 10
+	// A sleeping model gets an earlier chance to be retried than one that starts
+	// from scratch. Whether it is ready is still up to the controller and the
+	// gateway cache.
+	modelClaimWakeRetryAfterSeconds = 3
+)
+
 // modelClaimRetryAfterByReason is how long a client is asked to wait, by the
 // reason the controller gives, when that is longer than a wake or a start
 // takes. A wake that waits for room, and a claim that room is made for, wait
@@ -530,9 +537,9 @@ func modelClaimRetryAfter(state, reason string, wakeRequested bool) int {
 		return seconds
 	}
 	if wakeRequested && state == constants.ModelClaimRoutingStateSleeping && reason == "" {
-		return modelclaim.ModelClaimWakeRetryAfterSeconds
+		return modelClaimWakeRetryAfterSeconds
 	}
-	return modelclaim.ModelClaimRetryAfterSeconds
+	return modelClaimRetryAfterSeconds
 }
 
 func modelClaimRetried(reason string) bool {
