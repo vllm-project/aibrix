@@ -26,6 +26,7 @@ import (
 type LogContext struct {
 	PrefillScorePolicy string
 	DecodeScorePolicy  string
+	OnFailure          func()
 }
 
 // PrefillExecutor executes the prefill phase of a disaggregated-inference request.
