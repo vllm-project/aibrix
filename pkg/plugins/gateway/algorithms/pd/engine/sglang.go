@@ -46,6 +46,13 @@ type SGLangHandler struct{}
 func (h *SGLangHandler) Name() string  { return "sglang" }
 func (h *SGLangHandler) IsAsync() bool { return true }
 
+// AsyncDispatch keeps the prefill HTTP connection tied to the client stream,
+// so a disconnected client cancels the pending prefill HTTP call.
+// Prefill failures still use the native decode abort before decode responds.
+func (h *SGLangHandler) AsyncDispatch() AsyncDispatchPolicy {
+	return AsyncDispatchPolicy{KeepClientCancel: true, AbortDecode: true}
+}
+
 // AugmentPrefillRequest overwrites bootstrap_host, bootstrap_port, a random
 // bootstrap_room and the gateway-owned request id on the client body with
 // sjson, so that every nested field (messages, tools, …) is preserved at the

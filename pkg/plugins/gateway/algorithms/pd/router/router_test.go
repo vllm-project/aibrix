@@ -233,7 +233,8 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 	assert.Equal(t, 0.0, testutil.ToFloat64(successCounter.WithLabelValues("", "test-model", pdRoutePrefillRequestSuccess, "200")))
 
 	<-prefillStarted
-	cancelParent()
+	// Keep the client connected while the prefill completes successfully.
+	// Client cancellation is covered separately and now cancels the HTTP call.
 	close(releasePrefill)
 	releasedPrefill = true
 	assert.Eventually(t, func() bool {
