@@ -162,7 +162,10 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	}
 	wg.Wait()
 
-	var values []float64
+	// Pre-size values for the common case, where most pods succeed. collectErrors and
+	// timedOutPods stay lazily allocated: they are the uncommon failure path, so pre-sizing them
+	// to len(spec.Pods) would allocate a full-length backing array on every successful reconcile.
+	values := make([]float64, 0, len(spec.Pods))
 	var collectErrors []error
 	var timedOutPods []string
 	successCount := 0
