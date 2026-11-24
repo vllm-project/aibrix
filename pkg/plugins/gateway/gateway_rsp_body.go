@@ -61,6 +61,15 @@ var (
 	// the cap. It is a package variable so tests can exercise the limit without
 	// allocating the full default.
 	maxResponseBodySize = utils.LoadEnvNonNegativeInt(constants.EnvGatewayMaxResponseBodyBytes, defaultMaxResponseBodySize)
+
+	// requestBufferOverflow is stored in requestBuffers in place of a request's *bytes.Buffer
+	// once its non-streamed response body has exceeded maxResponseBodySize. The body is already
+	// being streamed to the client (the default router uses response.body: Streamed), so it
+	// cannot be failed; instead the gateway stops buffering it, forwards the rest unchanged, and
+	// skips usage extraction. The sentinel marks that pass-through state so later chunks neither
+	// re-buffer nor re-parse. It is a distinct, never-written instance, compared by pointer
+	// identity, so an ordinary empty buffer is never mistaken for it.
+	requestBufferOverflow = &bytes.Buffer{}
 )
 
 // effectiveTTFTThreshold returns the first-token delay threshold for this request:
@@ -479,6 +488,28 @@ func isLanguageRequest(requestPath string) bool {
 	return true
 }
 
+// passThroughOversizeResponse forwards an over-cap non-streamed response body unchanged. The
+// body was never fully buffered, so usage cannot be read: a non-final chunk returns CONTINUE
+// (empty CommonResponse) so Envoy forwards it, and the final chunk clears the pass-through
+// marker and finalizes the request with zero usage (it therefore goes uncharged -- see the
+// gateway_response_buffer_overflow_total counter emitted when the cap is first crossed).
+// nolint:nakedret
+func passThroughOversizeResponse(requestID string, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse, complete bool, promptTokens, completionTokens, totalTokens int64) {
+	if b.ResponseBody.EndOfStream {
+		requestBuffers.Delete(requestID)
+		complete = true
+		return
+	}
+	processingRes = &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseBody{
+			ResponseBody: &extProcPb.BodyResponse{
+				Response: &extProcPb.CommonResponse{},
+			},
+		},
+	}
+	return
+}
+
 // processLanguageResponse processes output response for /chatcompletions, /completions, /responses and /embedding endpoints.
 // nolint:nakedret
 func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse, complete bool, promptTokens, completionTokens, totalTokens int64) {
@@ -487,27 +518,34 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	// Retrieve or create buffer
 	buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
 	buffer := buf.(*bytes.Buffer)
+
+	// If this response already exceeded the cap on an earlier chunk, it is in pass-through
+	// mode: do not buffer or parse it again, just forward the rest and finalize with zero usage.
+	if buffer == requestBufferOverflow {
+		return passThroughOversizeResponse(requestID, b)
+	}
+
+	// Bound the per-request buffer *before* appending, so an over-cap chunk is never copied or
+	// grown into. The default router streams the main language routes (response body: Streamed),
+	// so without a limit here a large non-streamed response -- a big max_tokens generation, a
+	// large embeddings batch, or a misbehaving/malicious upstream -- accumulates in requestBuffers
+	// without bound, and under concurrency grows gateway memory process-wide.
+	//
+	// Once over the cap we cannot fail the request: with Streamed response bodies Envoy has
+	// already sent the 200 and every earlier chunk to the client, so an error/status change no
+	// longer reaches it. Instead, stop buffering this response -- free the buffer, switch to
+	// pass-through, forward the remaining body unchanged, and skip usage extraction for this one
+	// request (counted and logged so operators can see the uncharged request). That bounds the
+	// requestBuffers memory, which is the actual risk, without truncating a response in flight.
+	if maxResponseBodySize > 0 && buffer.Len()+len(b.ResponseBody.Body) > maxResponseBodySize {
+		klog.Warningf("requestID %s: non-streamed response body exceeded %d bytes (at least %d); not buffering further, forwarding and skipping usage", requestID, maxResponseBodySize, buffer.Len()+len(b.ResponseBody.Body))
+		requestBuffers.Store(requestID, requestBufferOverflow) // replaces (and frees) the real buffer
+		metrics.EmitMetricToPrometheus(nil, nil, metrics.GatewayResponseBufferOverflowTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
+		return passThroughOversizeResponse(requestID, b)
+	}
+
 	// Append data to per-request buffer
 	buffer.Write(b.ResponseBody.Body)
-
-	// Bound the per-request buffer. The default router streams the main language routes
-	// (response body: Streamed), so Envoy does not cap the body, and without a limit here a
-	// large non-streamed response -- a big max_tokens generation, a large embeddings batch,
-	// or a misbehaving/malicious upstream -- accumulates in requestBuffers without bound.
-	// Under concurrency that grows gateway memory process-wide. When the cap is exceeded,
-	// reject the request with a clear error and delete the map entry so no buffer is left
-	// behind. The check runs on every chunk so an oversize body fails fast rather than being
-	// fully accumulated first.
-	if maxResponseBodySize > 0 && buffer.Len() > maxResponseBodySize {
-		klog.Warningf("requestID %s: non-streamed response body exceeded %d bytes (received %d); rejecting", requestID, maxResponseBodySize, buffer.Len())
-		requestBuffers.Delete(requestID)
-		complete = true
-		processingRes = buildErrorResponse(
-			envoyTypePb.StatusCode_BadGateway,
-			fmt.Sprintf("upstream response body exceeded the %d byte limit", maxResponseBodySize),
-			"", "", HeaderErrorResponseTooLarge, "true")
-		return
-	}
 
 	if !b.ResponseBody.EndOfStream {
 		// Partial data received, wait for more chunks, we just return a common response here.
