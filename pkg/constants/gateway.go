@@ -26,8 +26,12 @@ const (
 
 	// EnvGatewayMaxResponseBodyBytes caps the size, in bytes, of a non-streamed
 	// response body that the gateway buffers per request before extracting token
-	// usage. A body that grows past the cap is rejected with a clear error and its
-	// buffer is released, instead of being accumulated without bound. A value of 0
-	// (or negative) disables the cap, restoring the previous unbounded behavior.
+	// usage. Once a body grows past the cap the gateway stops buffering it: the default
+	// router streams the body, so Envoy has already sent the 200 and the earlier chunks
+	// and the request cannot be failed -- instead the remaining chunks are forwarded
+	// unchanged and token usage is skipped, so the request goes uncharged (surfaced by
+	// the gateway_response_buffer_overflow_total counter). This bounds per-request
+	// memory. A value of 0 (or negative) disables the cap, restoring the previous
+	// unbounded behavior.
 	EnvGatewayMaxResponseBodyBytes = "AIBRIX_GATEWAY_MAX_RESPONSE_BODY_BYTES"
 )
