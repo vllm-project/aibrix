@@ -161,9 +161,11 @@ func NewPendingDecodeTracker() *PendingDecodeTracker {
 
 // AddPendingDecode records that requestID has been assigned to the pod
 // identified by podKey (see utils.GeneratePodKey) and increments that pod's pending-decode
-// counter. Called by the pod selector as soon as the decode pod is chosen,
-// under the same lock as the selection. RemovePendingDecode is deferred in
-// Route.
+// counter. For PD decode selections, the pod selector calls this under the same
+// lock as the selection; combined-pod spillover paths (which score from scraped
+// request-rate metrics and target combined pod keys disjoint from decodePods)
+// call it directly without the selection lock. RemovePendingDecode is deferred
+// in Route.
 func (t *PendingDecodeTracker) AddPendingDecode(requestID, podKey string) {
 	if t == nil {
 		return

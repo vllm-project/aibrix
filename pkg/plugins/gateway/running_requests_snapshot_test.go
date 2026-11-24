@@ -23,6 +23,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,8 +38,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
+	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -119,6 +124,128 @@ func TestSelectTargetPod_ReadsRunningRequestsOnce(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestSelectTargetPod_PDReadsRunningRequestsOnce verifies that PD routing
+// shares the per-decision RoutingContext.RunningRequests snapshot with
+// narrowToInflightCapacity, sending one Redis read (ZRANGEBYSCORE + HGETALL
+// pipeline) per routing decision rather than reading the decode pods a second
+// time inside pdRouter.
+func TestSelectTargetPod_PDReadsRunningRequestsOnce(t *testing.T) {
+	const half = 50
+	mr := miniredis.RunT(t)
+	reads := &fleetReadCounter{}
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
+	t.Cleanup(func() { _ = client.Close() })
+	require.NoError(t, client.Ping(context.Background()).Err())
+
+	prefillServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(prefillServer.Close)
+	u, err := url.Parse(prefillServer.URL)
+	require.NoError(t, err)
+	host, port := u.Hostname(), u.Port()
+
+	pods := make([]*v1.Pod, 0, half*2)
+	for i := 0; i < half; i++ {
+		rs := fmt.Sprintf("rs-%d", i/5)
+		pods = append(pods, &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("prefill-%02d", i),
+				Namespace: "ns",
+				Labels: map[string]string{
+					pdrouter.LLMEngineIdentifier: pdrouter.VLLMEngine,
+					pdrouter.PDRoleIdentifier:    pdrouter.PDRolePrefill,
+					pdrouter.PDRoleSetIdentifier: rs,
+					constants.ModelLabelPort:     port,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      host,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		})
+		pods = append(pods, &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("decode-%02d", i),
+				Namespace: "ns",
+				Labels: map[string]string{
+					pdrouter.LLMEngineIdentifier: pdrouter.VLLMEngine,
+					pdrouter.PDRoleIdentifier:    pdrouter.PDRoleDecode,
+					pdrouter.PDRoleSetIdentifier: rs,
+					constants.ModelLabelPort:     port,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      host,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		})
+	}
+	store := cache.InitWithPods(cache.New(client, nil, nil), pods, "pd-m")
+	t.Cleanup(store.Close)
+	rm := routing.NewRouterManagerWithCache(store)
+	rm.Init()
+	s := &Server{cache: store, routerManager: rm}
+
+	for _, inflight := range []int64{0, 1000} {
+		t.Run(fmt.Sprintf("pd/inflight=%d", inflight), func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, "pd-m", "hello world", fmt.Sprintf("req-pd-%d", inflight), "user")
+			t.Cleanup(ctx.Delete)
+			ctx.ReqPath = "/v1/chat/completions"
+			ctx.ReqBody = []byte(`{"model":"pd-m","messages":[{"role":"user","content":"hello world"}],"stream":true}`)
+			ctx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: inflight}
+
+			before, readsBefore := mr.CommandCount(), reads.count.Load()
+			addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+			require.NoError(t, err)
+			require.NotEmpty(t, addr)
+			sent := mr.CommandCount() - before
+			t.Logf("pd inflight=%d: %d Redis commands, %d fleet reads over %dP+%dD pods", inflight, sent, reads.count.Load()-readsBefore, half, half)
+
+			assert.EqualValues(t, 1, reads.count.Load()-readsBefore, "PD routing must send one running-requests read per decision")
+			if inflight == 0 {
+				// Decode pods only (50 HGETALLs + 1 ZRANGEBYSCORE).
+				assert.GreaterOrEqual(t, sent, half+1)
+				assert.Less(t, sent, half+20)
+			} else {
+				// One fleet read of all 100 pods (100 HGETALLs + 1 ZRANGEBYSCORE) plus admission, not a second 50-pod decode read.
+				assert.GreaterOrEqual(t, sent, half*2+1)
+				assert.Less(t, sent, half*2+25)
+			}
+
+			// The snapshot ends with selectTargetPod: a subsequent read goes live to Redis.
+			readsBefore = reads.count.Load()
+			_, err = ctx.RunningRequests(pods[:2], store.GetPodsRunningRequests)
+			require.NoError(t, err)
+			assert.EqualValues(t, 1, reads.count.Load()-readsBefore, "a read after the decision goes to Redis")
+		})
+	}
+
+	// Pin today's token_load + requestsInflight baseline: narrowToInflightCapacity
+	// performs one fleet read and sharedDecodeLedger reads running counts + decode
+	// ledger in a second pipeline (now outside selectMu). A follow-up ledger-only
+	// cache read (#3588) can drop this from 2 to 1.
+	t.Run("pd/token_load/inflight=1000", func(t *testing.T) {
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, "pd-m", "hello world", "req-pd-token-load-inflight", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"pd-m","messages":[{"role":"user","content":"hello world"}],"stream":true}`)
+		raw := json.RawMessage(`{"decodeScorePolicy":"token_load"}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1000,
+			RoutingConfig:    raw,
+			Routing:          configprofiles.ParseRoutingConfig(raw),
+		}
+
+		readsBefore := reads.count.Load()
+		addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+		require.NoError(t, err)
+		require.NotEmpty(t, addr)
+		assert.EqualValues(t, 2, reads.count.Load()-readsBefore, "token_load + requestsInflight currently performs inflight + shared-ledger reads")
+	})
 }
 
 // fleetReadCounter counts ZRANGEBYSCORE commands on connections opened by the
