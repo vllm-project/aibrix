@@ -540,7 +540,10 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	if maxResponseBodySize > 0 && buffer.Len()+len(b.ResponseBody.Body) > maxResponseBodySize {
 		klog.Warningf("requestID %s: non-streamed response body exceeded %d bytes (at least %d); not buffering further, forwarding and skipping usage", requestID, maxResponseBodySize, buffer.Len()+len(b.ResponseBody.Body))
 		requestBuffers.Store(requestID, requestBufferOverflow) // replaces (and frees) the real buffer
-		metrics.EmitMetricToPrometheus(nil, nil, metrics.GatewayResponseBufferOverflowTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
+		// Emit a model-less counter. processLanguageResponse has no routingCtx here; EmitMetricToPrometheus
+		// tolerates a nil one, but pass an empty context to match the convention used elsewhere (e.g.
+		// gateway.go's GatewayRequestTotal emit) and stay safe against future label additions.
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{}, nil, metrics.GatewayResponseBufferOverflowTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 		return passThroughOversizeResponse(requestID, b)
 	}
 
