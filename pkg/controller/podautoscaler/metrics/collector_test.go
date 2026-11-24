@@ -196,31 +196,20 @@ func readyPodForScrape(name, ip string) corev1.Pod {
 	return pod
 }
 
-// setCollectionBounds overrides the collection bounds for a test and returns a restore func.
-func setCollectionBounds(t *testing.T, perPod, overall time.Duration, concurrency int) {
-	t.Helper()
-	savePer, saveOverall, saveConc := perPodMetricTimeout, metricCollectionTimeout, maxConcurrentPodScrapes
-	perPodMetricTimeout, metricCollectionTimeout, maxConcurrentPodScrapes = perPod, overall, concurrency
-	t.Cleanup(func() {
-		perPodMetricTimeout, metricCollectionTimeout, maxConcurrentPodScrapes = savePer, saveOverall, saveConc
-	})
-}
-
 // TestCollectFromPodsPerPodDeadlineCutsSlowPod pins the per-pod bound: with an unbounded parent
-// context and a large overall bound, a blocking pod must be cut by perPodMetricTimeout (not the
+// context and a large overall bound, a blocking pod must be cut by the per-pod timeout (not the
 // overall bound), while the reachable pod is still collected. Kills the mutant that replaces the
 // per-pod WithTimeout with WithCancel (the blocker would then run until the 10s overall bound).
 func TestCollectFromPodsPerPodDeadlineCutsSlowPod(t *testing.T) {
-	setCollectionBounds(t, 50*time.Millisecond, 10*time.Second, maxConcurrentPodScrapes)
-
 	pods := []corev1.Pod{
 		podForScrape("bh-1", "10.0.0.1"),
 		podForScrape("good-1", "10.0.0.2"),
 	}
 	fetcher := &reachabilityFetcher{unreachable: map[string]bool{"bh-1": true}, value: 7}
+	bounds := collectBounds{perPodTimeout: 50 * time.Millisecond, overallTimeout: 10 * time.Second, maxConcurrency: 16}
 
 	start := time.Now()
-	snapshot, err := CollectMetrics(context.Background(), podCollectionSpec(pods), staticMetricFetcherFactory{fetcher: fetcher})
+	snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -231,20 +220,19 @@ func TestCollectFromPodsPerPodDeadlineCutsSlowPod(t *testing.T) {
 }
 
 // TestCollectFromPodsOverallDeadlineCapsCollection pins the overall bound: with an unbounded
-// parent context and a large per-pod bound, the whole call must return within
-// metricCollectionTimeout even though every pod blocks. Kills the mutant that replaces the
-// overall WithTimeout with WithCancel (the blockers would then run until the 10s per-pod bound).
+// parent context and a large per-pod bound, the whole call must return within the overall timeout
+// even though every pod blocks. Kills the mutant that replaces the overall WithTimeout with
+// WithCancel (the blockers would then run until the 10s per-pod bound).
 func TestCollectFromPodsOverallDeadlineCapsCollection(t *testing.T) {
-	setCollectionBounds(t, 10*time.Second, 50*time.Millisecond, maxConcurrentPodScrapes)
-
 	pods := []corev1.Pod{
 		podForScrape("bh-1", "10.0.0.1"),
 		podForScrape("bh-2", "10.0.0.2"),
 	}
 	fetcher := &reachabilityFetcher{unreachable: map[string]bool{"bh-1": true, "bh-2": true}}
+	bounds := collectBounds{perPodTimeout: 10 * time.Second, overallTimeout: 50 * time.Millisecond, maxConcurrency: 16}
 
 	start := time.Now()
-	snapshot, err := CollectMetrics(context.Background(), podCollectionSpec(pods), staticMetricFetcherFactory{fetcher: fetcher})
+	snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -260,8 +248,6 @@ func TestCollectFromPodsOverallDeadlineCapsCollection(t *testing.T) {
 // degrades to a total failure. Run repeatedly because the pre-ordering behavior was scheduler-
 // dependent and only failed intermittently.
 func TestCollectFromPodsReadyPodsScrapedUnderUnreachableCrowd(t *testing.T) {
-	setCollectionBounds(t, 40*time.Millisecond, 100*time.Millisecond, 2)
-
 	pods := make([]corev1.Pod, 0, 10)
 	unreachable := map[string]bool{}
 	for i := 0; i < 8; i++ { // unreachable + not-ready, listed first
@@ -271,11 +257,25 @@ func TestCollectFromPodsReadyPodsScrapedUnderUnreachableCrowd(t *testing.T) {
 	}
 	pods = append(pods, readyPodForScrape("good-1", "10.0.2.1"), readyPodForScrape("good-2", "10.0.2.2"))
 	fetcher := &reachabilityFetcher{unreachable: unreachable, value: 7}
+	bounds := collectBounds{perPodTimeout: 40 * time.Millisecond, overallTimeout: 100 * time.Millisecond, maxConcurrency: 2}
 
 	for run := 0; run < 20; run++ {
-		snapshot, err := CollectMetrics(context.Background(), podCollectionSpec(pods), staticMetricFetcherFactory{fetcher: fetcher})
+		snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
 		require.NoError(t, err)
 		require.Len(t, snapshot.Values, 2, "run %d: both Ready pods must be collected despite the unreachable crowd", run)
 		require.NoError(t, snapshot.Error, "run %d: Ready pods present => not a total failure", run)
 	}
+}
+
+// TestCollectFromPodsClampsNonPositiveConcurrency guards the semaphore against a deadlock/panic:
+// a non-positive maxConcurrency is clamped to 1, so collection still completes (serially).
+func TestCollectFromPodsClampsNonPositiveConcurrency(t *testing.T) {
+	pods := []corev1.Pod{podForScrape("good-1", "10.0.0.1"), podForScrape("good-2", "10.0.0.2")}
+	fetcher := &reachabilityFetcher{value: 7}
+	bounds := collectBounds{perPodTimeout: time.Second, overallTimeout: time.Second, maxConcurrency: 0}
+
+	snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Values, 2, "clamping concurrency to 1 must not deadlock; both pods are scraped")
+	assert.NoError(t, snapshot.Error)
 }
