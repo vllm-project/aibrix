@@ -807,8 +807,9 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	if bucketing {
 		// Bucket match exists; check if load imbalance favours a combined pod instead.
 		// shouldPickCombined and scoreCombinedPods read only cached metrics (not tracker
-		// state), so running them before the Redis read and selectMu avoids both an
-		// unused Redis round trip and lock contention on combined spillover.
+		// state), and combined pod keys are disjoint from decodePods (matching step 3a),
+		// so running this check and AddPendingDecode before the Redis read and selectMu
+		// avoids both an unused Redis round trip and lock contention on combined spillover.
 		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods) {
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
@@ -821,10 +822,11 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 
 	// Prefetch cross-gateway running-request counts (and shared decode ledger
 	// when token_load uses it) before acquiring selectMu so synchronous Redis
-	// pipelines never serialize concurrent selections. When no shared decode
-	// ledger is needed, decodeRunningRequests reads through
-	// routingCtx.RunningRequests to reuse any per-decision snapshot already
-	// populated by narrowToInflightCapacity.
+	// pipelines never serialize concurrent selections (note: concurrent
+	// selections now issue pipelines in parallel rather than being capped at 1
+	// in-flight read). When no shared decode ledger is needed,
+	// decodeRunningRequests reads through routingCtx.RunningRequests to reuse
+	// any per-decision snapshot already populated by narrowToInflightCapacity.
 	var remoteDecodeLedger map[string]cache.RemoteDecodeLoad
 	var remoteOut *map[string]cache.RemoteDecodeLoad
 	if r.sharedDecodeLedger != nil && pd.UsesDecodeTokenLoad(decodePol) {

@@ -223,6 +223,29 @@ func TestSelectTargetPod_PDReadsRunningRequestsOnce(t *testing.T) {
 			assert.EqualValues(t, 1, reads.count.Load()-readsBefore, "a read after the decision goes to Redis")
 		})
 	}
+
+	// Pin today's token_load + requestsInflight baseline: narrowToInflightCapacity
+	// performs one fleet read and sharedDecodeLedger reads running counts + decode
+	// ledger in a second pipeline (now outside selectMu). A follow-up ledger-only
+	// cache read (#3588) can drop this from 2 to 1.
+	t.Run("pd/token_load/inflight=1000", func(t *testing.T) {
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, "pd-m", "hello world", "req-pd-token-load-inflight", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"pd-m","messages":[{"role":"user","content":"hello world"}],"stream":true}`)
+		raw := json.RawMessage(`{"decodeScorePolicy":"token_load"}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1000,
+			RoutingConfig:    raw,
+			Routing:          configprofiles.ParseRoutingConfig(raw),
+		}
+
+		readsBefore := reads.count.Load()
+		addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+		require.NoError(t, err)
+		require.NotEmpty(t, addr)
+		assert.EqualValues(t, 2, reads.count.Load()-readsBefore, "token_load + requestsInflight currently performs inflight + shared-ledger reads")
+	})
 }
 
 // fleetReadCounter counts ZRANGEBYSCORE commands on connections opened by the

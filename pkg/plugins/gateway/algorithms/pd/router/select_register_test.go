@@ -385,3 +385,56 @@ func TestPDRouter_ReusesRoutingContextRunningRequestsSnapshot(t *testing.T) {
 	r.pendingDecodeTracker.RemovePendingDecode(ctx.RequestID)
 	r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
 }
+
+// TestPDRouter_PrefetchThenPrefillImbalanceNarrowDoesNotRereadRedis verifies
+// that when prefill load-imbalance fires under selectMu and narrows decodePods
+// to a single roleset, decode scoring reuses the counts already prefetched
+// before selectMu instead of issuing a second Redis read.
+func TestPDRouter_PrefetchThenPrefillImbalanceNarrowDoesNotRereadRedis(t *testing.T) {
+	prefillHot := burstPod("prefill-rs0", "prefill", "127.0.0.1")
+	prefillHot.Labels[PDRoleSetIdentifier] = "rs-0"
+	decodeRS0 := burstPod("decode-rs0", "decode", "127.0.0.100")
+	decodeRS0.Labels[PDRoleSetIdentifier] = "rs-0"
+
+	prefillIdle := burstPod("prefill-rs1", "prefill", "127.0.0.2")
+	prefillIdle.Labels[PDRoleSetIdentifier] = "rs-1"
+	decodeRS1 := burstPod("decode-rs1", "decode", "127.0.0.101")
+	decodeRS1.Labels[PDRoleSetIdentifier] = "rs-1"
+
+	readyPods := []*v1.Pod{prefillHot, decodeRS0, prefillIdle, decodeRS1}
+
+	bc := newBarrierRunningCache(1, time.Second)
+	bc.counts = map[string]int64{
+		utils.GeneratePodKey(decodeRS0.Namespace, decodeRS0.Name): 0,
+		utils.GeneratePodKey(decodeRS1.Namespace, decodeRS1.Name): 3,
+	}
+	prefillTracker := pd.NewPrefillRequestTracker()
+	// Create a prefill spread above default PrefillLoadImbalanceMinSpread (16) so
+	// step 4 narrows prefillPods to prefillIdle and aligns decodePods to rs-1.
+	for i := 0; i < 20; i++ {
+		prefillTracker.AddPrefillRequest(fmt.Sprintf("hot-%d", i), utils.GeneratePodKey(prefillHot.Namespace, prefillHot.Name))
+	}
+
+	r := &pdRouter{
+		cache:                 bc,
+		prefillPolicy:         pd.NewLeastRequestPrefillPolicy(),
+		prefillRequestTracker: prefillTracker,
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+		selectionCounts:       map[string]int64{},
+	}
+
+	ctx := types.NewRoutingContext(context.Background(), "pd", "model-a", "hello", "req-narrow", "user")
+	ctx.Engine = "vllm"
+
+	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPods)
+	require.NoError(t, err)
+	require.NotNil(t, prefillPod)
+	require.NotNil(t, decodePod)
+	assert.Equal(t, prefillIdle.Name, prefillPod.Name, "prefill imbalance fast path must pick idle prefill pod")
+	assert.Equal(t, decodeRS1.Name, decodePod.Name, "decode selection must stay aligned to narrowed roleset rs-1")
+	assert.Equal(t, int64(1), bc.calls.Load(), "narrowing decodePods under selectMu must reuse the prefetched counts without re-reading Redis")
+
+	r.pendingDecodeTracker.RemovePendingDecode(ctx.RequestID)
+	r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
+}
