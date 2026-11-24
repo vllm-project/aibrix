@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package auth
 
 import (
 	"crypto/sha256"
@@ -27,22 +27,22 @@ const (
 	envAuthBearerToken = "AIBRIX_AUTH_BEARER_TOKEN"
 )
 
-type apiKeyAuthConfig struct {
-	token string
+type APIKeyAuthConfig struct {
+	Token string
 }
 
-func loadAPIKeyAuthConfig() *apiKeyAuthConfig {
-	return &apiKeyAuthConfig{
-		token: strings.TrimSpace(os.Getenv(envAuthBearerToken)),
+func LoadAPIKeyAuthConfig() *APIKeyAuthConfig {
+	return &APIKeyAuthConfig{
+		Token: strings.TrimSpace(os.Getenv(envAuthBearerToken)),
 	}
 }
 
-func (c *apiKeyAuthConfig) isAuthorized(token string) bool {
+func (c *APIKeyAuthConfig) IsAuthorized(token string) bool {
 	token, ok := extractBearerToken(token)
 	if !ok {
 		return false
 	}
-	cTokenHash := sha256.Sum256([]byte(c.token))
+	cTokenHash := sha256.Sum256([]byte(c.Token))
 	tokenHash := sha256.Sum256([]byte(token))
 	return subtle.ConstantTimeCompare(cTokenHash[:], tokenHash[:]) == 1
 }

@@ -2163,3 +2163,18 @@ func TestHandleRequestBody_PDRoutingTimeEndsAtPrefillStart(t *testing.T) {
 		})
 	}
 }
+
+type modelWakeCall struct {
+	pod     *v1.Pod
+	model   string
+	binding utils.ModelClaimBinding
+}
+
+type recordingModelWakeRequester struct {
+	calls []modelWakeCall
+}
+
+func (r *recordingModelWakeRequester) RequestWake(pod *v1.Pod, binding utils.ModelClaimBinding) bool {
+	r.calls = append(r.calls, modelWakeCall{pod: pod, model: binding.Model, binding: binding})
+	return true
+}

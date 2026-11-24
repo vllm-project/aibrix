@@ -509,6 +509,14 @@ var modelClaimReasonsNotRetried = map[string]struct{}{
 	"InvalidPerGPU":                              {},
 }
 
+const (
+	modelClaimRetryAfterSeconds = 10
+	// A sleeping model gets an earlier chance to be retried than one that starts
+	// from scratch. Whether it is ready is still up to the controller and the
+	// gateway cache.
+	modelClaimWakeRetryAfterSeconds = 3
+)
+
 // modelClaimRetryAfterByReason is how long a client is asked to wait, by the
 // reason the controller gives, when that is longer than a wake or a start
 // takes. A wake that waits for room, and a claim that room is made for, wait

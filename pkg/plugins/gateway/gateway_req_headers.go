@@ -109,7 +109,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	}
 
 	// check API key
-	if s.apiKeyAuth != nil && s.apiKeyAuth.token != "" {
+	if s.apiKeyAuth != nil && s.apiKeyAuth.Token != "" {
 		authHeaderValue := ""
 		for key, value := range reqHeaders {
 			if strings.EqualFold(key, authorizationKey) {
@@ -117,7 +117,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 				break
 			}
 		}
-		if !s.apiKeyAuth.isAuthorized(authHeaderValue) {
+		if !s.apiKeyAuth.IsAuthorized(authHeaderValue) {
 			klog.V(2).InfoS("rejecting request with invalid gateway API key", "requestID", requestID, "header", "Authorization")
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_Unauthorized,
