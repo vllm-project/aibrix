@@ -118,17 +118,18 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	// acquiring the concurrency slots in Ready-first order means that when unreachable pods
 	// crowd the fleet -- e.g. a large scale-up whose new pods refuse the metrics port but have
 	// an IP -- the healthy pods are not left waiting behind them for a slot (#3585's own case).
+	// Single pass: Ready indices go up front; the rest are collected separately and appended
+	// after, so IsPodReady is evaluated once per pod. notReady stays nil when every pod is Ready.
 	order := make([]int, 0, len(spec.Pods))
+	var notReady []int
 	for i := range spec.Pods {
 		if utils.IsPodReady(&spec.Pods[i]) {
 			order = append(order, i)
+		} else {
+			notReady = append(notReady, i)
 		}
 	}
-	for i := range spec.Pods {
-		if !utils.IsPodReady(&spec.Pods[i]) {
-			order = append(order, i)
-		}
-	}
+	order = append(order, notReady...)
 
 	type podResult struct {
 		value float64
