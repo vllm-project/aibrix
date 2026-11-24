@@ -21,7 +21,7 @@ package gateway
 // produced it, so every follow-up has to land on that same pod. The gateway
 // therefore hands the client an opaque, owner-scoped public job id and keeps the
 // (public id -> pod identity, backend job id) mapping in the async job registry
-// (see async_job_registry.go). The backend's own id is never exposed: it is a
+// (see asyncjob/async_job_registry.go). The backend's own id is never exposed: it is a
 // bare, guessable handle with no ownership attached, and the gateway rewrites it
 // into the request path -- and back out of the response body -- on every hop.
 //
@@ -49,6 +49,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -128,36 +129,36 @@ func isUnsupportedVideoTrailingSlash(requestPath string) bool {
 	return path != "/" && strings.HasPrefix(path, PathVideos+"/") && strings.HasSuffix(path, "/")
 }
 
-func parseVideoListOptions(requestPath string) (AsyncJobListOptions, error) {
+func parseVideoListOptions(requestPath string) (asyncjob.AsyncJobListOptions, error) {
 	_, rawQuery, hasQuery := strings.Cut(requestPath, "?")
-	options := AsyncJobListOptions{Limit: defaultAsyncJobListLimit, Order: "desc"}
+	options := asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultListLimit, Order: "desc"}
 	if !hasQuery || rawQuery == "" {
 		return options, nil
 	}
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return AsyncJobListOptions{}, fmt.Errorf("invalid video list query: %w", err)
+		return asyncjob.AsyncJobListOptions{}, fmt.Errorf("invalid video list query: %w", err)
 	}
 	for key := range values {
 		if key != "after" && key != "limit" && key != "order" {
-			return AsyncJobListOptions{}, fmt.Errorf("unsupported video list query parameter %q", key)
+			return asyncjob.AsyncJobListOptions{}, fmt.Errorf("unsupported video list query parameter %q", key)
 		}
 		if len(values[key]) != 1 {
-			return AsyncJobListOptions{}, fmt.Errorf("video list query parameter %q must be supplied once", key)
+			return asyncjob.AsyncJobListOptions{}, fmt.Errorf("video list query parameter %q must be supplied once", key)
 		}
 	}
 	options.After = values.Get("after")
 	if rawLimit, ok := values["limit"]; ok {
 		limit, err := strconv.Atoi(rawLimit[0])
 		if err != nil {
-			return AsyncJobListOptions{}, fmt.Errorf("video list limit must be an integer")
+			return asyncjob.AsyncJobListOptions{}, fmt.Errorf("video list limit must be an integer")
 		}
 		options.Limit = limit
 	}
 	if rawOrder, ok := values["order"]; ok {
 		options.Order = rawOrder[0]
 	}
-	return normalizeAsyncJobListOptions(options)
+	return asyncjob.NormalizeListOptions(options)
 }
 
 // asyncJobOwnerFromRoutingContext derives the job scope from the only principal
@@ -166,9 +167,9 @@ func parseVideoListOptions(requestPath string) (AsyncJobListOptions, error) {
 // view over everyone else's jobs.
 func asyncJobOwnerFromRoutingContext(routingCtx *types.RoutingContext) string {
 	if routingCtx == nil || routingCtx.User == nil {
-		return asyncJobOwnerShared
+		return asyncjob.OwnerShared
 	}
-	return asyncJobOwnerFromUserName(*routingCtx.User)
+	return asyncjob.OwnerFromUserName(*routingCtx.User)
 }
 
 // videoJobResponseNeedsBuffering reports whether a response body must be held
@@ -233,11 +234,11 @@ func videoJobStoreUnavailableResponse(publicJobID string) *extProcPb.ProcessingR
 // gets: absent or dead means terminal 404, transient means retryable 503.
 func videoJobErrorResponse(publicJobID string, err error) *extProcPb.ProcessingResponse {
 	switch {
-	case errors.Is(err, errAsyncJobNotFound):
+	case errors.Is(err, asyncjob.ErrNotFound):
 		return videoNotFoundResponse(publicJobID)
-	case errors.Is(err, errAsyncJobTargetUnavailable):
+	case errors.Is(err, asyncjob.ErrTargetUnavailable):
 		return videoJobPodUnavailableResponse(publicJobID)
-	case errors.Is(err, errAsyncJobStoreUnavailable):
+	case errors.Is(err, asyncjob.ErrStoreUnavailable):
 		return videoJobStoreUnavailableResponse(publicJobID)
 	default:
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
@@ -288,10 +289,10 @@ type videoListResponse struct {
 // ImmediateResponse because there is no backend to ask: the catalog is aibrix's
 // own record of what the caller owns, deliberately without live status
 // enrichment, which would mean fanning out HTTP calls to every pinned pod.
-func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner string, options AsyncJobListOptions) *extProcPb.ProcessingResponse {
-	page, err := s.asyncJobRegistry().List(ctx, owner, asyncJobTypeVideo, options)
+func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner string, options asyncjob.AsyncJobListOptions) *extProcPb.ProcessingResponse {
+	page, err := s.asyncJobRegistry().List(ctx, owner, asyncjob.TypeVideo, options)
 	if err != nil {
-		if errors.Is(err, errAsyncJobNotFound) || errors.Is(err, errAsyncJobInvalidRecord) {
+		if errors.Is(err, asyncjob.ErrNotFound) || errors.Is(err, asyncjob.ErrInvalidRecord) {
 			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
 				"invalid video list cursor or parameters", "", "", HeaderErrorRequestBodyProcessing, "true")
 		}
@@ -536,8 +537,8 @@ func (s *Server) registerVideoJobFromCreateResponse(ctx context.Context, request
 	}
 
 	owner := asyncJobOwnerFromRoutingContext(routerCtx)
-	record, err := s.asyncJobRegistry().Register(ctx, AsyncJobRegistration{
-		JobType:      asyncJobTypeVideo,
+	record, err := s.asyncJobRegistry().Register(ctx, asyncjob.AsyncJobRegistration{
+		JobType:      asyncjob.TypeVideo,
 		Owner:        owner,
 		Model:        routerCtx.Model,
 		BackendJobID: backendJobID,

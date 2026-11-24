@@ -53,6 +53,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/auth"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
@@ -112,7 +113,7 @@ type Server struct {
 	// per-replica job cache, so any replica can answer a follow-up for a job
 	// another replica created, with no reconciliation window. Built lazily by
 	// asyncJobRegistry() when not injected.
-	asyncJobs     AsyncJobRegistry
+	asyncJobs     asyncjob.AsyncJobRegistry
 	asyncJobsOnce sync.Once
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
@@ -395,7 +396,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	klog.InfoS("HTTPRoute lookup namespace configured", "namespace", s.gatewayNamespace)
-	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	s.asyncJobs = asyncjob.NewRegistryForClient(redisClient, c)
 	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
@@ -405,6 +406,18 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	s.registerPodLifecycle()
 	s.registerPodQuarantine()
 	return s
+}
+
+// asyncJobRegistry returns the Server's registry, building it on first use. The
+// lazy path exists for Servers assembled as struct literals (tests, and any
+// caller that does not go through NewServerWithOptions).
+func (s *Server) asyncJobRegistry() asyncjob.AsyncJobRegistry {
+	s.asyncJobsOnce.Do(func() {
+		if s.asyncJobs == nil {
+			s.asyncJobs = asyncjob.NewRegistryForClient(s.redisClient, s.cache)
+		}
+	})
+	return s.asyncJobs
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
