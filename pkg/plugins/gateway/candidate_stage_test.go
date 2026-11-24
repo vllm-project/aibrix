@@ -36,12 +36,12 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// TestSelectTargetPod_CandidateStageBoundsRedisReads routes one least-request request over 200
+// TestSelectTargetPod_CandidateStageBoundsRedisReads routes least-request requests over 200
 // ready pods against a real Redis protocol server and counts the commands the routing path
-// sends. Without the stage, every ready pod's running count is read once per decision (the
-// gate, least-request and the load-balance blend share that read, #3329). With
-// routingConfig.candidate.k set, only the candidates are read, so the command count stops
-// depending on the fleet size.
+// sends. With candidate.k=0 (explicit opt-out), every ready pod's running count is read once
+// per decision (the gate, least-request and the load-balance blend share that read, #3329).
+// By default (AIBRIX_ROUTING_CANDIDATE_K=64) and with a smaller routingConfig.candidate.k,
+// only the candidates are read, so the command count stops depending on the fleet size.
 func TestSelectTargetPod_CandidateStageBoundsRedisReads(t *testing.T) {
 	const n = 200
 	mr := miniredis.RunT(t)
@@ -79,9 +79,12 @@ func TestSelectTargetPod_CandidateStageBoundsRedisReads(t *testing.T) {
 		return mr.CommandCount() - before
 	}
 
-	full := route("")
+	full := route(`{"candidate":{"k":0}}`)
+	defaultSampled := route("")
 	sampled := route(`{"candidate":{"k":8}}`)
-	t.Logf("Redis commands per request over %d pods: %d without the candidate stage, %d with k=8", n, full, sampled)
-	assert.GreaterOrEqual(t, full, n, "without the stage every ready pod is read")
-	assert.LessOrEqual(t, sampled, 8+8, "with the candidate stage only the 8 candidates are read")
+	t.Logf("Redis commands per request over %d pods: %d with k=0, %d with default (k=64), %d with k=8", n, full, defaultSampled, sampled)
+	assert.GreaterOrEqual(t, full, n, "with k=0 opt-out every ready pod is read")
+	assert.GreaterOrEqual(t, defaultSampled, 64, "with default k=64 all 64 candidates are read")
+	assert.LessOrEqual(t, defaultSampled, 64+16, "with default k=64 only the 64 candidates are read")
+	assert.LessOrEqual(t, sampled, 8+8, "with k=8 only the 8 candidates are read")
 }

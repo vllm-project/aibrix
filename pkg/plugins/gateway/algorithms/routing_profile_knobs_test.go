@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -409,23 +410,61 @@ func TestLoadImbalanceGateHonorsProfileOverrides(t *testing.T) {
 }
 
 func TestCandidateStageHonorsProfileOverrides(t *testing.T) {
-	withDefaultOverrides(t, probeRoutingDefaults())
-	pods := make([]*v1.Pod, 40)
-	for i := range pods {
-		pods[i] = makeLBPod(fmt.Sprintf("pod-%d", i), fmt.Sprintf("10.0.0.%d", i))
+	t.Run("process default K=0 can be narrowed by profile", func(t *testing.T) {
+		withDefaultOverrides(t, probeRoutingDefaults())
+		pods := make([]*v1.Pod, 40)
+		for i := range pods {
+			pods[i] = makeLBPod(fmt.Sprintf("pod-%d", i), fmt.Sprintf("10.0.0.%d", i))
+		}
+
+		plain := routingOverridesContext(t, "")
+		plain.Algorithm = RouterLeastRequest
+		ResolveRoutingOverrides(plain)
+		assert.Len(t, SelectCandidates(plain, nil, nil, pods, nil), len(pods), "K=0 keeps every ready pod")
+
+		sampled := routingOverridesContext(t, `{"candidate":{"k":8}}`)
+		sampled.Algorithm = RouterLeastRequest
+		ResolveRoutingOverrides(sampled)
+		assert.Len(t, SelectCandidates(sampled, nil, nil, pods, nil), 8)
+
+		assert.Len(t, SelectCandidates(plain, nil, nil, pods, nil), len(pods), "another request's profile must not change this one")
+	})
+
+	t.Run("process default K=64 narrows above 64 and allows k=0 opt-out", func(t *testing.T) {
+		defs := probeRoutingDefaults()
+		defs.Candidate.K = defaultRoutingCandidateK
+		withDefaultOverrides(t, defs)
+
+		small := make([]*v1.Pod, defaultRoutingCandidateK)
+		for i := range small {
+			small[i] = makeLBPod(fmt.Sprintf("small-%d", i), fmt.Sprintf("10.0.0.%d", i))
+		}
+		large := make([]*v1.Pod, 100)
+		for i := range large {
+			large[i] = makeLBPod(fmt.Sprintf("large-%d", i), fmt.Sprintf("10.0.1.%d", i))
+		}
+
+		plain := routingOverridesContext(t, "")
+		plain.Algorithm = RouterLeastRequest
+		ResolveRoutingOverrides(plain)
+		assert.Len(t, SelectCandidates(plain, nil, nil, small, nil), len(small), "N <= K bypasses the stage unchanged")
+		assert.Len(t, SelectCandidates(plain, nil, nil, large, nil), defaultRoutingCandidateK, "N > K narrows to default K=64")
+
+		optOut := routingOverridesContext(t, `{"candidate":{"k":0}}`)
+		optOut.Algorithm = RouterLeastRequest
+		ResolveRoutingOverrides(optOut)
+		assert.Len(t, SelectCandidates(optOut, nil, nil, large, nil), len(large), "explicit k=0 disables the candidate stage")
+
+		assert.Len(t, SelectCandidates(plain, nil, nil, large, nil), defaultRoutingCandidateK, "opt-out on one request must not change others")
+	})
+}
+
+func TestDefaultRoutingCandidateK(t *testing.T) {
+	assert.Equal(t, 64, defaultRoutingCandidateK)
+	if os.Getenv("AIBRIX_ROUTING_CANDIDATE_K") == "" {
+		assert.Equal(t, defaultRoutingCandidateK, routingCandidateK)
+		assert.Equal(t, defaultRoutingCandidateK, types.DefaultRoutingOverrides().Candidate.K)
 	}
-
-	plain := routingOverridesContext(t, "")
-	plain.Algorithm = RouterLeastRequest
-	ResolveRoutingOverrides(plain)
-	assert.Len(t, SelectCandidates(plain, nil, nil, pods, nil), len(pods), "the process default K=0 keeps every ready pod")
-
-	sampled := routingOverridesContext(t, `{"candidate":{"k":8}}`)
-	sampled.Algorithm = RouterLeastRequest
-	ResolveRoutingOverrides(sampled)
-	assert.Len(t, SelectCandidates(sampled, nil, nil, pods, nil), 8)
-
-	assert.Len(t, SelectCandidates(plain, nil, nil, pods, nil), len(pods), "another request's profile must not change this one")
 }
 
 func TestAutoBlendWeightsHonorProfileOverrides(t *testing.T) {

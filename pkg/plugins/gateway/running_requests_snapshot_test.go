@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -37,6 +38,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -82,13 +84,18 @@ func TestSelectTargetPod_ReadsRunningRequestsOnce(t *testing.T) {
 		routing.RouterPowerOfTwo,
 		routing.RouterRandom,
 	}
+	// Opt out of the default candidate stage (K=64) so every strategy reads the full 100-pod fleet once.
+	noCandidateRaw := json.RawMessage(`{"candidate":{"k":0}}`)
+	noCandidateRouting := configprofiles.ParseRoutingConfig(noCandidateRaw)
 	for _, inflight := range []int64{0, 1000} {
 		for _, strategy := range strategies {
 			t.Run(fmt.Sprintf("%s/inflight=%d", strategy, inflight), func(t *testing.T) {
 				ctx := types.NewRoutingContext(context.Background(), strategy, "m", "hello world", fmt.Sprintf("req-%s-%d", strategy, inflight), "")
 				t.Cleanup(ctx.Delete)
-				if inflight > 0 {
-					ctx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: inflight}
+				ctx.ConfigProfile = &types.ResolvedConfigProfile{
+					RequestsInflight: inflight,
+					RoutingConfig:    noCandidateRaw,
+					Routing:          noCandidateRouting,
 				}
 				before, readsBefore := mr.CommandCount(), reads.count.Load()
 				addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
