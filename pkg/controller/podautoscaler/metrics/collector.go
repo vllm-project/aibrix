@@ -20,12 +20,28 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
+)
+
+const (
+	// perPodMetricTimeout bounds a single pod's metric scrape. Without it, one unreachable
+	// pod (a TCP blackhole, or connection-refused answered through the engine fetcher's
+	// retry backoff) can consume the entire reconcile budget before any healthy pod is scraped.
+	perPodMetricTimeout = 3 * time.Second
+	// metricCollectionTimeout bounds the whole concurrent collection. It is kept well below
+	// the reconcile deadline (DefaultReconcileTimeoutDuration, 10s) so that even a large batch
+	// of slow or unreachable pods still returns with time to spare to act on the partial metrics.
+	metricCollectionTimeout = 6 * time.Second
+	// maxConcurrentPodScrapes bounds how many pods are scraped in parallel, keeping collection
+	// fast without opening an unbounded number of connections against a large fleet.
+	maxConcurrentPodScrapes = 16
 )
 
 // CollectMetrics gathers metrics for a scaling target using the factory pattern
@@ -42,23 +58,68 @@ func CollectMetrics(ctx context.Context, spec types.CollectionSpec, factory Metr
 	}
 }
 
-// collectFromPods handles pod-level metric collection
+// collectFromPods handles pod-level metric collection. It scrapes the target's pods
+// concurrently, each under a per-pod sub-deadline, with the whole collection bounded by an
+// overall sub-deadline well below the reconcile budget.
+//
+// Previously it scraped every pod serially on the shared reconcile context, so a single
+// unreachable pod -- one that eats the engine fetcher's full HTTP timeout plus 1s/2s/4s retry
+// backoff -- could consume the entire 10s reconcile budget before any healthy pod was reached.
+// On total failure with replicas within [min,max] the pass set ScalingActive=False and applied
+// no scaling, i.e. scaling stalled during the very scale-ups/incidents where it matters most.
+// Scraping concurrently under tight sub-deadlines means slow or unreachable pods no longer
+// starve the healthy ones, and partial results still drive a scale decision. Readiness is left
+// to the caller's ReplicaState accounting, so the "scrape the pods you are given" contract and
+// the downstream load math are unchanged.
 func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher MetricFetcher) (*types.MetricSnapshot, error) {
+	// Bound the whole collection below the reconcile deadline, then scrape pods concurrently,
+	// each under its own per-pod sub-deadline, so one slow pod cannot consume the budget the
+	// others need.
+	collectCtx, cancel := context.WithTimeout(ctx, metricCollectionTimeout)
+	defer cancel()
+
+	type podResult struct {
+		value float64
+		err   error
+	}
+	results := make([]podResult, len(spec.Pods))
+	sem := make(chan struct{}, maxConcurrentPodScrapes)
+	var wg sync.WaitGroup
+	for i := range spec.Pods {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Acquire a concurrency slot, but give up if the overall budget is already spent.
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-collectCtx.Done():
+				results[i] = podResult{err: collectCtx.Err()}
+				return
+			}
+			podCtx, podCancel := context.WithTimeout(collectCtx, perPodMetricTimeout)
+			defer podCancel()
+			value, err := fetcher.FetchPodMetrics(podCtx, spec.Pods[i], spec.MetricSource)
+			results[i] = podResult{value: value, err: err}
+		}(i)
+	}
+	wg.Wait()
+
 	var values []float64
 	var collectErrors []error
 	successCount := 0
-
-	for _, pod := range spec.Pods {
-		value, err := fetcher.FetchPodMetrics(ctx, pod, spec.MetricSource)
-		if err != nil {
-			collectErrors = append(collectErrors, fmt.Errorf("pod %s/%s: %w", pod.Namespace, pod.Name, err))
+	for i, r := range results {
+		if r.err != nil {
+			collectErrors = append(collectErrors, fmt.Errorf("pod %s/%s: %w", spec.Pods[i].Namespace, spec.Pods[i].Name, r.err))
 			continue
 		}
-		values = append(values, value)
+		values = append(values, r.value)
 		successCount++
 	}
 
-	// Determine overall error status
+	// Determine overall error status (unchanged semantics): only a total failure sets Error,
+	// which makes the aggregator treat the pass as a failed compute (no scaling). Partial
+	// success still scales.
 	var finalErr error
 	if len(collectErrors) > 0 {
 		if successCount == 0 {
