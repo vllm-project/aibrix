@@ -222,7 +222,7 @@ if [ "$PD_MODE" = true ]; then
 else
     # Default mode: single vLLM backend
     export ENDPOINTS_CONFIG="./configs/endpoints.yaml"
-    export ROUTING_ALGORITHM="${ROUTING_ALGORITHM:-least_request}"
+    export ROUTING_ALGORITHM="${ROUTING_ALGORITHM:-least-request}"
     echo -e "  ${CYAN}Config:${NC}    endpoints.yaml"
     echo -e "  ${CYAN}Backends:${NC}  vllm"
     echo -e "  ${CYAN}Routing:${NC}   ${ROUTING_ALGORITHM}"

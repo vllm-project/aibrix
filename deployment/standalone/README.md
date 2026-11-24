@@ -125,6 +125,8 @@ curl http://localhost/v1/chat/completions \
 
 See `.env.example` for all available options.
 
+Routing strategy names use hyphens, for example `least-request`, `load-balance`, and `prefix-cache`. If your `.env` was copied from an older `.env.example`, change `least_request` to `least-request`; the gateway rejects unknown strategy names with `400 incorrect routing strategy`.
+
 ## Services
 
 | Service | Port | Description |

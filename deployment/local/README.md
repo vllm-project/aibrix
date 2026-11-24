@@ -154,10 +154,10 @@ models:
 Set via environment variable before starting:
 
 ```bash
-ROUTING_ALGORITHM=round_robin ./run-local.sh
+ROUTING_ALGORITHM=least-request ./run-local.sh
 ```
 
-Available algorithms: `random`, `round_robin`, `least_request`, `prefix_cache_aware`, etc.
+Available algorithms: `random`, `least-request`, `load-balance`, `prefix-cache`, etc.
 
 ### Custom configs
 

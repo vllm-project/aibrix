@@ -226,8 +226,8 @@ services:
       # Redis connection
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      # Routing algorithm: random, least_request, prefix_cache_aware, pd (for P/D mode)
-      AIBRIX_ROUTING_ALGORITHM: ${ROUTING_ALGORITHM:-least_request}
+      # Routing algorithm: random, least-request, load-balance, prefix-cache (pd is set by --pd)
+      ROUTING_ALGORITHM: ${ROUTING_ALGORITHM:-least-request}
       # Prefix cache settings
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: tiktoken
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
