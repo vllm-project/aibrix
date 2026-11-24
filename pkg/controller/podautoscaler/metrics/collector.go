@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,15 +26,24 @@ import (
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
 
-const (
+// Collection bounds. These are package variables (not consts) so tests can shrink them to
+// exercise each deadline directly.
+var (
 	// perPodMetricTimeout bounds a single pod's metric scrape. Without it, one unreachable
-	// pod (a TCP blackhole, or connection-refused answered through the engine fetcher's
-	// retry backoff) can consume the entire reconcile budget before any healthy pod is scraped.
+	// pod (a TCP blackhole, or connection-refused answered through the engine fetcher's retry
+	// backoff) can consume the entire reconcile budget before any healthy pod is scraped.
+	//
+	// Note it sits below the engine fetcher's own 1s/2s/4s retry schedule, so a pod that is
+	// slow because it is overloaded (often the hottest pod) can be dropped here; podsCarryingLoad
+	// then spreads the mean of the faster pods over it, biasing the per-pod value low exactly
+	// when load is high. That is an accepted trade-off for not letting one slow pod stall scaling;
+	// the timed-out pods are logged so the bias is visible.
 	perPodMetricTimeout = 3 * time.Second
 	// metricCollectionTimeout bounds the whole concurrent collection. It is kept well below
 	// the reconcile deadline (DefaultReconcileTimeoutDuration, 10s) so that even a large batch
@@ -58,6 +68,16 @@ func CollectMetrics(ctx context.Context, spec types.CollectionSpec, factory Metr
 	}
 }
 
+// scrapeOnePod wraps fetcher.FetchPodMetrics with a per-pod sub-deadline so one slow pod cannot
+// consume the collection budget the others need. Pulled out so the deferred slot release lives at
+// function scope rather than inside a select case.
+func scrapeOnePod(ctx context.Context, sem chan struct{}, fetcher MetricFetcher, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	defer func() { <-sem }()
+	podCtx, cancel := context.WithTimeout(ctx, perPodMetricTimeout)
+	defer cancel()
+	return fetcher.FetchPodMetrics(podCtx, pod, source)
+}
+
 // collectFromPods handles pod-level metric collection. It scrapes the target's pods
 // concurrently, each under a per-pod sub-deadline, with the whole collection bounded by an
 // overall sub-deadline well below the reconcile budget.
@@ -70,13 +90,29 @@ func CollectMetrics(ctx context.Context, spec types.CollectionSpec, factory Metr
 // Scraping concurrently under tight sub-deadlines means slow or unreachable pods no longer
 // starve the healthy ones, and partial results still drive a scale decision. Readiness is left
 // to the caller's ReplicaState accounting, so the "scrape the pods you are given" contract and
-// the downstream load math are unchanged.
+// the downstream load math are unchanged -- readiness only decides scrape ORDER (see below).
 func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher MetricFetcher) (*types.MetricSnapshot, error) {
 	// Bound the whole collection below the reconcile deadline, then scrape pods concurrently,
 	// each under its own per-pod sub-deadline, so one slow pod cannot consume the budget the
 	// others need.
 	collectCtx, cancel := context.WithTimeout(ctx, metricCollectionTimeout)
 	defer cancel()
+
+	// Scrape Ready pods first. Every pod is still scraped (the contract is unchanged), but
+	// acquiring the concurrency slots in Ready-first order means that when unreachable pods
+	// crowd the fleet -- e.g. a large scale-up whose new pods refuse the metrics port but have
+	// an IP -- the healthy pods are not left waiting behind them for a slot (#3585's own case).
+	order := make([]int, 0, len(spec.Pods))
+	for i := range spec.Pods {
+		if utils.IsPodReady(&spec.Pods[i]) {
+			order = append(order, i)
+		}
+	}
+	for i := range spec.Pods {
+		if !utils.IsPodReady(&spec.Pods[i]) {
+			order = append(order, i)
+		}
+	}
 
 	type podResult struct {
 		value float64
@@ -85,36 +121,43 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	results := make([]podResult, len(spec.Pods))
 	sem := make(chan struct{}, maxConcurrentPodScrapes)
 	var wg sync.WaitGroup
-	for i := range spec.Pods {
+	for _, idx := range order {
+		// Acquire a slot in Ready-first order; stop launching once the overall budget is spent
+		// (the remaining pods are then recorded as timed out rather than scraped).
+		select {
+		case sem <- struct{}{}:
+		case <-collectCtx.Done():
+			results[idx] = podResult{err: collectCtx.Err()}
+			continue
+		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			// Acquire a concurrency slot, but give up if the overall budget is already spent.
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-collectCtx.Done():
-				results[i] = podResult{err: collectCtx.Err()}
-				return
-			}
-			podCtx, podCancel := context.WithTimeout(collectCtx, perPodMetricTimeout)
-			defer podCancel()
-			value, err := fetcher.FetchPodMetrics(podCtx, spec.Pods[i], spec.MetricSource)
+			value, err := scrapeOnePod(collectCtx, sem, fetcher, spec.Pods[i], spec.MetricSource)
 			results[i] = podResult{value: value, err: err}
-		}(i)
+		}(idx)
 	}
 	wg.Wait()
 
 	var values []float64
 	var collectErrors []error
+	var timedOutPods []string
 	successCount := 0
 	for i, r := range results {
 		if r.err != nil {
 			collectErrors = append(collectErrors, fmt.Errorf("pod %s/%s: %w", spec.Pods[i].Namespace, spec.Pods[i].Name, r.err))
+			if errors.Is(r.err, context.DeadlineExceeded) || errors.Is(r.err, context.Canceled) {
+				timedOutPods = append(timedOutPods, fmt.Sprintf("%s/%s", spec.Pods[i].Namespace, spec.Pods[i].Name))
+			}
 			continue
 		}
 		values = append(values, r.value)
 		successCount++
+	}
+	if len(timedOutPods) > 0 {
+		// Surface the dropped pods: a hot/overloaded pod cut at perPodMetricTimeout biases the
+		// per-pod value low (see its doc comment), so operators can correlate the two.
+		klog.V(4).InfoS("Pods timed out during metric collection", "pods", timedOutPods, "perPodTimeout", perPodMetricTimeout)
 	}
 
 	// Determine overall error status (unchanged semantics): only a total failure sets Error,
