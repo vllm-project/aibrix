@@ -603,6 +603,9 @@ func deletePodsForRollout(ctx context.Context, cli client.Client, recorder recor
 func outdatedPodsToDelete(outdated []*v1.Pod, deleteBudget int32) []*v1.Pod {
 	var toDelete []*v1.Pod
 	for _, pod := range outdated {
+		if pod == nil {
+			continue
+		}
 		if !podutil.IsPodDraining(pod) {
 			continue
 		}
@@ -612,12 +615,18 @@ func outdatedPodsToDelete(outdated []*v1.Pod, deleteBudget int32) []*v1.Pod {
 		}
 	}
 	for _, pod := range outdated {
+		if pod == nil {
+			continue
+		}
 		if podutil.IsPodDraining(pod) {
 			continue
 		}
+		// A not-ready outdated pod serves no traffic, so delete it regardless of
+		// the budget; spend the budget only on ready ones. Use continue, not break,
+		// so this does not depend on outdated being sorted not-ready before ready.
 		if podutil.IsPodReady(pod) {
 			if deleteBudget <= 0 {
-				break
+				continue
 			}
 			deleteBudget--
 		}
