@@ -34,7 +34,7 @@ The system uses a two-stage initialization:
 Requirements
 ------------
 
-- vLLM version 0.7.0 or later with KV cache events support
+- vLLM version 0.7.0 or later with KV cache events support, or SGLang 0.5.20 or later
 - AIBrix gateway-plugins built with ZMQ support (``-tags="zmq"``)
 - ZMQ library (libzmq3-dev) installed on gateway nodes
 - Remote tokenizer enabled (strict prerequisite)
@@ -108,6 +108,24 @@ Add corresponding ports:
      - name: kv-replay
        containerPort: 5558
        protocol: TCP
+
+SGLang Configuration
+~~~~~~~~~~~~~~~~~~~~
+
+SGLang takes the publisher settings as one JSON argument. Use the same ports, and set the page size to 16 or more:
+
+.. code-block:: yaml
+
+   args:
+     - --kv-events-config
+     - '{"publisher":"zmq","endpoint":"tcp://*:5557","replay_endpoint":"tcp://*:5558"}'
+     - --page-size=16
+
+SGLang publishes one KV block per page, and the gateway indexes and matches prefixes in blocks of the size the events carry. With a page size of 1, SGLang's default on CUDA, every token becomes its own block in the index. Pods that serve the same model should use the same block or page size.
+
+With ``--dp-size`` or ``--attn-dp-size`` above 1, rank ``r`` binds the event port plus ``r`` and the replay port plus ``r``. Set the replay port to 5557 plus the number of ranks so that the two ranges do not overlap. The gateway subscribes to port 5557 and requests replays from port 5558, so with more than one rank it receives only rank 0's events, without replay.
+
+Without ``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``, the gateway calls ``/tokenize`` on port 8000 of a pod it treats as vLLM, such as one labeled ``model.aibrix.ai/engine: vllm`` or with container port 8000, and a model with no such pod gets the gateway's local tokenizer, whose tokens never match SGLang's blocks. SGLang's ``/tokenize`` handles the gateway's tokenize requests, so serve SGLang on port 8000 and declare it as a container port, or set that variable to the SGLang Service, for example ``http://sglang-service:30000``. From SGLang 0.5.23, chat requests match SGLang's blocks only when it uses a Jinja chat template for the model.
 
 Deployment
 ----------

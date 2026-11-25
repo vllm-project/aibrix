@@ -819,9 +819,9 @@ func tierBit(medium string, groupIdx int64) uint64 {
 	switch medium {
 	case "", MediumGPU:
 		tier = tierGPU
-	case MediumCPU:
+	case MediumCPU, "CPU_PINNED": // SGLang's name for host memory
 		tier = tierCPU
-	case MediumStorage:
+	case MediumStorage, "DISK": // SGLang's name for its disk tier
 		tier = tierStorage
 	}
 	var group int64
