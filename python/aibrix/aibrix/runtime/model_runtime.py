@@ -2515,9 +2515,10 @@ def listening_ports() -> Optional[List[int]]:
     (IPV6_V6ONLY) or to one bound to a specific IPv6 address, both of which
     coexist with that bind. /proc cannot tell these apart, so such ports are
     classified from the kernel's socket diagnostics, a read-only query that
-    binds nothing. When that classification is unavailable the port stays
-    listed. A missing/unreadable proc table means unknown, never proof of
-    availability. The locked pre-launch bind check remains authoritative.
+    binds nothing. When that classification is unavailable those ports are
+    left out as unknown, so an unreadable diagnostic can never hold a Pod
+    back. A missing/unreadable proc table means the whole snapshot is unknown.
+    The locked pre-launch bind check remains authoritative.
     """
     ipv4, ipv6 = set(), set()
     try:
@@ -2539,7 +2540,9 @@ def listening_ports() -> Optional[List[int]]:
     if ipv6_only_candidates:
         sharing = _ipv6_listeners_sharing_ipv4_port()
         for port in ipv6_only_candidates:
-            if sharing is None or port not in sharing or sharing[port]:
+            # Unclassified means unknown, not blocked: the runtime's own
+            # pre-launch bind check decides, and its conflict answer is handled.
+            if sharing is not None and sharing.get(port):
                 blocking.add(port)
     return sorted(blocking)
 
@@ -2562,8 +2565,7 @@ def _ipv6_listeners_sharing_ipv4_port() -> Optional[Dict[int, bool]]:
     A listener blocks the engine's ``0.0.0.0`` bind when it is a dual-stack
     wildcard (``::`` without IPV6_V6ONLY) or is bound to an IPv4-mapped
     address. An IPv6-only wildcard or a specific IPv6 address does not.
-    Returns None when the diagnostics cannot be read, so callers keep the
-    port listed instead of guessing.
+    Returns None when the diagnostics cannot be read.
     """
     try:
         with socket.socket(
@@ -2592,6 +2594,8 @@ def _ipv6_listeners_sharing_ipv4_port() -> Optional[Dict[int, bool]]:
                     if kind == _NLMSG_ERROR:
                         return None
                     body = data[offset + 16 : offset + length]
+                    if len(body) < 72:
+                        return None
                     port = struct.unpack_from("!H", body, 4)[0]
                     source = body[8:24].hex()
                     v6only = None

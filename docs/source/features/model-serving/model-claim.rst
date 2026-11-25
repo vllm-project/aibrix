@@ -453,7 +453,8 @@ other process, such as a sidecar, before any GPU memory is divided. A
 listener found only on IPv6 is classified from the kernel's socket
 diagnostics, without binding anything: an IPv6-only socket or one bound to a
 specific IPv6 address does not block a Pod, and a dual-stack wildcard does.
-If the diagnostics cannot be read, the port stays listed. An
+If the diagnostics cannot be read, such a port is left out and the
+runtime's own pre-launch check decides. An
 older runtime does not report its listeners, so the controller then falls
 back to the ports of the engines it knows, and to the runtime's own check:
 before it launches the engine, the runtime checks the port under its

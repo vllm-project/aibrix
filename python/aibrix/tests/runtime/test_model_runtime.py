@@ -3549,7 +3549,7 @@ def test_snapshot_ignores_ipv6_listener_on_a_specific_address():
         assert listener.getsockname()[1] not in listening_ports()
 
 
-def test_snapshot_keeps_ipv6_port_when_classification_is_unavailable(monkeypatch):
+def test_snapshot_leaves_out_ipv6_port_when_classification_is_unavailable(monkeypatch):
     import socket
 
     import aibrix.runtime.model_runtime as model_runtime
@@ -3561,7 +3561,50 @@ def test_snapshot_keeps_ipv6_port_when_classification_is_unavailable(monkeypatch
         listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         listener.bind(("::", 0))
         listener.listen()
+        port = listener.getsockname()[1]
+        assert port not in model_runtime.listening_ports()
+
+
+def test_snapshot_keeps_ipv4_listener_when_classification_is_unavailable(monkeypatch):
+    import socket
+
+    import aibrix.runtime.model_runtime as model_runtime
+
+    monkeypatch.setattr(
+        model_runtime, "_ipv6_listeners_sharing_ipv4_port", lambda: None
+    )
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.3", 0))
+        listener.listen()
         assert listener.getsockname()[1] in model_runtime.listening_ports()
+
+
+def test_listener_classification_rejects_truncated_reply(monkeypatch):
+    import struct
+
+    import aibrix.runtime.model_runtime as model_runtime
+
+    class Reply:
+        def __init__(self, *args, **kwargs):
+            self.chunks = [struct.pack("=IHHII", 24, 20, 0, 1, 0) + b"\0" * 8]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def settimeout(self, value):
+            pass
+
+        def send(self, data):
+            pass
+
+        def recv(self, size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    monkeypatch.setattr(model_runtime.socket, "socket", Reply)
+    assert model_runtime._ipv6_listeners_sharing_ipv4_port() is None
 
 
 def test_snapshot_does_not_bind_while_classifying_listeners(monkeypatch):
