@@ -436,12 +436,7 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 
 	// Create a shared HTTP client with connection pooling. otelhttp creates the
 	// prefill client span and injects its trace context into the outbound request.
-	transport := &http.Transport{
-		// TODO: tune settings later
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	}
+	transport := pd.NewHTTPTransport()
 	// Deliberately no client-level Timeout: every call carries its own
 	// deadline, which is AIBRIX_PREFILL_REQUEST_TIMEOUT unless the request's
 	// profile overrides it (see DefaultExecutor.effectiveRequestTimeout), and a

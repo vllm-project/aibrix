@@ -51,6 +51,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
@@ -1195,11 +1196,7 @@ func countRoutablePodsFromList(pods types.PodList) int {
 }
 
 func newEncodeExecutor() *encode.Executor {
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	}
+	transport := pd.NewHTTPTransport()
 	// No client timeout: every encode call carries its own deadline.
 	return encode.NewExecutor(&http.Client{Transport: otelhttp.NewTransport(transport)})
 }

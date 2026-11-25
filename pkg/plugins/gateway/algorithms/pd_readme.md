@@ -830,7 +830,7 @@ NewPDRouter()
   │     load_balancing  → pd.LoadBalancingDecodePolicy
   │     (other)         → log warning, same as load_balancing
   ├─ create HTTP client with connection pool
-  │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
+  │     MaxIdleConns=1024, MaxIdleConnsPerHost=128, IdleConnTimeout=90s
   ├─ TRT handler from AIBRIX_TRT_SCHEDULE_STYLE (immutable, router-scoped)
   │     owns a lazily populated /server_info cache for generation_first
   ├─ NewPrefillRequestTracker()

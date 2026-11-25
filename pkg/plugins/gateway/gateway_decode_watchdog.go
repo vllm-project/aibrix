@@ -98,11 +98,7 @@ const (
 // its own AIBRIX_DECODE_ABORT_TIMEOUT deadline on the request context, and a
 // client-level Timeout would silently cap a longer per-profile value.
 var decodeAbortClient = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	},
+	Transport: pd.NewHTTPTransport(),
 }
 
 // decodeFirstMessageTimeout is the watchdog's budget for this particular
