@@ -317,9 +317,12 @@ The sample claims:
        override the runtime container's defaults for this engine only and are
        reused after an engine restart or reschedule.
 
-       The runtime sets ``ENABLE_KVCACHED=true``, ``KVCACHED_AUTOPATCH=1`` and
-       a per-engine ``KVCACHED_IPC_NAME`` after applying model overrides. These
-       runtime values take precedence over any values in the claim.
+       Use this field after updating the ModelClaim CRD and upgrading the runtime
+       in the warm pool. Names must be non-empty and cannot contain ``=`` or NUL.
+       Values cannot contain NUL. This field accepts up to 24 entries.
+
+       Kubernetes rejects the runtime-managed ``ENABLE_KVCACHED``,
+       ``KVCACHED_AUTOPATCH`` and ``KVCACHED_IPC_NAME`` keys.
 
        Kubernetes rejects ``CUDA_VISIBLE_DEVICES`` and
        ``NVIDIA_VISIBLE_DEVICES`` in this field to preserve the pool's device

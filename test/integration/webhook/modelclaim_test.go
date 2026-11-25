@@ -98,20 +98,30 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		ginkgo.Entry("CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"),
 		ginkgo.Entry("NVIDIA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"),
 		ginkgo.Entry("VLLM_SERVER_DEV_MODE", "VLLM_SERVER_DEV_MODE"),
+		ginkgo.Entry("ENABLE_KVCACHED", "ENABLE_KVCACHED"),
+		ginkgo.Entry("KVCACHED_AUTOPATCH", "KVCACHED_AUTOPATCH"),
+		ginkgo.Entry("KVCACHED_IPC_NAME", "KVCACHED_IPC_NAME"),
 	)
 
-	ginkgo.It("accepts kvcached environment keys that the runtime overrides", func() {
-		claim := newClaim("engine-env")
-		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{
-			"ENABLE_KVCACHED": "false", "KVCACHED_AUTOPATCH": "0", "KVCACHED_IPC_NAME": "override",
-		}}
-		gomega.Expect(k8sClient.Create(ctx, claim, client.DryRunAll)).To(gomega.Succeed())
-	})
+	ginkgo.DescribeTable("rejects malformed engine environment entries", func(key, value string) {
+		claim := newClaim("malformed-engine-env")
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{key: value}}
+		err := k8sClient.Create(ctx, claim, client.DryRunAll)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("spec.engineConfig.env"))
+	},
+		ginkgo.Entry("empty key", "", "value"),
+		ginkgo.Entry("equals sign in key", "CUSTOM=KEY", "value"),
+		ginkgo.Entry("NUL in key", "CUSTOM\x00KEY", "value"),
+		ginkgo.Entry("NUL in value", "CUSTOM_KEY", "val\x00ue"),
+	)
 
 	ginkgo.It("preserves defaults, perGPU updates and CEL immutability", func() {
 		claim := newClaim("valid")
 		claim.Spec.ArtifactURL = "/models/weights"
-		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{"OMP_NUM_THREADS": "1"}}
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{
+			"OMP_NUM_THREADS": "1", "custom.setting": "",
+		}}
 		for _, key := range []string{
 			"CUSTOM_A", "CUSTOM_B", "CUSTOM_C", "CUSTOM_D",
 			"CUSTOM_E", "CUSTOM_F", "CUSTOM_G", "CUSTOM_H",

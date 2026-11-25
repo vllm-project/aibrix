@@ -1122,9 +1122,6 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
                 "env": {
                     "OMP_NUM_THREADS": "1",
                     "MODEL_SPECIFIC_SETTING": "literal",
-                    "ENABLE_KVCACHED": "false",
-                    "KVCACHED_AUTOPATCH": "0",
-                    "KVCACHED_IPC_NAME": "other",
                 }
             },
         ),
@@ -1171,6 +1168,9 @@ def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_
     [
         {"CUDA_VISIBLE_DEVICES": "0"},
         {"VLLM_SERVER_DEV_MODE": "0"},
+        {"ENABLE_KVCACHED": "false"},
+        {"KVCACHED_AUTOPATCH": "0"},
+        {"KVCACHED_IPC_NAME": "other"},
         {"INVALID=NAME": "value"},
         {"OMP_NUM_THREADS": "1\0"},
     ],

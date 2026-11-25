@@ -234,6 +234,9 @@ _RESERVED_ENGINE_ENV_KEYS = frozenset(
         "CUDA_VISIBLE_DEVICES",
         "NVIDIA_VISIBLE_DEVICES",
         "VLLM_SERVER_DEV_MODE",
+        "ENABLE_KVCACHED",
+        "KVCACHED_AUTOPATCH",
+        "KVCACHED_IPC_NAME",
     }
 )
 
