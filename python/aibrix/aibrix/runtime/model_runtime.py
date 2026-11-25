@@ -2509,12 +2509,17 @@ class ModelRuntime:
 def listening_ports() -> Optional[List[int]]:
     """Advisory listeners in this Linux network namespace, including sidecars.
 
-    A missing/unreadable proc table means unknown, never proof of availability.
-    The locked pre-launch bind check remains authoritative.
+    The engine binds the IPv4 wildcard. An IPv4 listener therefore blocks it,
+    but a port seen only in the IPv6 table may belong to an IPv6-only socket
+    (IPV6_V6ONLY) that coexists with that bind. /proc cannot tell the two
+    apart, so those ports are confirmed with the same wildcard bind the launcher
+    uses and dropped when it succeeds. A missing/unreadable proc table means
+    unknown, never proof of availability. The locked pre-launch bind check
+    remains authoritative.
     """
-    ports = set()
+    ipv4, ipv6 = set(), set()
     try:
-        for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        for table, ports in (("/proc/net/tcp", ipv4), ("/proc/net/tcp6", ipv6)):
             try:
                 with open(table) as stream:
                     for line in stream.readlines()[1:]:
@@ -2527,7 +2532,26 @@ def listening_ports() -> Optional[List[int]]:
                 raise
     except (OSError, ValueError, IndexError):
         return None
-    return sorted(ports)
+    blocking = set(ipv4)
+    for port in ipv6 - ipv4:
+        if _ipv4_wildcard_bind_blocked(port):
+            blocking.add(port)
+    return sorted(blocking)
+
+
+def _ipv4_wildcard_bind_blocked(port: int) -> bool:
+    """True unless the engine's IPv4 wildcard bind would succeed on ``port``.
+
+    Any outcome other than a clean bind keeps the port in the snapshot, so an
+    unexpected error never marks a taken port as free.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))
+        return False
+    except OSError:
+        return True
 
 
 # --------------------------------------------------------------------------- #

@@ -63,12 +63,18 @@ func (h *portConflictHistory) note(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod
 	entry.pods[pod.Name] = recentPodPortConflict{until: now.Add(hold), uid: pod.UID, ip: pod.Status.PodIP}
 	h.entries[key] = entry
 }
+
+// conflictRetention keeps an expired entry long enough for a delayed reconcile
+// to still know which pods were already tried. It only bounds memory: an
+// expired entry is skipped solely while the pool has pods not yet tried.
+const conflictRetention = 10 * time.Minute
+
 func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1.Pod, now time.Time) ([]corev1.Pod, []string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for key, entry := range h.entries {
 		for pod, conflict := range entry.pods {
-			if !now.Before(conflict.until) {
+			if !now.Before(conflict.until.Add(conflictRetention)) {
 				delete(entry.pods, pod)
 			}
 		}
@@ -82,14 +88,44 @@ func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1
 		delete(h.entries, key)
 		return pods, nil
 	}
+	// A pod that refused and whose entry has lapsed is retried only after the
+	// pods never tried have had their turn. Otherwise a reconcile that is later
+	// than the hold would clear the history and restart the rotation on the
+	// same refusing pods, starving the rest of the pool.
+	const (
+		untried = iota
+		live
+		lapsed
+	)
+	state := make([]int, len(pods))
+	anyUntried := false
+	for i, pod := range pods {
+		conflict, found := entry.pods[pod.Name]
+		switch {
+		case !found || conflict.uid != pod.UID || conflict.ip != pod.Status.PodIP:
+			state[i] = untried
+			anyUntried = true
+		case now.Before(conflict.until):
+			state[i] = live
+		default:
+			state[i] = lapsed
+		}
+	}
 	usable := make([]corev1.Pod, 0, len(pods))
 	var conflicts []string
-	for _, pod := range pods {
-		if conflict, found := entry.pods[pod.Name]; found && conflict.uid == pod.UID && conflict.ip == pod.Status.PodIP && now.Before(conflict.until) {
+	for i, pod := range pods {
+		switch {
+		case state[i] == live, state[i] == lapsed && anyUntried:
 			conflicts = append(conflicts, pod.Name)
-		} else {
+		default:
+			if state[i] == lapsed {
+				delete(entry.pods, pod.Name)
+			}
 			usable = append(usable, pod)
 		}
+	}
+	if len(entry.pods) == 0 {
+		delete(h.entries, key)
 	}
 	return usable, conflicts
 }

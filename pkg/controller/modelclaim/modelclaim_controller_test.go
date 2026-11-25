@@ -5013,6 +5013,52 @@ func TestHiddenPortConflictBatchMakesProgressToLaterPod(t *testing.T) {
 	assert.Len(t, rt.activateCalls, 5)
 }
 
+// Reconciles can run later than the history hold when the queue is busy. The
+// pods that refused must not be asked again before the untried one.
+func TestHiddenPortConflictsReachLaterPodWhenReconcileIsLate(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	objs := []client.Object{pm}
+	for i := 0; i < 3; i++ {
+		p := warmPod(fmt.Sprintf("warm-%d", i), "b300-pool-a", true, corev1.PodRunning)
+		p.Status.PodIP = fmt.Sprintf("10.0.0.%d", 10+i)
+		objs = append(objs, p)
+	}
+	r, rt := newReconciler(t, objs...)
+	rt.portConflictOn = map[string]bool{"10.0.0.10": true, "10.0.0.11": true}
+	now := time.Now()
+	r.Now = func() time.Time { return now }
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	for pass := 1; pass <= 3; pass++ {
+		reconcileOnce(t, r, pm.Name)
+		now = now.Add(90 * time.Second)
+	}
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+}
+
+func TestLapsedPortConflictIsRetriedOnceEveryPodHasBeenTried(t *testing.T) {
+	pm := sampleModelClaim()
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	a := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+	b := warmPod("warm-b", "b300-pool-a", true, corev1.PodRunning)
+	h := &portConflictHistory{entries: map[types.NamespacedName]recentPortConflicts{}}
+	now := time.Now()
+	h.note(pm, a, now, 2)
+	late := now.Add(5 * time.Minute)
+	usable, conflicts := h.filter(pm, []corev1.Pod{*a, *b}, late)
+	require.Len(t, usable, 1)
+	assert.Equal(t, "warm-b", usable[0].Name)
+	assert.Equal(t, []string{"warm-a"}, conflicts)
+	h.note(pm, b, late, 2)
+	usable, _ = h.filter(pm, []corev1.Pod{*a, *b}, late.Add(30*time.Second))
+	assert.Len(t, usable, 1)
+	assert.Equal(t, "warm-a", usable[0].Name)
+}
+
 func TestSnapshotListenerAvoidsActivationAndKVChanges(t *testing.T) {
 	pm := claimWithCost(500, 100)
 	port := int32(18081)

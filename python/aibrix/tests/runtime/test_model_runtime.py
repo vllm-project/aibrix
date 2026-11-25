@@ -3511,6 +3511,33 @@ def test_snapshot_lists_external_listener():
         assert listener.getsockname()[1] in listening_ports()
 
 
+def test_snapshot_ignores_ipv6_only_listener_the_engine_can_share():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        listener.bind(("::", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as engine:
+            engine.bind(("0.0.0.0", port))  # coexists, so it is not a conflict
+        assert port not in listening_ports()
+
+
+def test_snapshot_keeps_dual_stack_wildcard_listener():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        listener.bind(("::", 0))
+        listener.listen()
+        assert listener.getsockname()[1] in listening_ports()
+
+
 def test_listener_observation_unavailable_is_unknown(monkeypatch):
     import builtins
 
