@@ -5059,6 +5059,36 @@ func TestLapsedPortConflictIsRetriedOnceEveryPodHasBeenTried(t *testing.T) {
 	assert.Equal(t, "warm-a", usable[0].Name)
 }
 
+// A pod that failed for another reason has been tried too. The pods that
+// refused the port must not stay out until the history is dropped because it
+// never got an entry.
+func TestPortConflictHistoryCountsPodThatFailedForAnotherReason(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	objs := []client.Object{pm}
+	for i := 0; i < 3; i++ {
+		p := warmPod(fmt.Sprintf("warm-%d", i), "b300-pool-a", true, corev1.PodRunning)
+		p.Status.PodIP = fmt.Sprintf("10.0.0.%d", 10+i)
+		objs = append(objs, p)
+	}
+	r, rt := newReconciler(t, objs...)
+	rt.portConflictOn = map[string]bool{"10.0.0.10": true, "10.0.0.11": true}
+	rt.failActivateOn = map[string]bool{"10.0.0.12": true}
+	now := time.Now()
+	r.Now = func() time.Time { return now }
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	for pass := 0; pass < 2; pass++ {
+		reconcileOnce(t, r, pm.Name)
+		now = now.Add(90 * time.Second)
+	}
+	// The port is free on warm-0 now. warm-2 keeps failing for its own reason.
+	rt.portConflictOn = nil
+	attempts := len(rt.activatedOn)
+	reconcileOnce(t, r, pm.Name)
+	assert.Contains(t, rt.activatedOn[attempts:], "10.0.0.10")
+}
+
 func anyPod(corev1.Pod) bool { return true }
 
 // A pod that has never been tried but has no room for the model cannot take

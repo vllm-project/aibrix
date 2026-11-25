@@ -465,7 +465,11 @@ the placement record rather than risk a second launch elsewhere. One pass
 tries at most two Pods that fail this late check. The claim briefly
 remembers each Pod that refused it and skips it until the memory expires, and an expired entry is skipped
 only while Pods not yet tried, and able to take the model, remain, so a delayed reconcile cannot restart
-the rotation on the same Pods and a pool-wide unseen conflict cannot starve a healthy Pod. The memory
+the rotation on the same Pods and a pool-wide
+unseen conflict cannot starve a healthy Pod. A Pod that failed to start for
+another reason also counts as tried. The memory is bounded: an entry is
+forgotten about ten minutes after it expires, so a reconcile later than that
+starts the rotation again. The memory
 also resets when the claim is changed or recreated. The
 ``Scheduled`` condition reads ``False`` with reason ``PortInUse`` when
 that limit ends a pass, or when known listeners and recent refusals leave

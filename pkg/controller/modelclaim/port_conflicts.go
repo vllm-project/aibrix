@@ -39,9 +39,12 @@ type recentPortConflicts struct {
 }
 
 type recentPodPortConflict struct {
-	until time.Time
-	uid   types.UID
-	ip    string
+	// attemptOnly marks a pod that was asked and failed for another reason. It
+	// has had its turn, but never refused the port, so it is not held back.
+	attemptOnly bool
+	until       time.Time
+	uid         types.UID
+	ip          string
 }
 
 func (r *ModelClaimReconciler) portConflictHistory() *portConflictHistory {
@@ -68,6 +71,26 @@ func (h *portConflictHistory) note(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod
 // to still know which pods were already tried. It only bounds memory: an
 // expired entry is skipped solely while the pool has pods not yet tried.
 const conflictRetention = 10 * time.Minute
+
+// noteAttempt records that a pod was asked and failed for a reason other than
+// the port. It counts as tried for the rotation and is never skipped for it.
+func (h *portConflictHistory) noteAttempt(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod, now time.Time) {
+	if pm.Spec.ServingPort == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	key := types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name}
+	entry := h.entries[key]
+	if entry.uid != pm.UID || entry.generation != pm.Generation || entry.pods == nil {
+		entry = recentPortConflicts{uid: pm.UID, generation: pm.Generation, pods: map[string]recentPodPortConflict{}}
+	}
+	if existing, found := entry.pods[pod.Name]; found && !existing.attemptOnly && existing.uid == pod.UID && existing.ip == pod.Status.PodIP {
+		return
+	}
+	entry.pods[pod.Name] = recentPodPortConflict{attemptOnly: true, until: now, uid: pod.UID, ip: pod.Status.PodIP}
+	h.entries[key] = entry
+}
 
 // filter drops the pods that refused the claim's port recently. progress says
 // whether an untried pod could really be attempted this pass (it has room and
@@ -101,6 +124,7 @@ func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1
 		untried = iota
 		live
 		lapsed
+		tried
 	)
 	state := make([]int, len(pods))
 	anyUntried := false
@@ -112,6 +136,8 @@ func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1
 			if progress != nil && progress(pod) {
 				anyUntried = true
 			}
+		case conflict.attemptOnly:
+			state[i] = tried
 		case now.Before(conflict.until):
 			state[i] = live
 		default:

@@ -937,6 +937,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			if err := r.releaseProvisionalPlacement(ctx, pm, slot, replaced); err != nil {
 				return 0, fmt.Errorf("take back %s on %s: %w", servedModelName(pm), pod.Name, err)
 			}
+			r.portConflictHistory().noteAttempt(pm, pod, r.now())
 			refusals = append(refusals, podRefusal{
 				pod:       pod.Name,
 				roomBytes: ledgers[pod.Name].maximumRoomBytes(),
@@ -998,6 +999,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// A replacement known not to have started puts the failed instance
 			// back, so the claim still reads as failed, and its pod stays out of
 			// the next pass's ranking.
+			r.portConflictHistory().noteAttempt(pm, pod, r.now())
 			r.retainActivationAttempt(pm, pod, slot, replaced, aerr)
 			if replaced != nil {
 				return 0, fmt.Errorf("activate replacement on pod %s: %w", pod.Name, aerr)
