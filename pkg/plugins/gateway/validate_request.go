@@ -189,10 +189,10 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 		}
 		return s, nil
 	}
-	// Array of input items: each item may carry a "content" field (string or array
-	// of content parts). Items without content (e.g. tool/function outputs) simply
-	// contribute nothing to the routing key.
-	var items []contentItem
+	// Array of input items: message items carry "content" (string or array of
+	// content parts). Function-call items carry no content but are rendered into the
+	// prompt, so they are mapped onto the chat shapes parseChatMessages already writes.
+	var items []responsesInputItem
 	if err := sonic.Unmarshal(input, &items); err != nil {
 		klog.ErrorS(nil, "error to unmarshal responses input array", "requestID", requestID, "reason", jsonParseReason(err))
 		return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
@@ -201,7 +201,44 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 		klog.ErrorS(nil, "empty input array in the request body", "requestID", requestID)
 		return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
-	return parseChatMessages(requestID, items)
+	msgs := make([]contentItem, len(items))
+	for i, item := range items {
+		msgs[i].Content = item.Content
+		switch item.Type {
+		case "function_call":
+			msgs[i].FunctionCall = rawFunctionCall(item.Name, item.Arguments)
+		case "function_call_output":
+			msgs[i].Content = item.Output
+		}
+	}
+	return parseChatMessages(requestID, msgs)
+}
+
+// responsesInputItem holds the fields of a Responses API input item that reach the
+// prompt: "content" of a message item, "name" and "arguments" of a function_call
+// item, and "output" (a string or array of content parts) of a function_call_output.
+type responsesInputItem struct {
+	Type      string          `json:"type"`
+	Content   json.RawMessage `json:"content"`
+	Name      json.RawMessage `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+	Output    json.RawMessage `json:"output"`
+}
+
+// rawFunctionCall renders a Responses function_call item in the chat function_call shape.
+func rawFunctionCall(name, arguments json.RawMessage) json.RawMessage {
+	if len(name) == 0 {
+		name = json.RawMessage(jsonNull)
+	}
+	if len(arguments) == 0 {
+		arguments = json.RawMessage(jsonNull)
+	}
+	call := make([]byte, 0, len(name)+len(arguments)+len(`{"name":,"arguments":}`))
+	call = append(call, `{"name":`...)
+	call = append(call, name...)
+	call = append(call, `,"arguments":`...)
+	call = append(call, arguments...)
+	return append(call, '}')
 }
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.

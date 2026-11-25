@@ -341,3 +341,49 @@ func TestCanonicalToolsText_InvalidFallsBackToRaw(t *testing.T) {
 
 	assert.Equal(t, `[{"type":`, canonicalToolsText("test-request-id", json.RawMessage(` [{"type": `)))
 }
+
+func TestResponsesPrefixText_FunctionCallItemsDiffer(t *testing.T) {
+	setIncludeTools(t, true)
+
+	// Two agent loops with the same opening turn whose tool calls and tool outputs
+	// differ. The engine renders both items into the prompt ahead of the next turn.
+	body := func(args, output string) string {
+		return `{"model":"m","instructions":"Be brief.","tools":[{"type":"function","name":"lookup"}],"input":[` +
+			`{"role":"user","content":"find the order"},` +
+			`{"type":"function_call","call_id":"c1","name":"lookup","arguments":` + strconv.Quote(args) + `},` +
+			`{"type":"function_call_output","call_id":"c1","output":` + strconv.Quote(output) + `},` +
+			`{"role":"user","content":"and then?"}]}`
+	}
+	_, messageA, prefixA, _, errA := validateRequestBody("test-request-id", PathResponses, []byte(body(`{"id":1}`, "shipped")), utils.User{})
+	_, messageB, prefixB, _, errB := validateRequestBody("test-request-id", PathResponses, []byte(body(`{"id":2}`, "cancelled")), utils.User{})
+	require.Nil(t, errA)
+	require.Nil(t, errB)
+	assert.NotEqual(t, messageA, messageB)
+	assert.NotEqual(t, prefixA, prefixB)
+
+	// Each item matters on its own: a different call with the same output, and a
+	// different output of the same call, give different routing text.
+	_, _, prefixArgs, _, errArgs := validateRequestBody("test-request-id", PathResponses, []byte(body(`{"id":2}`, "shipped")), utils.User{})
+	_, _, prefixOut, _, errOut := validateRequestBody("test-request-id", PathResponses, []byte(body(`{"id":1}`, "cancelled")), utils.User{})
+	require.Nil(t, errArgs)
+	require.Nil(t, errOut)
+	assert.NotEqual(t, prefixA, prefixArgs)
+	assert.NotEqual(t, prefixA, prefixOut)
+	assert.Contains(t, prefixA, `{"name":"lookup","arguments":"{\"id\":1}"} shipped`)
+
+	// The next turn of the same loop still extends the previous turn's prefix.
+	next := strings.TrimSuffix(body(`{"id":1}`, "shipped"), "]}") + `,{"role":"user","content":"thanks"}]}`
+	_, _, prefixNext, _, errNext := validateRequestBody("test-request-id", PathResponses, []byte(next), utils.User{})
+	require.Nil(t, errNext)
+	assert.True(t, strings.HasPrefix(prefixNext, prefixA))
+
+	tok := tokenizer.NewCharacterTokenizer()
+	tokensA, err := tok.TokenizeInputText(prefixA)
+	require.NoError(t, err)
+	tokensB, err := tok.TokenizeInputText(prefixB)
+	require.NoError(t, err)
+	indexer := prefixcacheindexer.NewPrefixHashTable()
+	indexer.AddPrefix(indexer.GetPrefixHashes(tokensA), "m", "pod-a")
+	matched, _ := indexer.MatchPrefix(tokensB, "m", map[string]struct{}{"pod-a": {}})
+	assert.Less(t, matched["pod-a"], 100)
+}
