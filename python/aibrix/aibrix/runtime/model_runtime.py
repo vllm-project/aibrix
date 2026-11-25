@@ -41,7 +41,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple, overload
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, overload
 
 from aibrix.runtime.engine_registry import EngineRegistry
 
@@ -2520,7 +2520,8 @@ def listening_ports() -> Optional[List[int]]:
     back. A missing/unreadable proc table means the whole snapshot is unknown.
     The locked pre-launch bind check remains authoritative.
     """
-    ipv4, ipv6 = set(), set()
+    ipv4: Set[int] = set()
+    ipv6: Set[int] = set()
     try:
         for table, ports in (("/proc/net/tcp", ipv4), ("/proc/net/tcp6", ipv6)):
             try:
