@@ -55,7 +55,7 @@ func setupRealClient(t *testing.T) client.Client {
 
 	testEnv := &envtest.Environment{
 		BinaryAssetsDirectory: filepath.Join("..", "..", "..", "..", "bin", "k8s",
-			fmt.Sprintf("1.29.0-%s-%s", goruntime.GOOS, goruntime.GOARCH)),
+			fmt.Sprintf("1.31.0-%s-%s", goruntime.GOOS, goruntime.GOARCH)),
 	}
 	cfg, err := testEnv.Start()
 	require.NoError(t, err, "failed to start envtest")
