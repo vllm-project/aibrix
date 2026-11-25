@@ -5049,14 +5049,62 @@ func TestLapsedPortConflictIsRetriedOnceEveryPodHasBeenTried(t *testing.T) {
 	now := time.Now()
 	h.note(pm, a, now, 2)
 	late := now.Add(5 * time.Minute)
-	usable, conflicts := h.filter(pm, []corev1.Pod{*a, *b}, late)
+	usable, conflicts := h.filter(pm, []corev1.Pod{*a, *b}, late, anyPod)
 	require.Len(t, usable, 1)
 	assert.Equal(t, "warm-b", usable[0].Name)
 	assert.Equal(t, []string{"warm-a"}, conflicts)
 	h.note(pm, b, late, 2)
-	usable, _ = h.filter(pm, []corev1.Pod{*a, *b}, late.Add(30*time.Second))
+	usable, _ = h.filter(pm, []corev1.Pod{*a, *b}, late.Add(30*time.Second), anyPod)
 	assert.Len(t, usable, 1)
 	assert.Equal(t, "warm-a", usable[0].Name)
+}
+
+func anyPod(corev1.Pod) bool { return true }
+
+// A pod that has never been tried but has no room for the model cannot take
+// its turn. The pods that refused must not wait on it, or a port released on
+// one of them would go unused until the history is dropped.
+func TestPortConflictHistoryDoesNotWaitOnPodThatCannotBeTried(t *testing.T) {
+	pm := claimWithCost(500, 100)
+	pm.UID = types.UID("claim-uid")
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	a, aSnapshot := sizedWarmPod("warm-a", "10.0.0.1", 1000)
+	b, bSnapshot := sizedWarmPod("warm-b", "10.0.0.2", 1000)
+	c, cSnapshot := sizedWarmPod("warm-c", "10.0.0.3", 100)
+	r, rt := newReconciler(t, pm, a, b, c)
+	rt.snapshots = map[string]*RuntimeSnapshot{
+		a.Status.PodIP: aSnapshot, b.Status.PodIP: bSnapshot, c.Status.PodIP: cSnapshot,
+	}
+	rt.portConflictOn = map[string]bool{a.Status.PodIP: true, b.Status.PodIP: true}
+	now := time.Now()
+	r.Now = func() time.Time { return now }
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	reconcileOnce(t, r, pm.Name)
+	require.Empty(t, getModel(t, r, pm.Name).Status.Instances)
+	// The port is released on warm-a. Past the hold, warm-a is asked again
+	// although warm-c was never tried, since warm-c could not take the model.
+	rt.portConflictOn = map[string]bool{b.Status.PodIP: true}
+	now = now.Add(3 * time.Minute)
+	reconcileOnce(t, r, pm.Name)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-a", got.Status.Instances[0].Pod)
+}
+
+func TestLapsedConflictIsNotHeldForPodThatCannotBeTried(t *testing.T) {
+	pm := sampleModelClaim()
+	port := int32(18081)
+	pm.Spec.ServingPort = &port
+	a := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+	c := warmPod("warm-c", "b300-pool-a", true, corev1.PodRunning)
+	h := &portConflictHistory{entries: map[types.NamespacedName]recentPortConflicts{}}
+	now := time.Now()
+	h.note(pm, a, now, 2)
+	late := now.Add(5 * time.Minute)
+	usable, conflicts := h.filter(pm, []corev1.Pod{*a, *c}, late, func(p corev1.Pod) bool { return p.Name != "warm-c" })
+	assert.Len(t, usable, 2)
+	assert.Empty(t, conflicts)
 }
 
 func TestSnapshotListenerAvoidsActivationAndKVChanges(t *testing.T) {
@@ -5082,13 +5130,13 @@ func TestRecentPortHistoryExpiresAndSeparatesRecreatedClaim(t *testing.T) {
 	h := &portConflictHistory{entries: map[types.NamespacedName]recentPortConflicts{}}
 	now := time.Now()
 	h.note(pm, pod, now, 1)
-	usable, _ := h.filter(pm, []corev1.Pod{*pod}, now)
+	usable, _ := h.filter(pm, []corev1.Pod{*pod}, now, nil)
 	assert.Empty(t, usable)
-	usable, _ = h.filter(pm, []corev1.Pod{*pod}, now.Add(3*time.Minute))
+	usable, _ = h.filter(pm, []corev1.Pod{*pod}, now.Add(3*time.Minute), nil)
 	assert.Len(t, usable, 1)
 	h.note(pm, pod, now, 1)
 	pm.UID = "new"
-	usable, _ = h.filter(pm, []corev1.Pod{*pod}, now)
+	usable, _ = h.filter(pm, []corev1.Pod{*pod}, now, nil)
 	assert.Len(t, usable, 1)
 }
 
@@ -5246,10 +5294,10 @@ func TestPortHistoryDoesNotHideReplacementPodWithSameName(t *testing.T) {
 	h.note(pm, pod, now, 1)
 	replacement := pod.DeepCopy()
 	replacement.UID = "new-pod"
-	usable, _ := h.filter(pm, []corev1.Pod{*replacement}, now)
+	usable, _ := h.filter(pm, []corev1.Pod{*replacement}, now, nil)
 	assert.Len(t, usable, 1)
 	replacement = pod.DeepCopy()
 	replacement.Status.PodIP = "10.0.0.99"
-	usable, _ = h.filter(pm, []corev1.Pod{*replacement}, now)
+	usable, _ = h.filter(pm, []corev1.Pod{*replacement}, now, nil)
 	assert.Len(t, usable, 1)
 }

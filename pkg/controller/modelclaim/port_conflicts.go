@@ -69,7 +69,12 @@ func (h *portConflictHistory) note(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod
 // expired entry is skipped solely while the pool has pods not yet tried.
 const conflictRetention = 10 * time.Minute
 
-func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1.Pod, now time.Time) ([]corev1.Pod, []string) {
+// filter drops the pods that refused the claim's port recently. progress says
+// whether an untried pod could really be attempted this pass (it has room and
+// passes the other placement checks). Lapsed entries are held back only while
+// such a pod exists. A nil progress never holds lapsed entries, which is the
+// right reading for feasibility checks that place nothing.
+func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1.Pod, now time.Time, progress func(corev1.Pod) bool) ([]corev1.Pod, []string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for key, entry := range h.entries {
@@ -89,7 +94,7 @@ func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1
 		return pods, nil
 	}
 	// A pod that refused and whose entry has lapsed is retried only after the
-	// pods never tried have had their turn. Otherwise a reconcile that is later
+	// pods never tried, and able to be tried now, have had their turn. Otherwise a reconcile that is later
 	// than the hold would clear the history and restart the rotation on the
 	// same refusing pods, starving the rest of the pool.
 	const (
@@ -104,7 +109,9 @@ func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1
 		switch {
 		case !found || conflict.uid != pod.UID || conflict.ip != pod.Status.PodIP:
 			state[i] = untried
-			anyUntried = true
+			if progress != nil && progress(pod) {
+				anyUntried = true
+			}
 		case now.Before(conflict.until):
 			state[i] = live
 		default:
@@ -118,7 +125,9 @@ func (h *portConflictHistory) filter(pm *modelv1alpha1.ModelClaim, pods []corev1
 		case state[i] == live, state[i] == lapsed && anyUntried:
 			conflicts = append(conflicts, pod.Name)
 		default:
-			if state[i] == lapsed {
+			// Only the placement pass retires a lapsed entry. The read-only
+			// feasibility check must leave the history as it found it.
+			if state[i] == lapsed && progress != nil {
 				delete(entry.pods, pod.Name)
 			}
 			usable = append(usable, pod)

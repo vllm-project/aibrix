@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -781,7 +782,11 @@ func (r *ModelClaimReconciler) ensureActivated(
 		}
 	}
 	usable, portConflicts := candidatesWithoutPortConflicts(candidates, snapshots, pm)
-	usable, recentConflicts := r.portConflictHistory().filter(pm, usable, r.now())
+	reachable, _ := admissibleCandidates(usable, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	canBeTried := func(pod corev1.Pod) bool {
+		return slices.ContainsFunc(reachable, func(p corev1.Pod) bool { return p.Name == pod.Name })
+	}
+	usable, recentConflicts := r.portConflictHistory().filter(pm, usable, r.now(), canBeTried)
 	admissible, refusals := admissibleCandidates(usable, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	refusals = append(refusals, snapshotPortRefusals(pm, portConflicts)...)
 	refusals = append(refusals, recentPortRefusals(pm, recentConflicts)...)
@@ -2592,7 +2597,7 @@ func (r *ModelClaimReconciler) portUsableCandidates(ctx context.Context, claim *
 		return candidates
 	}
 	usable, _ := candidatesWithoutPortConflicts(candidates, readings.ofPods(ctx, candidates), claim)
-	usable, _ = r.portConflictHistory().filter(claim, usable, r.now())
+	usable, _ = r.portConflictHistory().filter(claim, usable, r.now(), nil)
 	return usable
 }
 

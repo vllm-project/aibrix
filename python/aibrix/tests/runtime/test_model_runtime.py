@@ -3538,6 +3538,53 @@ def test_snapshot_keeps_dual_stack_wildcard_listener():
         assert listener.getsockname()[1] in listening_ports()
 
 
+def test_snapshot_ignores_ipv6_listener_on_a_specific_address():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.bind(("::1", 0))
+        listener.listen()
+        assert listener.getsockname()[1] not in listening_ports()
+
+
+def test_snapshot_keeps_ipv6_port_when_classification_is_unavailable(monkeypatch):
+    import socket
+
+    import aibrix.runtime.model_runtime as model_runtime
+
+    monkeypatch.setattr(
+        model_runtime, "_ipv6_listeners_sharing_ipv4_port", lambda: None
+    )
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        listener.bind(("::", 0))
+        listener.listen()
+        assert listener.getsockname()[1] in model_runtime.listening_ports()
+
+
+def test_snapshot_does_not_bind_while_classifying_listeners(monkeypatch):
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    binds = []
+    real_bind = socket.socket.bind
+
+    def recording_bind(self, address):
+        binds.append(address)
+        return real_bind(self, address)
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        listener.bind(("::", 0))
+        listener.listen()
+        monkeypatch.setattr(socket.socket, "bind", recording_bind)
+        listening_ports()
+    assert binds == []
+
+
 def test_listener_observation_unavailable_is_unknown(monkeypatch):
     import builtins
 

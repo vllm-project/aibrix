@@ -450,8 +450,10 @@ The controller first consults each Pod's runtime snapshot. When the
 snapshot reports the Pod's listening ports, the controller skips a Pod
 whose port is taken, whether by an engine the claim does not own or by any
 other process, such as a sidecar, before any GPU memory is divided. A
-listener found only on IPv6 is checked against the engine's IPv4 wildcard
-bind, so an IPv6-only socket does not block a Pod. An
+listener found only on IPv6 is classified from the kernel's socket
+diagnostics, without binding anything: an IPv6-only socket or one bound to a
+specific IPv6 address does not block a Pod, and a dual-stack wildcard does.
+If the diagnostics cannot be read, the port stays listed. An
 older runtime does not report its listeners, so the controller then falls
 back to the ports of the engines it knows, and to the runtime's own check:
 before it launches the engine, the runtime checks the port under its
@@ -461,7 +463,7 @@ limits, and try another Pod; an ambiguous answer, such as a timeout, keeps
 the placement record rather than risk a second launch elsewhere. One pass
 tries at most two Pods that fail this late check. The claim briefly
 remembers each Pod that refused it and skips it until the memory expires, and an expired entry is skipped
-only while Pods not yet tried remain, so a delayed reconcile cannot restart
+only while Pods not yet tried, and able to take the model, remain, so a delayed reconcile cannot restart
 the rotation on the same Pods and a pool-wide unseen conflict cannot starve a healthy Pod. The memory
 also resets when the claim is changed or recreated. The
 ``Scheduled`` condition reads ``False`` with reason ``PortInUse`` when

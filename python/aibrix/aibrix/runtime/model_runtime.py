@@ -34,6 +34,7 @@ import re
 import shlex
 import signal
 import socket
+import struct
 import sys
 import threading
 import time
@@ -2511,11 +2512,12 @@ def listening_ports() -> Optional[List[int]]:
 
     The engine binds the IPv4 wildcard. An IPv4 listener therefore blocks it,
     but a port seen only in the IPv6 table may belong to an IPv6-only socket
-    (IPV6_V6ONLY) that coexists with that bind. /proc cannot tell the two
-    apart, so those ports are confirmed with the same wildcard bind the launcher
-    uses and dropped when it succeeds. A missing/unreadable proc table means
-    unknown, never proof of availability. The locked pre-launch bind check
-    remains authoritative.
+    (IPV6_V6ONLY) or to one bound to a specific IPv6 address, both of which
+    coexist with that bind. /proc cannot tell these apart, so such ports are
+    classified from the kernel's socket diagnostics, a read-only query that
+    binds nothing. When that classification is unavailable the port stays
+    listed. A missing/unreadable proc table means unknown, never proof of
+    availability. The locked pre-launch bind check remains authoritative.
     """
     ipv4, ipv6 = set(), set()
     try:
@@ -2533,25 +2535,86 @@ def listening_ports() -> Optional[List[int]]:
     except (OSError, ValueError, IndexError):
         return None
     blocking = set(ipv4)
-    for port in ipv6 - ipv4:
-        if _ipv4_wildcard_bind_blocked(port):
-            blocking.add(port)
+    ipv6_only_candidates = ipv6 - ipv4
+    if ipv6_only_candidates:
+        sharing = _ipv6_listeners_sharing_ipv4_port()
+        for port in ipv6_only_candidates:
+            if sharing is None or port not in sharing or sharing[port]:
+                blocking.add(port)
     return sorted(blocking)
 
 
-def _ipv4_wildcard_bind_blocked(port: int) -> bool:
-    """True unless the engine's IPv4 wildcard bind would succeed on ``port``.
+_NETLINK_SOCK_DIAG = 4
+_SOCK_DIAG_BY_FAMILY = 20
+_NLM_F_REQUEST_DUMP = 0x1 | 0x300
+_NLMSG_ERROR = 2
+_NLMSG_DONE = 3
+_INET_DIAG_SKV6ONLY = 11
+_TCP_LISTEN_STATE_MASK = 1 << 10
+_IPV4_MAPPED_PREFIX = "00000000000000000000ffff"
 
-    Any outcome other than a clean bind keeps the port in the snapshot, so an
-    unexpected error never marks a taken port as free.
+
+def _ipv6_listeners_sharing_ipv4_port() -> Optional[Dict[int, bool]]:
+    """Map each IPv6 listening port to whether it blocks the IPv4 wildcard bind.
+
+    Read-only: it asks the kernel's NETLINK_SOCK_DIAG for listening IPv6 TCP
+    sockets, so nothing is bound and no other process or launch is disturbed.
+    A listener blocks the engine's ``0.0.0.0`` bind when it is a dual-stack
+    wildcard (``::`` without IPV6_V6ONLY) or is bound to an IPv4-mapped
+    address. An IPv6-only wildcard or a specific IPv6 address does not.
+    Returns None when the diagnostics cannot be read, so callers keep the
+    port listed instead of guessing.
     """
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("0.0.0.0", port))
-        return False
-    except OSError:
-        return True
+        with socket.socket(
+            socket.AF_NETLINK, socket.SOCK_RAW, _NETLINK_SOCK_DIAG
+        ) as sock:
+            sock.settimeout(2.0)
+            request = struct.pack(
+                "=BBBBI", socket.AF_INET6, socket.IPPROTO_TCP, 0, 0,
+                _TCP_LISTEN_STATE_MASK,
+            ) + b"\0" * 48
+            header = struct.pack(
+                "=IHHII", 16 + len(request), _SOCK_DIAG_BY_FAMILY,
+                _NLM_F_REQUEST_DUMP, 1, 0,
+            )
+            sock.send(header + request)
+            blocks: Dict[int, bool] = {}
+            while True:
+                data = sock.recv(65536)
+                offset = 0
+                while offset + 16 <= len(data):
+                    length, kind = struct.unpack_from("=IH", data, offset)
+                    if length < 16:
+                        return None
+                    if kind == _NLMSG_DONE:
+                        return blocks
+                    if kind == _NLMSG_ERROR:
+                        return None
+                    body = data[offset + 16 : offset + length]
+                    port = struct.unpack_from("!H", body, 4)[0]
+                    source = body[8:24].hex()
+                    v6only = None
+                    attr = 72
+                    while attr + 4 <= len(body):
+                        size, attr_type = struct.unpack_from("=HH", body, attr)
+                        if size < 4:
+                            break
+                        if attr_type == _INET_DIAG_SKV6ONLY:
+                            v6only = body[attr + 4]
+                        attr += (size + 3) & ~3
+                    if source.startswith(_IPV4_MAPPED_PREFIX):
+                        blocked = True
+                    elif source == "0" * 32:
+                        blocked = v6only != 1
+                    else:
+                        blocked = False
+                    blocks[port] = blocks.get(port, False) or blocked
+                    offset += (length + 3) & ~3
+                if not data:
+                    return None
+    except (OSError, struct.error, IndexError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
