@@ -37,6 +37,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -121,7 +122,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		}
 		if routingAlgorithm, ok = s.routerManager.Validate(strategy); !ok {
 			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
+			return errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		routingCtx.Algorithm = routingAlgorithm
 	}
@@ -142,7 +143,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	if err := validateRoutingStrategyForPath(requestPath, routingAlgorithm, routingCtx.Engine); err != nil {
 		klog.ErrorS(err, "unsupported routing strategy for endpoint", "requestID", requestID, "requestPath", requestPath, "routingStrategy", routingAlgorithm)
-		return buildErrorResponseWithType(envoyTypePb.StatusCode_BadRequest, err.Error(), ErrorTypeInvalidRequest, ErrorCodeUnsupportedRoutingStrategy, "", HeaderErrorRouting, "true"), model, stream, term
+		return errresp.BuildErrorResponseWithType(envoyTypePb.StatusCode_BadRequest, err.Error(), errresp.ErrorTypeInvalidRequest, ErrorCodeUnsupportedRoutingStrategy, "", HeaderErrorRouting, "true"), model, stream, term
 	}
 
 	// The tier the caller declared is mapped onto the body that is forwarded
@@ -159,7 +160,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	// xdit engine uses /generate and /generatevideo endpoints
 	// vllm/vllm-omni uses OpenAI-compatible /v1/images/generations
 	if rewritePath := getEngineBasedPathRewrite(requestPath, podsArr.All()); rewritePath != "" {
-		headers = buildEnvoyProxyHeaders(headers, ":path", rewritePath)
+		headers = errresp.BuildEnvoyProxyHeaders(headers, ":path", rewritePath)
 	}
 
 	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
@@ -174,14 +175,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	if routingAlgorithm == routing.RouterNotSet {
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
-			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
+			return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		// The response replaces the upstream body with routingCtx.ReqBody, and
 		// routing as well as the priority mapping above may have changed its
 		// size. Envoy validates the upstream request against this header, so it
 		// always describes the body that is actually forwarded rather than the
 		// one that arrived.
-		headers = buildEnvoyProxyHeaders(headers,
+		headers = errresp.BuildEnvoyProxyHeaders(headers,
 			HeaderModel, model,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
@@ -199,7 +200,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
 			return errRes, model, stream, term
 		}
-		headers = buildEnvoyProxyHeaders(headers,
+		headers = errresp.BuildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
 			HeaderTargetPod, targetPodIP,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
@@ -364,7 +365,7 @@ func buildRoutingErrorResponse(
 	headers ...string,
 ) *extProcPb.ProcessingResponse {
 	return withRoutingResponseHeaders(
-		buildErrorResponse(statusCode, errBody, errorCode, param, headers...), routingCtx, requestID)
+		errresp.BuildErrorResponse(statusCode, errBody, errorCode, param, headers...), routingCtx, requestID)
 }
 
 // buildRoutingErrorResponseWithBody is buildRoutingErrorResponse for a body that is
@@ -377,7 +378,7 @@ func buildRoutingErrorResponseWithBody(
 	headers ...string,
 ) *extProcPb.ProcessingResponse {
 	return withRoutingResponseHeaders(
-		buildErrorResponseWithBody(statusCode, body, buildEnvoyProxyHeaders(nil, headers...)), routingCtx, requestID)
+		errresp.BuildErrorResponseWithBody(statusCode, body, errresp.BuildEnvoyProxyHeaders(nil, headers...)), routingCtx, requestID)
 }
 
 // withRoutingResponseHeaders adds the request id and the target-pod headers the
@@ -388,10 +389,10 @@ func buildRoutingErrorResponseWithBody(
 // earlier would reach the 429 for a pod that was refused.
 func withRoutingResponseHeaders(response *extProcPb.ProcessingResponse, routingCtx *types.RoutingContext, requestID string) *extProcPb.ProcessingResponse {
 	setHeaders := response.GetImmediateResponse().GetHeaders().GetSetHeaders()
-	setHeaders = buildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
+	setHeaders = errresp.BuildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
 	if routingCtx != nil {
 		for key, value := range routingCtx.RespHeaders {
-			setHeaders = buildEnvoyProxyHeaders(setHeaders, key, value)
+			setHeaders = errresp.BuildEnvoyProxyHeaders(setHeaders, key, value)
 		}
 	}
 	response.GetImmediateResponse().GetHeaders().SetHeaders = setHeaders
@@ -456,7 +457,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 			}
 		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
-		return nil, generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
+		return nil, errresp.GenerateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}}},
 			fmt.Sprintf("model %s does not exist", model), ErrorCodeModelNotFound, "model")
@@ -465,7 +466,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 	podsArr, err := s.cache.ListPodsByModel(model)
 	if err != nil || podsArr == nil || countRoutablePodsFromList(podsArr) == 0 {
 		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
-		return nil, generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		return nil, errresp.GenerateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorNoModelBackends, RawValue: []byte("true")}}},
 			fmt.Sprintf("error on getting pods for model %s", model), ErrorCodeServiceUnavailable, "")
@@ -493,7 +494,7 @@ func modelClaimRetryResponse(model, state, reason string, retry, wakeRequested b
 		})
 		message += "; retry shortly"
 	}
-	return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
+	return errresp.GenerateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
 		message,
 		ErrorCodeServiceUnavailable, "model")
 }

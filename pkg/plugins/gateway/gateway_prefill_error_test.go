@@ -36,6 +36,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -172,7 +173,7 @@ func TestBuildTargetSelectionErrorResponse_MatchesNonPDErrorBody(t *testing.T) {
 
 	normalizedBody, statusCode, ok := normalizeUpstreamErrorBody([]byte(engineBody), 400)
 	require.True(t, ok)
-	nonPDResp := buildErrorResponseWithBody(statusCode, normalizedBody, nil)
+	nonPDResp := errresp.BuildErrorResponseWithBody(statusCode, normalizedBody, nil)
 
 	resp := buildTargetSelectionErrorResponse(prefillErrorRoutingContext(t), "test-request-id", "test-model",
 		prefillLegError(400, engineBody))

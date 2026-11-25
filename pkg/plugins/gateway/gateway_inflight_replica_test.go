@@ -37,6 +37,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -155,7 +156,7 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	imm := resp.GetImmediateResponse()
 	require.NotNil(t, imm)
 	assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
-	assert.Contains(t, imm.GetBody(), ErrorTypeOverloaded)
+	assert.Contains(t, imm.GetBody(), errresp.ErrorTypeOverloaded)
 	assert.Contains(t, imm.GetBody(), ErrorCodeReplicaInflightExceeded)
 	assert.False(t, routingCtx2.ReplicaInflightAdmitted)
 	mockCache.AssertExpectations(t)

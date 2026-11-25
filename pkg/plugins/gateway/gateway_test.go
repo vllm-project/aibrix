@@ -39,6 +39,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"go.opentelemetry.io/otel/trace"
@@ -94,13 +95,13 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 func Test_buildEnvoyProxyHeaders(t *testing.T) {
 	headers := []*configPb.HeaderValueOption{}
 
-	headers = buildEnvoyProxyHeaders(headers, "key1", "value1", "key2")
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "key1", "value1", "key2")
 	assert.Equal(t, 0, len(headers))
 
-	headers = buildEnvoyProxyHeaders(headers, "key1", "value1", "key2", "value2")
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "key1", "value1", "key2", "value2")
 	assert.Equal(t, 2, len(headers))
 
-	headers = buildEnvoyProxyHeaders(headers, "key3", "value3")
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "key3", "value3")
 	assert.Equal(t, 3, len(headers))
 }
 
@@ -1172,7 +1173,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 			var parsed map[string]any
 			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
 			errObj := parsed["error"].(map[string]any)
-			assert.Equal(t, ErrorTypeAuthentication, errObj["type"])
+			assert.Equal(t, errresp.ErrorTypeAuthentication, errObj["type"])
 			assert.Equal(t, ErrorCodeInvalidAPIKey, errObj["code"])
 			assert.Contains(t, errObj["message"].(string), "Incorrect API key provided")
 			assert.Contains(t, errObj["message"].(string), "httproute boom")
@@ -1208,7 +1209,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 			var parsed map[string]any
 			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
 			errObj := parsed["error"].(map[string]any)
-			assert.Equal(t, ErrorTypeOverloaded, errObj["type"])
+			assert.Equal(t, errresp.ErrorTypeOverloaded, errObj["type"])
 			assert.Equal(t, ErrorCodeServiceUnavailable, errObj["code"])
 		}
 	})
@@ -1258,7 +1259,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
 			errObj := parsed["error"].(map[string]any)
 			assert.Equal(t, "plain text failure", errObj["message"])
-			assert.Equal(t, ErrorTypeInvalidRequest, errObj["type"])
+			assert.Equal(t, errresp.ErrorTypeInvalidRequest, errObj["type"])
 		}
 	})
 

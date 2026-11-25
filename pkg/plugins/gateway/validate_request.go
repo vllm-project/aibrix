@@ -31,6 +31,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -112,7 +113,7 @@ type embeddingReqMinimal struct {
 func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
 	if len(msgs) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+		return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
 	}
 	// Pre-grow the builder to avoid repeated internal buffer doublings for large messages.
 	// Each Content entry is a raw JSON value; the unescaped string is at most len(Content) bytes.
@@ -177,14 +178,14 @@ func writeChatContent(builder *strings.Builder, content json.RawMessage) {
 func parseResponsesInput(requestID string, input json.RawMessage) (string, *extProcPb.ProcessingResponse) {
 	if len(input) == 0 || string(input) == jsonNull {
 		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
 	// Plain string input: JSON-unquote it directly.
 	if input[0] == '"' {
 		var s string
 		if err := sonic.Unmarshal(input, &s); err != nil {
 			klog.ErrorS(nil, "error to unmarshal responses input string", "requestID", requestID, "reason", jsonParseReason(err))
-			return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		}
 		return s, nil
 	}
@@ -194,11 +195,11 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 	var items []contentItem
 	if err := sonic.Unmarshal(input, &items); err != nil {
 		klog.ErrorS(nil, "error to unmarshal responses input array", "requestID", requestID, "reason", jsonParseReason(err))
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
 	if len(items) == 0 {
 		klog.ErrorS(nil, "empty input array in the request body", "requestID", requestID)
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
 	return parseChatMessages(requestID, items)
 }
@@ -252,13 +253,13 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		// Image edits upload the source images as files, so the body is multipart/form-data.
 		// A multipart request never gets here (see isMultipartFormPath); this is a JSON or
 		// content-type-less one.
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "image edit requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "image edit requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
 
 	// Audio
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio transcription and translation require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to these audio endpoints
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
 	case PathAudioSpeech, PathAudioGenerate:
 		model, message, errRes = validateAudioInputRequest(requestID, requestBody)
 	case PathAudioSpeechBatch:
@@ -269,7 +270,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			model, errRes = audioVoicesModel(requestPath)
 			break
 		}
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 	}
 	if errRes != nil {
 		return
@@ -298,7 +299,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	var req chatReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, requestPath, "error to unmarshal chat completions object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = req.Model
@@ -316,7 +317,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 		// clients hitting /v1/messages will not include it, so skip this check for that path.
 		if stream && user.Tpm > 0 && requestPath == PathChatCompletions && !req.StreamOptions.IncludeUsage {
 			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID)
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
 				"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
 			return
 		}
@@ -335,7 +336,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 // nolint:nakedret
 func validateChatBatchRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	// Conversations stay raw so each is parsed once, after its shape is known to be an array.
@@ -345,18 +346,18 @@ func validateChatBatchRequest(requestID string, requestBody []byte) (model, mess
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
 	if strings.TrimSpace(req.Model) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if len(req.Messages) == 0 {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'messages' is a required property and cannot be empty", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'messages' is a required property and cannot be empty", "", "messages", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -365,17 +366,17 @@ func validateChatBatchRequest(requestID string, requestBody []byte) (model, mess
 		param := fmt.Sprintf("messages.%d", i)
 		// A flat list of messages is the single-conversation shape; name the entry that gives it away.
 		if trimmed := bytes.TrimSpace(rawConversation); len(trimmed) == 0 || trimmed[0] != '[' {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be an array of messages", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be an array of messages", param), "", param, HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		var conversation []contentItem
 		if err := sonic.Unmarshal(rawConversation, &conversation); err != nil {
 			logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch conversation", err, rawConversation)
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", param, HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", param, HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		if len(conversation) == 0 {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' cannot be empty", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' cannot be empty", param), "", param, HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		var conversationText string
@@ -398,12 +399,12 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 	var req responsesReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathResponses, "error to unmarshal responses object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	// Per the OpenAI Responses API spec, "model" is a required property.
 	if req.Model == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = req.Model
@@ -434,7 +435,7 @@ func validateCompletionRequest(requestID string, requestBody []byte, user utils.
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathCompletions, "error to unmarshal completions object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = req.Model
@@ -445,7 +446,7 @@ func validateCompletionRequest(requestID string, requestBody []byte, user utils.
 	// validateChatRequest applies to /v1/chat/completions.
 	if stream && user.Tpm > 0 && !req.StreamOptions.IncludeUsage {
 		klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
 			"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
 		return
 	}
@@ -585,13 +586,13 @@ func validateMultimodalEmbeddingRequest(requestID string, requestBody []byte) (m
 	klog.V(4).InfoS("parsed multimodal embeddings input", "requestID", requestID, "parts", len(parts))
 
 	if err := validateEmbeddingContentParts(parts); err != nil {
-		return req.Model, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true"), true
+		return req.Model, errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true"), true
 	}
 
 	if len(req.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
-			return req.Model, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true"), true
+			return req.Model, errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true"), true
 		}
 	}
 
@@ -610,7 +611,7 @@ func validateEmbeddingRequest(requestID string, requestBody []byte) (model strin
 			return m, mmErrRes
 		}
 		logRequestBodyParseFailure(requestID, PathEmbeddings, "error to unmarshal embeddings object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = embeddingReq.Model
@@ -618,14 +619,14 @@ func validateEmbeddingRequest(requestID string, requestBody []byte) (model strin
 		Model: embeddingReq.Model,
 		Input: embeddingReq.Input,
 	}); err != nil {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	// Preserve behavior: if stream is provided, it must be a valid bool and false.
 	if len(embeddingReq.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(embeddingReq.Stream, &streamBool); err != nil || streamBool {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 	}
@@ -638,7 +639,7 @@ func validateImageGenerationRequest(requestID, requestPath string, requestBody [
 	imageGenerationObj := openai.ImageGenerateParams{}
 	if err := sonic.Unmarshal(requestBody, &imageGenerationObj); err != nil {
 		logRequestBodyParseFailure(requestID, requestPath, "error to unmarshal image generations object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = imageGenerationObj.Model
@@ -656,20 +657,20 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 	var req RerankRequest
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathRerank, "error to unmarshal rerank object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if req.Model == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	if req.Query == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'query' is a required property", "", "query", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'query' is a required property", "", "query", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	if len(req.Documents) == 0 {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'documents' is a required property and cannot be empty", "", "documents", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'documents' is a required property and cannot be empty", "", "documents", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -720,12 +721,12 @@ func validateEngineNativeRequest(requestID, endpointPath string, requestBody []b
 	var req engineNativeReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, endpointPath, "error to unmarshal "+endpoint+" object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if req.Model == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = req.Model
@@ -765,7 +766,7 @@ func validateEngineNativeRequest(requestID, endpointPath string, requestBody []b
 	if pooling && len(req.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for pooling", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for pooling", "", "stream", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 	}
@@ -776,7 +777,7 @@ func validateEngineNativeRequest(requestID, endpointPath string, requestBody []b
 	if pooling && len(req.EncodingFormat) > 0 {
 		var enc string
 		if err := sonic.Unmarshal(req.EncodingFormat, &enc); err == nil && (enc == "bytes" || enc == "bytes_only") {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "encoding_format 'bytes' and 'bytes_only' are not supported for pooling", "", "encoding_format", HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "encoding_format 'bytes' and 'bytes_only' are not supported for pooling", "", "encoding_format", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 	}
@@ -835,17 +836,17 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 	var req ClassifyRequest
 	if err := json.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathClassify, "error to unmarshal classify object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if req.Model == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if len(req.Input) == 0 || string(req.Input) == jsonNull {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -853,18 +854,18 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 	var inputStr string
 	if err := json.Unmarshal(req.Input, &inputStr); err == nil {
 		if inputStr == "" {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' cannot be an empty string", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' cannot be an empty string", "", "input", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		message = inputStr
 	} else {
 		var inputArr []string
 		if err := json.Unmarshal(req.Input, &inputArr); err != nil {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or array of strings", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or array of strings", "", "input", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		if len(inputArr) == 0 {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		message = strings.Join(inputArr, " ")
@@ -892,29 +893,29 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathDecisions, "error to unmarshal decisions object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if strings.TrimSpace(req.Model) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	input := bytes.TrimSpace(req.Input)
 	if len(input) == 0 || string(input) == jsonNull {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	text, errMsg := decisionsInputText(input)
 	if errMsg != "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, errMsg, "", "input", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, errMsg, "", "input", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	var questions []json.RawMessage
 	if err := sonic.Unmarshal(req.Questions, &questions); err != nil || len(questions) == 0 {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty array", "", "questions", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty array", "", "questions", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -938,29 +939,29 @@ func validateSystemOneRequest(requestID string, requestBody []byte) (model, mess
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathSystemOne, "error to unmarshal systemone object", err, requestBody)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if strings.TrimSpace(req.Model) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	state := bytes.TrimSpace(req.State)
 	if len(state) == 0 || string(state) == jsonNull {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' is a required property", "", "state", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' is a required property", "", "state", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	text, _, ok := decisionText(state)
 	if !ok {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' must be a string, object, or array", "", "state", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' must be a string, object, or array", "", "state", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	var questions map[string]json.RawMessage
 	if err := sonic.Unmarshal(req.Questions, &questions); err != nil || len(questions) == 0 {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty object", "", "questions", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty object", "", "questions", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -976,7 +977,7 @@ func validateSystemOneRequest(requestID string, requestBody []byte) (model, mess
 // nolint:nakedret
 func validateScoreRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	var req struct {
@@ -988,27 +989,27 @@ func validateScoreRequest(requestID string, requestBody []byte) (model, message 
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		// The body can hold customer text, so log its size, not its content.
 		klog.ErrorS(nil, "error to unmarshal score object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	// SGLang falls back to a default model, but the gateway selects pods by it.
 	if strings.TrimSpace(req.Model) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	items := bytes.TrimSpace(req.Items)
 	switch string(items) {
 	case "", jsonNull, `""`, "[]":
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if len(req.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for score", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for score", "", "stream", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 	}
@@ -1061,7 +1062,7 @@ func jsonString(value json.RawMessage) (string, bool) {
 // nolint:nakedret
 func validateAudioInputRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	var req struct {
@@ -1071,18 +1072,18 @@ func validateAudioInputRequest(requestID string, requestBody []byte) (model, mes
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		// The body can hold customer text, so log its size, not its content.
 		klog.ErrorS(nil, "error to unmarshal audio speech or generate object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
 	if strings.TrimSpace(req.Model) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if strings.TrimSpace(req.Input) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property and cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property and cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -1108,17 +1109,17 @@ func audioVoicesModel(requestPath string) (model string, errRes *extProcPb.Proce
 	_, rawQuery, _ := strings.Cut(requestPath, "?")
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid query string", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid query string", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	models := values["model"]
 	if len(models) > 1 {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' query parameter must be supplied once", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' query parameter must be supplied once", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	if len(models) == 0 || strings.TrimSpace(models[0]) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' query parameter is required", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' query parameter is required", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -1136,7 +1137,7 @@ func audioVoicesModel(requestPath string) (model string, errRes *extProcPb.Proce
 // nolint:nakedret
 func validateAudioSpeechBatchRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	// Items stay raw so a reference clip inlined as a base64 data URL is never decoded here.
@@ -1147,18 +1148,18 @@ func validateAudioSpeechBatchRequest(requestID string, requestBody []byte) (mode
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		// The body can hold customer text, so log its size, not its content.
 		klog.ErrorS(nil, "error to unmarshal audio speech batch object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
 	if strings.TrimSpace(req.Model) == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	if len(req.Items) == 0 {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -1166,7 +1167,7 @@ func validateAudioSpeechBatchRequest(requestID string, requestBody []byte) (mode
 	for i, rawItem := range req.Items {
 		if trimmed := bytes.TrimSpace(rawItem); len(trimmed) == 0 || trimmed[0] != '{' {
 			param := fmt.Sprintf("items.%d", i)
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be a JSON object", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be a JSON object", param), "", param, HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		var item struct {
@@ -1174,7 +1175,7 @@ func validateAudioSpeechBatchRequest(requestID string, requestBody []byte) (mode
 		}
 		if err := sonic.Unmarshal(rawItem, &item); err != nil {
 			klog.ErrorS(nil, "error to unmarshal audio speech batch item", "requestID", requestID, "item", i, "reason", jsonParseReason(err), "itemBytes", len(rawItem))
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", fmt.Sprintf("items.%d", i), HeaderErrorRequestBodyProcessing, "true")
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", fmt.Sprintf("items.%d", i), HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		// A missing, blank or non-string input is the engine's per-item error to report.
@@ -1275,13 +1276,13 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 
 	if err := sonic.Unmarshal(streamData, stream); err != nil {
 		klog.ErrorS(nil, "no stream option available", "requestID", requestID)
-		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", "", "stream", HeaderErrorStream, "stream incorrectly set")
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", "", "stream", HeaderErrorStream, "stream incorrectly set")
 	}
 
 	if *stream && user.Tpm > 0 {
 		if !streamOptions.IncludeUsage.Value {
 			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "streamOption", streamOptions)
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+			return errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
 				"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
 		}
 	}

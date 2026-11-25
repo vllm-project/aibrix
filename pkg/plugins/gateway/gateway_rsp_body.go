@@ -36,6 +36,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -251,7 +252,7 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 				// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
 				// and only executes on chunks that carry usage, ensuring strict correctness.
 				if !gjson.ValidBytes(jsonBytes) {
-					return usage, final, generateErrorResponse(
+					return usage, final, errresp.GenerateErrorResponse(
 						envoyTypePb.StatusCode_InternalServerError,
 						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 							Key: HeaderErrorStreaming, RawValue: []byte("true"),
@@ -342,7 +343,7 @@ func parseSSEUsage(jsonBytes []byte, previous TokenUsage) (usage TokenUsage, ok 
 // lifecycle and keeps the context valid until its final deferred cleanup.
 func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, hasCompleted bool) (*extProcPb.ProcessingResponse, bool, TokenUsage) {
 	if routerCtx == nil {
-		return generateErrorResponse(
+		return errresp.GenerateErrorResponse(
 			envoyTypePb.StatusCode_InternalServerError,
 			nil,
 			"routing context is nil", "", ""), true, TokenUsage{}
@@ -416,15 +417,15 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 				// a client, so the counter is what shows the uncharged tokens.
 				metrics.EmitMetricToPrometheus(routerCtx, nil, metrics.GatewayTPMIncrementFailuresTotal,
 					&metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"reason": reason})
-				headers = buildEnvoyProxyHeaders(headers, HeaderErrorIncrTPM, "true")
+				headers = errresp.BuildEnvoyProxyHeaders(headers, HeaderErrorIncrTPM, "true")
 			} else {
-				headers = buildEnvoyProxyHeaders(headers,
+				headers = errresp.BuildEnvoyProxyHeaders(headers,
 					HeaderUpdateRPM, strconv.FormatInt(rpm, 10),
 					HeaderUpdateTPM, strconv.FormatInt(tpm, 10))
 			}
 		}
 
-		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
+		headers = errresp.BuildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
 		// arrival is this (final) chunk's arrival time, i.e. the true request-end time.
 		// requestEndHelper derives TTFT from routerCtx.FirstTokenTime for streaming
 		// requests, so passing the final arrival here (rather than the first chunk's)
@@ -579,7 +580,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	if err := sonic.Unmarshal(finalBody, &res); err != nil {
 		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(finalBody))
 		complete = true
-		processingRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "", "", HeaderErrorResponseUnmarshal, "true")
+		processingRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "", "", HeaderErrorResponseUnmarshal, "true")
 		return
 	}
 
@@ -591,8 +592,8 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		if body, code, ok := normalizeUpstreamErrorBody(finalBody, 0); ok {
 			klog.ErrorS(ErrorUnknownResponse, "unexpected response", "requestID", requestID, "responseBody", string(finalBody))
 			complete = true
-			errHeaders := buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")
-			processingRes = buildErrorResponseWithBody(code, body, errHeaders)
+			errHeaders := errresp.BuildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")
+			processingRes = errresp.BuildErrorResponseWithBody(code, body, errHeaders)
 			return
 		}
 
@@ -612,7 +613,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		}
 
 		complete = true
-		processingRes = buildErrorResponse(code, msg, "", "", HeaderErrorResponseUnknown, "true")
+		processingRes = errresp.BuildErrorResponse(code, msg, "", "", HeaderErrorResponseUnknown, "true")
 		return
 	}
 

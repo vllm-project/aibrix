@@ -72,6 +72,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -251,7 +252,7 @@ func (s *Server) handleDecodeWatchdog(srv extProcPb.ExternalProcessor_ProcessSer
 		if !st.stream {
 			what = "did not finish responding within "
 		}
-		resp := buildErrorResponse(envoyTypePb.StatusCode_GatewayTimeout,
+		resp := errresp.BuildErrorResponse(envoyTypePb.StatusCode_GatewayTimeout,
 			"decode pod "+decodePod+" "+what+timeout.String(),
 			"", "",
 			HeaderErrorPDDecode, "true",

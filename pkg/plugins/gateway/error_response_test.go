@@ -22,6 +22,8 @@ import (
 	"github.com/bytedance/sonic"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 )
 
 func TestGenerateErrorMessage(t *testing.T) {
@@ -36,7 +38,7 @@ func TestGenerateErrorMessage(t *testing.T) {
 		{
 			name:      "error with all fields",
 			message:   "Invalid API key",
-			errorType: ErrorTypeAuthentication,
+			errorType: errresp.ErrorTypeAuthentication,
 			errorCode: ErrorCodeInvalidAPIKey,
 			param:     "api_key",
 			wantJSON:  `{"error":{"code":"invalid_api_key","message":"Invalid API key","param":"api_key","type":"authentication_error"}}`,
@@ -44,7 +46,7 @@ func TestGenerateErrorMessage(t *testing.T) {
 		{
 			name:      "error without code and param (null values)",
 			message:   "Server error occurred",
-			errorType: ErrorTypeApi,
+			errorType: errresp.ErrorTypeApi,
 			errorCode: "",
 			param:     "",
 			wantJSON:  `{"error":{"code":null,"message":"Server error occurred","param":null,"type":"api_error"}}`,
@@ -52,7 +54,7 @@ func TestGenerateErrorMessage(t *testing.T) {
 		{
 			name:      "error with code but no param",
 			message:   "Model not found",
-			errorType: ErrorTypeInvalidRequest,
+			errorType: errresp.ErrorTypeInvalidRequest,
 			errorCode: ErrorCodeModelNotFound,
 			param:     "",
 			wantJSON:  `{"error":{"code":"model_not_found","message":"Model not found","param":null,"type":"invalid_request_error"}}`,
@@ -60,7 +62,7 @@ func TestGenerateErrorMessage(t *testing.T) {
 		{
 			name:      "error with param but no code",
 			message:   "Invalid parameter value",
-			errorType: ErrorTypeInvalidRequest,
+			errorType: errresp.ErrorTypeInvalidRequest,
 			errorCode: "",
 			param:     "temperature",
 			wantJSON:  `{"error":{"code":null,"message":"Invalid parameter value","param":"temperature","type":"invalid_request_error"}}`,
@@ -68,7 +70,7 @@ func TestGenerateErrorMessage(t *testing.T) {
 		{
 			name:      "rate limit error",
 			message:   "Rate limit exceeded",
-			errorType: ErrorTypeRateLimit,
+			errorType: errresp.ErrorTypeRateLimit,
 			errorCode: ErrorCodeRateLimitExceeded,
 			param:     "",
 			wantJSON:  `{"error":{"code":"rate_limit_exceeded","message":"Rate limit exceeded","param":null,"type":"rate_limit_error"}}`,
@@ -77,7 +79,7 @@ func TestGenerateErrorMessage(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			result := generateErrorMessage(tt.message, tt.errorType, tt.errorCode, tt.param)
+			result := errresp.GenerateErrorMessage(tt.message, tt.errorType, tt.errorCode, tt.param)
 			assert.JSONEq(t, tt.wantJSON, result, "Error message JSON should match expected format")
 		})
 	}
@@ -98,7 +100,7 @@ func TestGenerateErrorMessageWithHTTPCode(t *testing.T) {
 			httpStatusCode: 400,
 			errorCode:      "",
 			param:          "model",
-			wantType:       ErrorTypeInvalidRequest,
+			wantType:       errresp.ErrorTypeInvalidRequest,
 		},
 		{
 			name:           "401 Unauthorized maps to authentication_error",
@@ -106,7 +108,7 @@ func TestGenerateErrorMessageWithHTTPCode(t *testing.T) {
 			httpStatusCode: 401,
 			errorCode:      ErrorCodeInvalidAPIKey,
 			param:          "",
-			wantType:       ErrorTypeAuthentication,
+			wantType:       errresp.ErrorTypeAuthentication,
 		},
 		{
 			name:           "429 Too Many Requests maps to rate_limit_error",
@@ -114,7 +116,7 @@ func TestGenerateErrorMessageWithHTTPCode(t *testing.T) {
 			httpStatusCode: 429,
 			errorCode:      ErrorCodeRateLimitExceeded,
 			param:          "",
-			wantType:       ErrorTypeRateLimit,
+			wantType:       errresp.ErrorTypeRateLimit,
 		},
 		{
 			name:           "500 Internal Server Error maps to api_error",
@@ -122,7 +124,7 @@ func TestGenerateErrorMessageWithHTTPCode(t *testing.T) {
 			httpStatusCode: 500,
 			errorCode:      "",
 			param:          "",
-			wantType:       ErrorTypeApi,
+			wantType:       errresp.ErrorTypeApi,
 		},
 		{
 			name:           "503 Service Unavailable maps to overloaded_error",
@@ -130,13 +132,13 @@ func TestGenerateErrorMessageWithHTTPCode(t *testing.T) {
 			httpStatusCode: 503,
 			errorCode:      ErrorCodeServiceUnavailable,
 			param:          "",
-			wantType:       ErrorTypeOverloaded,
+			wantType:       errresp.ErrorTypeOverloaded,
 		},
 	}
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			result := generateErrorMessageWithHTTPCode(tt.message, tt.httpStatusCode, tt.errorCode, tt.param)
+			result := errresp.GenerateErrorMessageWithHTTPCode(tt.message, tt.httpStatusCode, tt.errorCode, tt.param)
 
 			// Parse JSON to verify structure
 			var errResponse map[string]interface{}
@@ -211,7 +213,7 @@ func TestBuildErrorResponse(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := buildErrorResponse(tt.statusCode, tt.errBody, tt.errorCode, tt.param, tt.headers...)
+			resp := errresp.BuildErrorResponse(tt.statusCode, tt.errBody, tt.errorCode, tt.param, tt.headers...)
 
 			assert.NotNil(t, resp, "Response should not be nil")
 			assert.NotNil(t, resp.GetImmediateResponse(), "Should have immediate response")
@@ -231,17 +233,17 @@ func TestBuildErrorResponse(t *testing.T) {
 			var expectedType string
 			switch tt.statusCode {
 			case envoyTypePb.StatusCode_BadRequest:
-				expectedType = ErrorTypeInvalidRequest
+				expectedType = errresp.ErrorTypeInvalidRequest
 			case envoyTypePb.StatusCode_Unauthorized:
-				expectedType = ErrorTypeAuthentication
+				expectedType = errresp.ErrorTypeAuthentication
 			case envoyTypePb.StatusCode_TooManyRequests:
-				expectedType = ErrorTypeRateLimit
+				expectedType = errresp.ErrorTypeRateLimit
 			case envoyTypePb.StatusCode_ServiceUnavailable:
-				expectedType = ErrorTypeOverloaded
+				expectedType = errresp.ErrorTypeOverloaded
 			case envoyTypePb.StatusCode_InternalServerError:
-				expectedType = ErrorTypeApi
+				expectedType = errresp.ErrorTypeApi
 			default:
-				expectedType = ErrorTypeApi
+				expectedType = errresp.ErrorTypeApi
 			}
 			assert.Equal(t, expectedType, errObj["type"], "Error type should match status code")
 

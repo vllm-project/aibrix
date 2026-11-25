@@ -21,11 +21,12 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
-	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 )
 
 var (
@@ -38,7 +39,7 @@ const jsonNull = "null"
 func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCompletionNewParams) (string, *extProcPb.ProcessingResponse) {
 	if len(chatCompletionObj.Messages) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+		return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
 	}
 	var builder strings.Builder
 	for i, m := range chatCompletionObj.Messages {
@@ -53,29 +54,9 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 				builder.Write(jsonBytes)
 			} else {
 				klog.ErrorS(err, "error marshalling message content", "requestID", requestID, "message", m)
-				return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error marshalling message content", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+				return "", errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error marshalling message content", "", "messages", HeaderErrorRequestBodyProcessing, "true")
 			}
 		}
 	}
 	return builder.String(), nil
-}
-
-func buildEnvoyProxyHeaders(headers []*configPb.HeaderValueOption, keyValues ...string) []*configPb.HeaderValueOption {
-	if len(keyValues)%2 != 0 {
-		return headers
-	}
-
-	for i := 0; i < len(keyValues); {
-		headers = append(headers,
-			&configPb.HeaderValueOption{
-				Header: &configPb.HeaderValue{
-					Key:      keyValues[i],
-					RawValue: []byte(keyValues[i+1]),
-				},
-			},
-		)
-		i += 2
-	}
-
-	return headers
 }

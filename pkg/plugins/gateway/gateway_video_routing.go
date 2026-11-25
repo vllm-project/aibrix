@@ -50,6 +50,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -204,7 +205,7 @@ func videoJobResponseNeedsBuffering(method, requestPath string) bool {
 // All of those are deliberately indistinguishable: a distinct "exists but not
 // yours" answer would turn the 404 into an id oracle.
 func videoNotFoundResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_NotFound,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_NotFound,
 		fmt.Sprintf("video %s not found", publicJobID), ErrorCodeVideoNotFound, "",
 		HeaderErrorVideoNotFound, "true")
 }
@@ -214,7 +215,7 @@ func videoNotFoundResponse(publicJobID string) *extProcPb.ProcessingResponse {
 // than confirmed gone. The record is left in place: the generated video is on
 // that pod's local disk, so pinning elsewhere is not an option.
 func videoJobPodUnavailableResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		fmt.Sprintf("video %s's pod is temporarily unavailable, please retry", publicJobID),
 		ErrorCodeVideoJobPodUnavailable, "",
 		HeaderErrorVideoJobPodUnavailable, "true")
@@ -225,7 +226,7 @@ func videoJobPodUnavailableResponse(publicJobID string) *extProcPb.ProcessingRes
 // a 404: the job most likely still exists, and telling the client otherwise
 // would make it abandon a job it is still paying for.
 func videoJobStoreUnavailableResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		fmt.Sprintf("video %s could not be resolved right now, please retry", publicJobID),
 		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 }
@@ -241,7 +242,7 @@ func videoJobErrorResponse(publicJobID string, err error) *extProcPb.ProcessingR
 	case errors.Is(err, asyncjob.ErrAsyncJobStoreUnavailable):
 		return videoJobStoreUnavailableResponse(publicJobID)
 	default:
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("video %s could not be resolved", publicJobID), "", "",
 			HeaderErrorRouting, "true")
 	}
@@ -251,7 +252,7 @@ func videoJobErrorResponse(publicJobID string, err error) *extProcPb.ProcessingR
 // not be persisted. It carries no id at all: the public id was never durable and
 // the backend id must not become the client's handle on the job.
 func videoJobRegistrationFailedResponse() *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		"video job could not be registered, please retry",
 		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 }
@@ -260,7 +261,7 @@ func videoJobRegistrationFailedResponse() *extProcPb.ProcessingResponse {
 // job but its record could not be removed. Reporting success would leave a
 // public id that still resolves to a job the client believes is gone.
 func videoJobCleanupFailedResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		fmt.Sprintf("video %s was deleted but its record could not be cleaned up, please retry", publicJobID),
 		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 }
@@ -293,11 +294,11 @@ func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner st
 	page, err := s.asyncJobRegistry().List(ctx, owner, asyncjob.AsyncJobTypeVideo, options)
 	if err != nil {
 		if errors.Is(err, asyncjob.ErrAsyncJobNotFound) || errors.Is(err, asyncjob.ErrAsyncJobInvalidRecord) {
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+			return errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest,
 				"invalid video list cursor or parameters", "", "", HeaderErrorRequestBodyProcessing, "true")
 		}
 		klog.ErrorS(err, "failed to list async video jobs", "requestID", requestID, "owner", owner)
-		return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			"video jobs could not be listed right now, please retry",
 			ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 	}
@@ -327,7 +328,7 @@ func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner st
 	})
 	if err != nil {
 		klog.ErrorS(err, "failed to marshal video job list", "requestID", requestID, "owner", owner)
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			"failed to marshal video job list", "", "", HeaderErrorResponseUnknown, "true")
 	}
 
@@ -339,7 +340,7 @@ func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner st
 			ImmediateResponse: &extProcPb.ImmediateResponse{
 				Status: &envoyTypePb.HttpStatus{Code: envoyTypePb.StatusCode_OK},
 				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: buildEnvoyProxyHeaders(nil, "Content-Type", "application/json"),
+					SetHeaders: errresp.BuildEnvoyProxyHeaders(nil, "Content-Type", "application/json"),
 				},
 				Body: string(respBody),
 			},
@@ -398,7 +399,7 @@ func (s *Server) pinAsyncVideoJob(ctx context.Context, routingCtx *types.Routing
 		}
 	}()
 
-	headers = buildEnvoyProxyHeaders(make([]*configPb.HeaderValueOption, 0, 4),
+	headers = errresp.BuildEnvoyProxyHeaders(make([]*configPb.HeaderValueOption, 0, 4),
 		HeaderRoutingStrategy, videoJobAffinityLabel,
 		HeaderTargetPod, targetPodIP,
 		pathKey, rewrittenPath,
@@ -425,7 +426,7 @@ func (s *Server) handleVideoJobSubResource(ctx context.Context, routingCtx *type
 		return errResp, routingCtx.Model, false, term
 	}
 
-	headers = buildEnvoyProxyHeaders(headers, "content-length", strconv.Itoa(len(routingCtx.ReqBody)))
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 
 	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{

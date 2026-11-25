@@ -56,6 +56,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/auth"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/modelclaim"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
@@ -1460,8 +1461,8 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 	// authoritative respErrorCode; the body's own code is preserved inside the body.
 	if normalizedBody, code, ok := normalizeUpstreamErrorBody([]byte(errMsg), respErrorCode); ok {
 		errHeaders := append(append([]*configPb.HeaderValueOption{}, headers...),
-			buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")...)
-		return buildErrorResponseWithBody(code, normalizedBody, errHeaders)
+			errresp.BuildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")...)
+		return errresp.BuildErrorResponseWithBody(code, normalizedBody, errHeaders)
 	}
 
 	// Determine appropriate error code based on HTTP status
@@ -1473,7 +1474,7 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 		errorCode = ErrorCodeServiceUnavailable
 	}
 
-	return generateErrorResponse(
+	return errresp.GenerateErrorResponse(
 		envoyTypePb.StatusCode(respErrorCode),
 		headers,
 		errMsg, errorCode, "")
