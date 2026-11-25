@@ -699,12 +699,13 @@ func TestPDRouter_CrossStripeTokenLoadAndPrefixCacheRaceFree(t *testing.T) {
 	}
 
 	type modelSpec struct {
-		name    string
-		podList *utils.PodArray
+		name      string
+		baseModel string
+		podList   *utils.PodArray
 	}
 	models := []modelSpec{
-		{name: loraA, podList: &utils.PodArray{Pods: sharedPods}},
-		{name: loraB, podList: &utils.PodArray{Pods: sharedPods}},
+		{name: loraA, baseModel: "shared-base-model", podList: &utils.PodArray{Pods: sharedPods}},
+		{name: loraB, baseModel: "shared-base-model", podList: &utils.PodArray{Pods: sharedPods}},
 		{name: "disjoint-model-c", podList: &utils.PodArray{Pods: disjointC}},
 		{name: "disjoint-model-d", podList: &utils.PodArray{Pods: disjointD}},
 	}
@@ -749,6 +750,7 @@ func TestPDRouter_CrossStripeTokenLoadAndPrefixCacheRaceFree(t *testing.T) {
 				reqID := fmt.Sprintf("xstripe-%d-%d", mIdx, j)
 				ctx := types.NewRoutingContext(context.Background(), "pd", spec.name, prompt, reqID, "user")
 				defer ctx.Delete()
+				ctx.BaseModel = spec.baseModel
 				ctx.Engine = "vllm"
 				ctx.ReqPath = testChatCompletionsPath
 				ctx.ReqBody = body
@@ -790,4 +792,196 @@ func TestPDRouter_CrossStripeTokenLoadAndPrefixCacheRaceFree(t *testing.T) {
 	r.countersMu.RUnlock()
 	// Each Route increments selectionCounts for both prefill and decode pods.
 	assert.Equal(t, int64(len(models)*reqsPerModel*2), totalSelections)
+}
+
+// TestPDRouter_LoRAAdaptersSharingBaseModelSerializeOnSameStripe verifies that
+// two LoRA adapter names whose raw model names hash to different stripes share
+// a single selection lock stripe via RoutingContext.BaseModel: holding the base
+// model's stripe blocks both adapters (while an unrelated base model proceeds),
+// and a concurrent mixed-adapter burst against shared pods splits evenly.
+func TestPDRouter_LoRAAdaptersSharingBaseModelSerializeOnSameStripe(t *testing.T) {
+	const baseModel = "qwen3-8b"
+	loraA := "adapter-a"
+	loraB := "adapter-b"
+	for i := 0; selectStripeIndex(loraA) == selectStripeIndex(loraB); i++ {
+		loraB = fmt.Sprintf("adapter-b-%d", i)
+	}
+	require.NotEqual(t, selectStripeIndex(loraA), selectStripeIndex(loraB),
+		"adapter names must map to distinct stripes so the test proves BaseModel drives the key")
+
+	otherBase := "llama3-70b"
+	for i := 0; selectStripeIndex(otherBase) == selectStripeIndex(baseModel); i++ {
+		otherBase = fmt.Sprintf("llama3-70b-%d", i)
+	}
+	require.NotEqual(t, selectStripeIndex(otherBase), selectStripeIndex(baseModel))
+
+	t.Run("deterministic_lock_hold", func(t *testing.T) {
+		sharedPods := []*v1.Pod{
+			burstPod("shared-prefill-0", "prefill", "127.0.20.1"),
+			burstPod("shared-decode-0", "decode", "127.0.20.100"),
+		}
+		otherPods := []*v1.Pod{
+			burstPod("other-prefill-0", "prefill", "127.0.21.1"),
+			burstPod("other-decode-0", "decode", "127.0.21.100"),
+		}
+		r := &pdRouter{
+			cache:                 cache.NewForTest(),
+			prefillPolicy:         pd.NewLeastRequestPrefillPolicy(),
+			prefillRequestTracker: pd.NewPrefillRequestTracker(),
+			pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+			prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+			selectionCounts:       map[string]int64{},
+		}
+
+		// Hold the base model's stripe lock.
+		baseLock := r.selectLock(baseModel)
+		baseLock.Lock()
+		unlocked := false
+		defer func() {
+			if !unlocked {
+				baseLock.Unlock()
+			}
+		}()
+
+		// Unrelated base model must complete immediately.
+		ctxOther := types.NewRoutingContext(context.Background(), "pd", otherBase, "hello", "req-other", "user")
+		ctxOther.Engine = "vllm"
+		doneOther := make(chan error, 1)
+		go func() {
+			_, _, err := r.filterPrefillDecodePods(ctxOther, otherPods)
+			doneOther <- err
+		}()
+		select {
+		case err := <-doneOther:
+			require.NoError(t, err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("unrelated base model blocked while baseModel stripe was held")
+		}
+		r.pendingDecodeTracker.RemovePendingDecode(ctxOther.RequestID)
+		r.prefillRequestTracker.RemovePrefillRequest(ctxOther.RequestID)
+
+		// Both LoRA adapters sharing baseModel must block until baseLock is released.
+		startAdapter := func(adapter, reqID string) chan error {
+			ctx := types.NewRoutingContext(context.Background(), "pd", adapter, "hello", reqID, "user")
+			ctx.BaseModel = baseModel
+			ctx.Engine = "vllm"
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := r.filterPrefillDecodePods(ctx, sharedPods)
+				done <- err
+			}()
+			return done
+		}
+		doneA := startAdapter(loraA, "req-lora-a")
+		doneB := startAdapter(loraB, "req-lora-b")
+
+		select {
+		case err := <-doneA:
+			t.Fatalf("adapter %s completed while baseModel stripe was held (err=%v)", loraA, err)
+		case err := <-doneB:
+			t.Fatalf("adapter %s completed while baseModel stripe was held (err=%v)", loraB, err)
+		case <-time.After(50 * time.Millisecond):
+			// Expected: both adapters wait on baseModel's stripe.
+		}
+
+		baseLock.Unlock()
+		unlocked = true
+
+		for name, ch := range map[string]chan error{loraA: doneA, loraB: doneB} {
+			select {
+			case err := <-ch:
+				require.NoError(t, err, "adapter %s failed after unlock", name)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("adapter %s did not resume after baseModel stripe unlock", name)
+			}
+		}
+		r.pendingDecodeTracker.RemovePendingDecode("req-lora-a")
+		r.prefillRequestTracker.RemovePrefillRequest("req-lora-a")
+		r.pendingDecodeTracker.RemovePendingDecode("req-lora-b")
+		r.prefillRequestTracker.RemovePrefillRequest("req-lora-b")
+	})
+
+	t.Run("mixed_adapter_burst_splits_evenly", func(t *testing.T) {
+		const (
+			prefillCount = 4
+			requests     = 64 // 32 loraA + 32 loraB across 4 shared pods -> 16 each
+		)
+		prefillPods := make([]*v1.Pod, 0, prefillCount)
+		for i := 0; i < prefillCount; i++ {
+			prefillPods = append(prefillPods, burstPod(fmt.Sprintf("lora-prefill-%d", i), "prefill", fmt.Sprintf("127.0.22.%d", i+1)))
+		}
+		decodePod := burstPod("lora-decode-0", "decode", "127.0.22.100")
+		podList := &utils.PodArray{Pods: append(append([]*v1.Pod{}, prefillPods...), decodePod)}
+
+		gate := make(chan struct{})
+		tracker := pd.NewPrefillRequestTracker()
+		pending := pd.NewPendingDecodeTracker()
+		client := &http.Client{Transport: &gatedTransport{gate: gate}}
+		r := &pdRouter{
+			cache:                 cache.NewForTest(),
+			prefillPolicy:         pd.NewLeastRequestPrefillPolicy(),
+			prefillRequestTracker: tracker,
+			pendingDecodeTracker:  pending,
+			httpClient:            client,
+			prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+			selectionCounts:       map[string]int64{},
+		}
+		r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+		r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker)
+
+		ctxs := make([]*types.RoutingContext, requests)
+		errs := make([]error, requests)
+		for i := range ctxs {
+			model := loraA
+			if i%2 == 1 {
+				model = loraB
+			}
+			ctx := types.NewRoutingContext(context.Background(), "pd", model, "hello", fmt.Sprintf("lora-burst-%d", i), "user")
+			ctx.BaseModel = baseModel
+			ctx.Engine = "vllm"
+			ctx.ReqPath = testChatCompletionsPath
+			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"hello"}],"stream":true}`)
+			ctxs[i] = ctx
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range ctxs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				_, errs[i] = r.Route(ctxs[i], podList)
+			}(i)
+		}
+		close(start)
+
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			total := int32(0)
+			for _, cnt := range tracker.GetPrefillRequestCountsForPods(prefillPods) {
+				total += cnt
+			}
+			if int(total) == requests {
+				break
+			}
+			require.True(t, time.Now().Before(deadline), "only %d of %d requests registered before deadline", total, requests)
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		close(gate)
+		wg.Wait()
+
+		for i, err := range errs {
+			require.NoErrorf(t, err, "request %d failed", i)
+		}
+		selected := map[string]int{}
+		for _, ctx := range ctxs {
+			selected[ctx.RespHeaders[HeaderPrefillTargetPod]]++
+		}
+		want := requests / prefillCount
+		for _, pod := range prefillPods {
+			assert.Equalf(t, want, selected[pod.Name], "shared pod %s selections (all: %v)", pod.Name, selected)
+		}
+	})
 }

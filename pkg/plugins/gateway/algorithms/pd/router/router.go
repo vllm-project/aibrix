@@ -301,16 +301,18 @@ type pdRouter struct {
 	// because the registration that would have made them visible to each other
 	// only happened after selection returned.
 	//
-	// Striping by routingCtx.Model across a fixed power-of-two array avoids
+	// Striping by base model (routingCtx.BaseModel when set for LoRA requests,
+	// else routingCtx.Model) across a fixed power-of-two array avoids
 	// cross-model serialization and map growth under dynamic model churn while
-	// keeping each model's bursts strictly serialized. Each selection acquires
-	// at most one stripe, so stripe-to-stripe deadlocks cannot occur;
-	// countersMu is taken inside a stripe (in finalPDScore) and never the other
-	// way round. All underlying trackers (prefillRequestTracker,
-	// pendingDecodeTracker, tokenLoadTracker, pendingPrefixCredits) have their
-	// own internal synchronization, so even if two distinct model names (such
-	// as LoRA adapters sharing base PD pods) hash to different stripes, tracker
-	// access remains race-free.
+	// keeping each model's bursts — including bursts across LoRA adapters
+	// sharing the same base PD pods — strictly serialized. Two unrelated base
+	// models that hash-collide onto the same stripe simply serialize with each
+	// other, which is always safe and matches pre-striping behavior. Each
+	// selection acquires at most one stripe, so stripe-to-stripe deadlocks
+	// cannot occur; countersMu is taken inside a stripe (in finalPDScore) and
+	// never the other way round. All underlying trackers
+	// (prefillRequestTracker, pendingDecodeTracker, tokenLoadTracker,
+	// pendingPrefixCredits) also maintain their own internal synchronization.
 	//
 	// Only in-memory load-dependent work runs under the stripe lock: the
 	// imbalance fast paths, the per-pod scoring, finalPDScore and the tracker
@@ -325,9 +327,23 @@ type pdRouter struct {
 // selection serialization.
 const pdSelectLockStripes = 64
 
+// Compile-time check: pdSelectLockStripes must be a power of two so
+// selectStripeIndex can mask with (pdSelectLockStripes - 1).
+var _ [0]struct{} = [pdSelectLockStripes & (pdSelectLockStripes - 1)]struct{}{}
+
 type paddedMutex struct {
 	sync.Mutex
 	_ [56]byte // keep adjacent stripes on separate 64-byte cache lines
+}
+
+// selectLockKey returns the model name used to pick a selection lock stripe:
+// BaseModel when set (so LoRA adapters sharing base PD pods serialize on the
+// same stripe), otherwise Model.
+func selectLockKey(routingCtx *types.RoutingContext) string {
+	if routingCtx.BaseModel != "" {
+		return routingCtx.BaseModel
+	}
+	return routingCtx.Model
 }
 
 // selectStripeIndex hashes model with 32-bit FNV-1a into [0, pdSelectLockStripes)
@@ -874,8 +890,8 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	runningReqCounts, runningErr := r.decodeRunningRequests(routingCtx, decodePods, remoteOut)
 
 	// Everything below reads tracker state that concurrent selections for this
-	// model mutate.
-	selectMu := r.selectLock(routingCtx.Model)
+	// base model mutate.
+	selectMu := r.selectLock(selectLockKey(routingCtx))
 	selectMu.Lock()
 	defer selectMu.Unlock()
 
