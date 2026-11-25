@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -660,14 +661,13 @@ func TestScoreAndRankTieBreakReadsTheDecisionSnapshot(t *testing.T) {
 }
 
 // TestScoreAndRankTieBreakFallsBackToName keeps the deterministic name order when the counts
-// cannot help: no cache, a failed read, or equal counts.
+// cannot help: no cache, a failed read, or partial counts.
 func TestScoreAndRankTieBreakFallsBackToName(t *testing.T) {
 	for name, c := range map[string]*po2FakeCache{
-		"no cache":     nil,
-		"read error":   {RunningErr: fmt.Errorf("redis down")},
-		"equal counts": {Running: map[string]int64{"pod-a": 3, "pod-b": 3}},
-		"missing pod":  {Running: map[string]int64{"pod-a": 5}},
-		"nil counts":   {NilCounts: true},
+		"no cache":    nil,
+		"read error":  {RunningErr: fmt.Errorf("redis down")},
+		"missing pod": {Running: map[string]int64{"pod-a": 5}},
+		"nil counts":  {NilCounts: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, busy, idle := blendTieRouter(c)
@@ -676,6 +676,67 @@ func TestScoreAndRankTieBreakFallsBackToName(t *testing.T) {
 			assert.Same(t, busy, winner, "pod-a sorts first by name")
 		})
 	}
+}
+
+// TestScoreAndRankTieBreakSpreadsEqualRunningCounts is a regression test for #3597: requests
+// that arrive together read the same pre-increment counts, so with equal counts a name-first
+// tie-break hands the whole burst to the name-first pod. Like least-request-top-k, the tied
+// pods with the fewest running requests must be picked uniformly at random instead.
+func TestScoreAndRankTieBreakSpreadsEqualRunningCounts(t *testing.T) {
+	m, busy, idle := blendTieRouter(&po2FakeCache{Running: map[string]int64{"pod-a": 3, "pod-b": 3}})
+
+	winners := map[string]int{}
+	for range 100 {
+		winner, _, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: []*v1.Pod{idle, busy}})
+		require.NoError(t, err)
+		winners[winner.Name]++
+	}
+	assert.NotZero(t, winners[busy.Name], "the name-first pod must not win every equal-count tie")
+	assert.NotZero(t, winners[idle.Name], "both equally loaded pods must be eligible")
+}
+
+// syncFakeCache serializes FakeCache's Batches bookkeeping so the concurrent burst test can
+// share one cache across goroutines without racing on the fixture itself.
+type syncFakeCache struct {
+	*po2FakeCache
+	mu sync.Mutex
+}
+
+func (c *syncFakeCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.po2FakeCache.GetPodsRunningRequests(pods)
+}
+
+// TestScoreAndRankConcurrentBurstSpreadsEqualCounts reproduces the #3597 burst on the blend
+// path: goroutines deciding concurrently all read the same zero counts, and their picks must
+// spread across the tied pods instead of piling onto the name-first one.
+func TestScoreAndRankConcurrentBurstSpreadsEqualCounts(t *testing.T) {
+	m, busy, idle := blendTieRouter(nil)
+	m.cache = &syncFakeCache{po2FakeCache: &po2FakeCache{Running: map[string]int64{"pod-a": 0, "pod-b": 0}}}
+
+	const burst = 64
+	winners := make(chan string, burst)
+	var wg sync.WaitGroup
+	for range burst {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			winner, _, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: []*v1.Pod{idle, busy}})
+			if assert.NoError(t, err) {
+				winners <- winner.Name
+			}
+		}()
+	}
+	wg.Wait()
+	close(winners)
+
+	counts := map[string]int{}
+	for name := range winners {
+		counts[name]++
+	}
+	assert.NotZero(t, counts[busy.Name])
+	assert.NotZero(t, counts[idle.Name], "a concurrent burst reading identical counts must not all land on one pod")
 }
 
 // TestScoreAndRankTieBreakIgnoresPartialCounts: with a count for only some of three tied pods,
