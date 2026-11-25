@@ -2572,13 +2572,24 @@ def _ipv6_listeners_sharing_ipv4_port() -> Optional[Dict[int, bool]]:
             socket.AF_NETLINK, socket.SOCK_RAW, _NETLINK_SOCK_DIAG
         ) as sock:
             sock.settimeout(2.0)
-            request = struct.pack(
-                "=BBBBI", socket.AF_INET6, socket.IPPROTO_TCP, 0, 0,
-                _TCP_LISTEN_STATE_MASK,
-            ) + b"\0" * 48
+            request = (
+                struct.pack(
+                    "=BBBBI",
+                    socket.AF_INET6,
+                    socket.IPPROTO_TCP,
+                    0,
+                    0,
+                    _TCP_LISTEN_STATE_MASK,
+                )
+                + b"\0" * 48
+            )
             header = struct.pack(
-                "=IHHII", 16 + len(request), _SOCK_DIAG_BY_FAMILY,
-                _NLM_F_REQUEST_DUMP, 1, 0,
+                "=IHHII",
+                16 + len(request),
+                _SOCK_DIAG_BY_FAMILY,
+                _NLM_F_REQUEST_DUMP,
+                1,
+                0,
             )
             sock.send(header + request)
             blocks: Dict[int, bool] = {}
