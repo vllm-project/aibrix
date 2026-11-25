@@ -252,7 +252,10 @@ The check exports these metrics:
 - ``aibrix_gateway_discovery_watch_progress_age_seconds``: seconds since the
   Pod informer's resource version last moved, whether by a watch event, a watch
   bookmark, or a relist. It is sampled once per interval, so it can read up to
-  one interval high. It covers the Pod watch only, not ModelAdapters.
+  one interval high. It covers the Pod watch only, not ModelAdapters. Exported
+  only when the API server is Kubernetes 1.31 or newer (see below).
+- ``aibrix_gateway_discovery_watch_progress_supported``: 1 when the watch
+  progress age is exported, 0 when it is not.
 - ``aibrix_gateway_discovery_verification_failures_total``: failed checks, by
   ``check`` (``reachability`` or ``consistency``).
 
@@ -269,11 +272,24 @@ and it costs no request: the check reads how far the informer has got. Every
 Pod change resets it. With no Pod changes, it moves only on watch bookmarks,
 which the API server sends about once a minute, and a bookmark carries a newer
 resource version only if something advanced the API server's Pod watch cache
-since the last one. The reachability LIST does that. On idle test API servers
-(Kubernetes 1.31 and 1.37), the version moved about every 60 seconds while the
-check ran and never stood still for more than 63 seconds. Without the check, an
-idle Pod watch on 1.31 got no advancing bookmark in 300 seconds. That is why the
-gauge exists only when the check runs.
+since the last one. On idle test API servers running Kubernetes 1.31 and 1.37,
+the reachability LIST did that: the version moved about every 60 seconds while
+the check ran and never stood still for more than about 61 seconds. Without the
+check, an idle Pod watch on 1.31 stopped moving: in one run it stood still for
+300 seconds, and in another it moved once, after about a minute, and then stood
+still for 310 seconds. That is why the gauge exists only when the check runs.
+
+On Kubernetes 1.29 the check did not help: an idle Pod watch got no advancing
+bookmark in 300 seconds, with or without it, so the age would keep rising on a
+healthy replica. The gateway therefore reads the API server version once at
+startup and exports the age only on 1.31 or newer. On older versions, and when
+the version cannot be read, it exports no age, sets
+``aibrix_gateway_discovery_watch_progress_supported`` to 0, and logs the
+detected version. 1.30 was not measured and counts as older. The 1.31 floor
+comes from behaviour observed on test API servers, not from a known mechanism.
+If a newer cluster shows a rising age while Pods are quiet, treat the signal as
+unsupported there. The version is read only at startup, so after upgrading the
+API server to 1.31, restart the gateway to start exporting the age.
 
 Alert when it exceeds three minutes, about three bookmark periods, while the
 replica still reaches the API server:
@@ -286,7 +302,9 @@ replica still reaches the API server:
           and on (pod) max by (pod) (aibrix_gateway_discovery_unreachable) == 0
 
 The bookmark period is internal to the API server and cannot be configured, so
-keep the threshold a multiple of it rather than tightening it.
+keep the threshold a multiple of it rather than tightening it. Below 1.31 the
+age is not exported, so this alert never fires there; check the supported gauge
+to tell that apart from a healthy watch.
 
 Alert on the unreachable gauge. One replica reporting it while others do not
 has lost its own connection; every replica at once points at the API server:

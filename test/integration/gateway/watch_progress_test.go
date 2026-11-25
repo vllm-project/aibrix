@@ -17,6 +17,8 @@ limitations under the License.
 package gateway
 
 import (
+	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -29,30 +31,59 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 )
 
-const watchProgressMetric = "aibrix_gateway_discovery_watch_progress_age_seconds"
+const (
+	watchProgressMetric          = "aibrix_gateway_discovery_watch_progress_age_seconds"
+	watchProgressSupportedMetric = "aibrix_gateway_discovery_watch_progress_supported"
+)
+
+// hasMetric reports whether name is registered.
+func (r *replicaChecker) hasMetric(name string) bool {
+	families, err := r.reg.Gather()
+	Expect(err).NotTo(HaveOccurred())
+	for _, family := range families {
+		if family.GetName() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// minorAtLeast131 reads the API server's version the plain way, from its
+// Major and Minor fields, so the test does not check the gate with itself.
+func minorAtLeast131(client kubernetes.Interface) (bool, string) {
+	info, err := client.Discovery().ServerVersion()
+	Expect(err).NotTo(HaveOccurred())
+	major, err := strconv.Atoi(info.Major)
+	Expect(err).NotTo(HaveOccurred())
+	minor, err := strconv.Atoi(strings.TrimRight(info.Minor, "+"))
+	Expect(err).NotTo(HaveOccurred())
+	return major > 1 || (major == 1 && minor >= 31), info.GitVersion
+}
 
 // This guards against false alarms on a quiet cluster: with no Pod changes,
-// the Pod watch only moves on bookmarks, and those carry a newer resource
-// version only because the reachability LIST keeps advancing the API server's
-// Pod watch cache. The API server offers a bookmark about once a minute, so
-// the age should reset about every 60 s and stay below 70 s.
+// the Pod watch only moves on bookmarks. On 1.31 and 1.37 those carried a
+// newer resource version about once a minute while the reachability LIST
+// ran, so the age should stay below 70 s. On 1.29 they did not, so the gauge
+// must not be exported there at all.
 var _ = Describe("Gateway discovery watch progress", Ordered, Label("gateway", "integration"), func() {
 	const (
 		// Shorter than the 10 s default so the gauge's sampling error (up to
 		// one interval) stays small next to the 70 s bound.
 		interval  = 2 * time.Second
 		threshold = 6 * time.Second
-		// Long enough for the age to pass 70 s twice over if no bookmark
-		// moved the version: the first bookmark is due about 60 s after the
-		// watch opens, the second about 120 s.
+		// With no advancing bookmark the age would pass 70 s a minute before
+		// the end. The first bookmark is due about 60 s after the watch
+		// opens, the second about 120 s.
 		observe = 130 * time.Second
 		maxAge  = 70.0
 	)
 	var (
-		testEnv  *envtest.Environment
-		provider *discovery.KubernetesProvider
-		replica  *replicaChecker
-		stopCh   chan struct{}
+		testEnv       *envtest.Environment
+		provider      *discovery.KubernetesProvider
+		replica       *replicaChecker
+		stopCh        chan struct{}
+		supported     bool
+		serverVersion string
 	)
 
 	BeforeAll(func() {
@@ -66,11 +97,13 @@ var _ = Describe("Gateway discovery watch progress", Ordered, Label("gateway", "
 
 		client, err := kubernetes.NewForConfig(cfg)
 		Expect(err).NotTo(HaveOccurred())
+		supported, serverVersion = minorAtLeast131(client)
 		checker, err := cache.NewDiscoveryChecker(cache.DiscoveryCheckOptions{
 			Interval:             interval,
 			UnreachableThreshold: threshold,
 			Reachability:         cache.PodListReachability(client),
-			WatchResourceVersion: provider.PodWatchResourceVersion,
+			// The gateway's own gate: one /version read.
+			WatchResourceVersion: cache.KubernetesWatchProgress(cfg, provider, interval/2),
 		})
 		Expect(err).NotTo(HaveOccurred())
 		reg := prometheus.NewRegistry()
@@ -91,7 +124,20 @@ var _ = Describe("Gateway discovery watch progress", Ordered, Label("gateway", "
 		}
 	})
 
+	It("exports the age only when the API server is 1.31 or newer", func() {
+		GinkgoWriter.Printf("API server %s, expected supported=%v\n", serverVersion, supported)
+		Expect(replica.hasMetric(watchProgressMetric)).To(Equal(supported))
+		want := 0.0
+		if supported {
+			want = 1
+		}
+		Expect(replica.metric(watchProgressSupportedMetric)).To(Equal(want))
+	})
+
 	It("stays below 70 s on an idle cluster while the reachability check runs", func() {
+		if !supported {
+			Skip("the age is not exported on API server " + serverVersion + "; it needs 1.31 or newer")
+		}
 		start := time.Now()
 		startVersion := provider.PodWatchResourceVersion()
 		versions := map[string]bool{startVersion: true}

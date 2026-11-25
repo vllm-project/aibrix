@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-25 00:48+0530\n"
+"POT-Creation-Date: 2026-11-25 11:59+0530\n"
 "PO-Revision-Date: 2026-09-10 18:55+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -369,10 +369,23 @@ msgid ""
 "the Pod informer's resource version last moved, whether by a watch event,"
 " a watch bookmark, or a relist. It is sampled once per interval, so it "
 "can read up to one interval high. It covers the Pod watch only, not "
-"ModelAdapters."
-msgstr "``aibrix_gateway_discovery_watch_progress_age_seconds``：距 Pod informer 的 resource version 上次变化（无论来自 watch 事件、watch bookmark 还是重新 list）经过的秒数。该值每个间隔采样一次，因此最多可能偏高一个间隔。它只覆盖 Pod watch，不包括 ModelAdapter。"
+"ModelAdapters. Exported only when the API server is Kubernetes 1.31 or "
+"newer (see below)."
+msgstr ""
+"``aibrix_gateway_discovery_watch_progress_age_seconds``：距 Pod informer 的 "
+"resource version 上次变化（无论来自 watch 事件、watch bookmark 还是重新 "
+"list）经过的秒数。该值每个间隔采样一次，因此最多可能偏高一个间隔。它只覆盖 Pod watch，不包括 ModelAdapter。仅当 API"
+" server 为 Kubernetes 1.31 或更高版本时才会导出（见下文）。"
 
-#: ../../source/production/gateway.rst:256
+#: ../../source/production/gateway.rst:257
+msgid ""
+"``aibrix_gateway_discovery_watch_progress_supported``: 1 when the watch "
+"progress age is exported, 0 when it is not."
+msgstr ""
+"``aibrix_gateway_discovery_watch_progress_supported``：导出 watch 进度时长时为 "
+"1，未导出时为 0。"
+
+#: ../../source/production/gateway.rst:259
 msgid ""
 "``aibrix_gateway_discovery_verification_failures_total``: failed checks, "
 "by ``check`` (``reachability`` or ``consistency``)."
@@ -380,7 +393,7 @@ msgstr ""
 "``aibrix_gateway_discovery_verification_failures_total``：失败的检查次数，按 "
 "``check`` 区分（``reachability`` 或 ``consistency``）。"
 
-#: ../../source/production/gateway.rst:259
+#: ../../source/production/gateway.rst:262
 msgid ""
 "Only reachability drives the unreachable gauge. The consistency check "
 "requires an exact match, so a Pod or ModelAdapter change during its LIST "
@@ -394,35 +407,62 @@ msgstr ""
 "只有可达性检查决定不可达指标。一致性检查要求完全一致，因此在其 LIST 期间发生的任何 Pod 或 ModelAdapter "
 "变更，都会让健康的副本检查失败；滚动更新期间出现单次失败是正常的。如果可达性检查成功，而一致性时长持续上升，则说明缓存没有收敛。由于失败的检查最多会退避五分钟，连续几次失败就可能让健康副本的一致性时长达到大约五分钟加上最大有效期，因此针对它设置的告警阈值应高于这个值。"
 
-#: ../../source/production/gateway.rst:267
+#: ../../source/production/gateway.rst:270
 msgid ""
 "The watch progress age is the signal for a watch that is connected but "
 "stuck, and it costs no request: the check reads how far the informer has "
 "got. Every Pod change resets it. With no Pod changes, it moves only on "
 "watch bookmarks, which the API server sends about once a minute, and a "
 "bookmark carries a newer resource version only if something advanced the "
-"API server's Pod watch cache since the last one. The reachability LIST "
-"does that. On idle test API servers (Kubernetes 1.31 and 1.37), the "
+"API server's Pod watch cache since the last one. On idle test API servers"
+" running Kubernetes 1.31 and 1.37, the reachability LIST did that: the "
 "version moved about every 60 seconds while the check ran and never stood "
-"still for more than 63 seconds. Without the check, an idle Pod watch on "
-"1.31 got no advancing bookmark in 300 seconds. That is why the gauge "
-"exists only when the check runs."
-msgstr "watch 进度时长用于发现已连接但卡住的 watch，且不产生任何请求：检查只读取 informer 已推进到哪里。每次 Pod 变更都会将其重置。没有 Pod 变更时，它只会随 watch bookmark 推进；API server 大约每分钟发送一次 bookmark，而只有自上一次 bookmark 以来有操作推进了 API server 的 Pod watch 缓存，bookmark 才会携带更新的 resource version。可达性 LIST 正好起到这个作用。在空闲的测试 API server（Kubernetes 1.31 和 1.37）上，检查运行期间版本大约每 60 秒变化一次，静止时间从未超过 63 秒。没有该检查时，1.31 上空闲的 Pod watch 在 300 秒内没有收到任何推进版本的 bookmark。这就是该指标只在检查运行时才存在的原因。"
+"still for more than about 61 seconds. Without the check, an idle Pod "
+"watch on 1.31 stopped moving: in one run it stood still for 300 seconds, "
+"and in another it moved once, after about a minute, and then stood still "
+"for 310 seconds. That is why the gauge exists only when the check runs."
+msgstr "watch 进度时长用于发现已连接但卡住的 watch，且不产生任何请求：检查只读取 informer 已推进到哪里。每次 Pod 变更都会将其重置。没有 Pod 变更时，它只会随 watch bookmark 推进；API server 大约每分钟发送一次 bookmark，而只有自上一次 bookmark 以来有操作推进了 API server 的 Pod watch 缓存，bookmark 才会携带更新的 resource version。在运行 Kubernetes 1.31 和 1.37 的空闲测试 API server 上，可达性 LIST 起到了这个作用：检查运行期间版本大约每 60 秒变化一次，静止时间从未超过约 61 秒。没有该检查时，1.31 上空闲的 Pod watch 会停止推进：一次运行中它静止了 300 秒；另一次运行中它在大约一分钟后推进了一次，之后静止了 310 秒。这就是该指标只在检查运行时才存在的原因。"
 
-#: ../../source/production/gateway.rst:278
+#: ../../source/production/gateway.rst:282
+msgid ""
+"On Kubernetes 1.29 the check did not help: an idle Pod watch got no "
+"advancing bookmark in 300 seconds, with or without it, so the age would "
+"keep rising on a healthy replica. The gateway therefore reads the API "
+"server version once at startup and exports the age only on 1.31 or newer."
+" On older versions, and when the version cannot be read, it exports no "
+"age, sets ``aibrix_gateway_discovery_watch_progress_supported`` to 0, and"
+" logs the detected version. 1.30 was not measured and counts as older. "
+"The 1.31 floor comes from behaviour observed on test API servers, not "
+"from a known mechanism. If a newer cluster shows a rising age while Pods "
+"are quiet, treat the signal as unsupported there. The version is read "
+"only at startup, so after upgrading the API server to 1.31, restart the "
+"gateway to start exporting the age."
+msgstr ""
+"在 Kubernetes 1.29 上，该检查没有作用：无论是否运行检查，空闲的 Pod watch 在 300 秒内都没有收到任何推进版本的 "
+"bookmark，因此健康副本上的该时长会持续上升。为此，网关在启动时读取一次 API server 版本，仅在 1.31 "
+"或更高版本上导出该时长。在更低版本上，以及无法读取版本时，网关不导出该时长，将 "
+"``aibrix_gateway_discovery_watch_progress_supported`` 设为 0，并记录检测到的版本。1.30"
+" 未经测量，按更低版本处理。1.31 这一下限来自在测试 API server 上观察到的行为，而不是已知的机制。如果更新版本的集群在 Pod "
+"没有变化时也出现持续上升的时长，请将该信号视为在该集群上不受支持。版本只在启动时读取，因此将 API server 升级到 1.31 "
+"后，需要重启网关才会开始导出该时长。"
+
+#: ../../source/production/gateway.rst:294
 msgid ""
 "Alert when it exceeds three minutes, about three bookmark periods, while "
 "the replica still reaches the API server:"
 msgstr "当它超过三分钟（大约三个 bookmark 周期），而副本仍能访问 API server 时触发告警："
 
-#: ../../source/production/gateway.rst:288
+#: ../../source/production/gateway.rst:304
 msgid ""
 "The bookmark period is internal to the API server and cannot be "
 "configured, so keep the threshold a multiple of it rather than tightening"
-" it."
-msgstr "bookmark 周期由 API server 内部决定，无法配置，因此阈值应保持为它的倍数，而不要调得更紧。"
+" it. Below 1.31 the age is not exported, so this alert never fires there;"
+" check the supported gauge to tell that apart from a healthy watch."
+msgstr ""
+"bookmark 周期由 API server 内部决定，无法配置，因此阈值应保持为它的倍数，而不要调得更紧。在低于 1.31 "
+"的版本上不会导出该时长，因此这条告警永远不会触发；请查看 supported 指标，以区分这种情况与健康的 watch。"
 
-#: ../../source/production/gateway.rst:291
+#: ../../source/production/gateway.rst:309
 msgid ""
 "Alert on the unreachable gauge. One replica reporting it while others do "
 "not has lost its own connection; every replica at once points at the API "
@@ -431,7 +471,7 @@ msgstr ""
 "请基于不可达指标配置告警。如果只有一个副本报告不可达而其他副本没有，说明该副本自身的连接已断开；如果所有副本同时报告，则问题出在 API "
 "server："
 
-#: ../../source/production/gateway.rst:300
+#: ../../source/production/gateway.rst:318
 msgid ""
 "The threshold absorbs a normal watch reconnect, so keep it above the time"
 " one takes. The ``for`` clause then requires it to stay unreachable, so "
@@ -441,45 +481,50 @@ msgstr ""
 "阈值用于吸收一次正常的 watch 重连，因此请将其设置得高于一次重连所需的时间。``for`` "
 "子句再要求副本持续处于不可达状态，因此在默认配置下，告警会在大约 90 秒没有成功检查后触发。"
 
-#: ../../source/production/gateway.rst:304
+#: ../../source/production/gateway.rst:322
 msgid "What the check does not prove:"
 msgstr "该检查不能证明的内容："
 
-#: ../../source/production/gateway.rst:306
+#: ../../source/production/gateway.rst:324
 msgid ""
 "Reachability proves the API server answers this replica. It does not "
 "prove the watch is delivering events. A watch that is connected but stuck"
 " shows in the watch progress age, and in the consistency age when that "
 "check is on."
-msgstr "可达性只能证明 API server 能响应该副本，不能证明 watch 仍在正常投递事件。已连接但卡住的 watch 会体现在 watch 进度时长上；启用一致性检查时，也会体现在一致性时长上。"
+msgstr ""
+"可达性只能证明 API server 能响应该副本，不能证明 watch 仍在正常投递事件。已连接但卡住的 watch 会体现在 watch "
+"进度时长上；启用一致性检查时，也会体现在一致性时长上。"
 
-#: ../../source/production/gateway.rst:309
+#: ../../source/production/gateway.rst:327
 msgid ""
 "A watch progress age that stays low proves the Pod watch delivered at "
 "least a bookmark recently, not that every Pod event arrived. Only the "
 "consistency check compares the cache with the API server. A stuck watch "
 "on a reachable API server could not be reproduced in testing, so the "
 "alert above has not been seen to fire on one."
-msgstr "watch 进度时长保持较低，只能证明 Pod watch 最近至少收到了一个 bookmark，不能证明每个 Pod 事件都已送达。只有一致性检查会将缓存与 API server 进行比较。测试中无法复现 API server 可达但 watch 卡住的情况，因此尚未观察到上面的告警在这种情况下触发。"
+msgstr ""
+"watch 进度时长保持较低，只能证明 Pod watch 最近至少收到了一个 bookmark，不能证明每个 Pod "
+"事件都已送达。只有一致性检查会将缓存与 API server 进行比较。测试中无法复现 API server 可达但 watch "
+"卡住的情况，因此尚未观察到上面的告警在这种情况下触发。"
 
-#: ../../source/production/gateway.rst:314
+#: ../../source/production/gateway.rst:332
 msgid ""
 "Reporting unreachable does not change readiness or routing. The replica "
 "stays in the Service endpoints and keeps routing on its last known Pod "
 "list."
 msgstr "报告不可达不会改变就绪状态或路由。该副本仍保留在 Service 端点中，并继续基于最后已知的 Pod 列表进行路由。"
 
-#: ../../source/production/gateway.rst:317
+#: ../../source/production/gateway.rst:335
 msgid ""
 "In standalone mode there is no API server, so no check runs and no "
 "discovery metric is reported."
 msgstr "在独立模式下没有 API server，因此不会运行检查，也不会上报任何服务发现指标。"
 
-#: ../../source/production/gateway.rst:321
+#: ../../source/production/gateway.rst:339
 msgid "Envoy Proxy"
 msgstr "Envoy Proxy"
 
-#: ../../source/production/gateway.rst:323
+#: ../../source/production/gateway.rst:341
 msgid ""
 "The Envoy proxy (``gateway.envoyProxy``) is the data-plane component "
 "managed by Envoy Gateway. Set ``replicas`` and per-container resources as"
@@ -488,11 +533,11 @@ msgstr ""
 "Envoy 代理（``gateway.envoyProxy`` ）是由 Envoy Gateway 管理的数据面组件。按如下方式设置 "
 "``replicas`` 和每个容器的资源："
 
-#: ../../source/production/gateway.rst:342
+#: ../../source/production/gateway.rst:360
 msgid "Enabling Redis for Multi-Replica Deployments"
 msgstr "为多副本部署启用 Redis"
 
-#: ../../source/production/gateway.rst:344
+#: ../../source/production/gateway.rst:362
 msgid ""
 "When running more than one gateway plugin replica, shared state is "
 "required so that all instances agree on routing decisions (e.g. prefix-"
@@ -500,7 +545,7 @@ msgid ""
 "configured:"
 msgstr "运行多个网关插件副本时，需要共享状态，以使所有实例对路由决策达成一致（例如 prefix-cache 块分配、限流计数器）。必须同时配置以下两项："
 
-#: ../../source/production/gateway.rst:348
+#: ../../source/production/gateway.rst:366
 msgid ""
 "**Connect to Redis** — the gateway plugin reads the ``REDIS_HOST`` "
 "environment variable at startup. If the variable is unset or Redis is "
@@ -510,7 +555,7 @@ msgstr ""
 "**连接 Redis** — 网关插件在启动时读取 ``REDIS_HOST`` 环境变量。如果未设置该变量或 Redis "
 "不可达，每个副本仅使用进程内状态，会导致各 Pod 之间路由不一致。"
 
-#: ../../source/production/gateway.rst:352
+#: ../../source/production/gateway.rst:370
 msgid ""
 "**Enable cross-replica state sync** — setting "
 "``AIBRIX_STATESYNC_ENABLED=true`` activates the Redis-backed delta-sync "
@@ -524,11 +569,11 @@ msgstr ""
 "的增量同步机制，在副本间传播 prefix-cache 状态。没有该标志时，网关仍会为其他用途（例如限流）连接 Redis，但 **不会** 在 "
 "Pod 之间同步 prefix-cache 路由状态，因此多副本 ``prefix-cache`` 路由仍会产生不一致的决策。"
 
-#: ../../source/production/gateway.rst:358
+#: ../../source/production/gateway.rst:376
 msgid "Enable both by updating your ``values.yaml`` override:"
 msgstr "通过更新 ``values.yaml`` 覆盖文件同时启用这两项："
 
-#: ../../source/production/gateway.rst:371
+#: ../../source/production/gateway.rst:389
 msgid ""
 "The Helm chart sets ``REDIS_HOST`` automatically from "
 "``gatewayPlugin.dependencies.redis.host``, defaulting to ``<release-name"
@@ -539,7 +584,7 @@ msgstr ""
 "``REDIS_HOST`` ，该字段为空时默认为 ``<release-name>-redis-master`` 。对于外部 Redis "
 "集群，将 ``host`` 设置为 Redis 端点的服务主机名或 IP。"
 
-#: ../../source/production/gateway.rst:376
+#: ../../source/production/gateway.rst:394
 msgid ""
 "``AIBRIX_STATESYNC_ENABLED`` defaults to ``false``. It must be explicitly"
 " set to ``true`` for cross-replica state sync to activate. Omitting this "
@@ -549,11 +594,11 @@ msgstr ""
 "``AIBRIX_STATESYNC_ENABLED`` 默认为 ``false`` 。必须显式设置为 ``true`` "
 "才会启用跨副本状态同步。将网关插件扩展到多个副本时，漏设该标志是 ``prefix-cache`` 路由不一致最常见的原因。"
 
-#: ../../source/production/gateway.rst:381
+#: ../../source/production/gateway.rst:399
 msgid "Sizing Redis"
 msgstr "为 Redis 规划容量"
 
-#: ../../source/production/gateway.rst:383
+#: ../../source/production/gateway.rst:401
 msgid ""
 "The bundled Redis instance is deployed under ``metadata.redis``. For "
 "production workloads with multiple gateway plugin replicas, increase its "
@@ -562,7 +607,7 @@ msgstr ""
 "内置 Redis 实例部署在 ``metadata.redis`` 下。对于使用多个网关插件副本的生产负载，请在默认值基础上提高其 "
 "CPU、内存，以及（若使用持久化）存储："
 
-#: ../../source/production/gateway.rst:401
+#: ../../source/production/gateway.rst:419
 msgid ""
 "The right sizing depends on request throughput and the number of distinct"
 " prefix-cache keys in flight. As a starting point, allocate roughly **1 "
@@ -573,7 +618,7 @@ msgstr ""
 "合适的容量取决于请求吞吐量和进行中的不同 prefix-cache key 数量。作为起点，大约按 **每 1 000 个并发请求 1 GiB "
 "内存** 分配；如果 Redis 成为延迟瓶颈，再增加 CPU（监控 ``redis_commands_duration_seconds`` ）。"
 
-#: ../../source/production/gateway.rst:406
+#: ../../source/production/gateway.rst:424
 msgid ""
 "If you are using an externally managed Redis (e.g. AWS ElastiCache, "
 "Google Memorystore), set ``gatewayPlugin.dependencies.redis.host`` to the"
@@ -585,11 +630,11 @@ msgstr ""
 "``gatewayPlugin.dependencies.redis.host`` 设置为外部端点，并从覆盖文件中删除 "
 "``metadata.redis`` 块 — 提供自定义 host 时，chart 不会部署自带 Redis。"
 
-#: ../../source/production/gateway.rst:412
+#: ../../source/production/gateway.rst:430
 msgid "Disabling Gateway Rate Limiting"
 msgstr ""
 
-#: ../../source/production/gateway.rst:414
+#: ../../source/production/gateway.rst:432
 msgid ""
 "Set ``AIBRIX_DISABLE_RATE_LIMITING=true`` on the gateway plugin to "
 "disable AIBrix user RPM/TPM and model RPS quota enforcement. The setting "
@@ -598,7 +643,7 @@ msgid ""
 "forwards the header unchanged."
 msgstr ""
 
-#: ../../source/production/gateway.rst:426
+#: ../../source/production/gateway.rst:444
 msgid ""
 "The setting does not disable the per-replica ``requestsInflight`` guard "
 "or disconnect Redis. Keep Redis configured when session affinity, "
@@ -609,27 +654,27 @@ msgid ""
 "from another caller's jobs in this mode."
 msgstr ""
 
-#: ../../source/production/gateway.rst:433
+#: ../../source/production/gateway.rst:451
 msgid "Configuring Buffer Limits, Connections, and QPS"
 msgstr "配置缓冲区限制、连接与 QPS"
 
-#: ../../source/production/gateway.rst:435
+#: ../../source/production/gateway.rst:453
 msgid ""
 "AIBrix exposes three policy knobs under ``gateway`` to control how "
 "traffic flows between clients, the Envoy proxy, and backend pods."
 msgstr "AIBrix 在 ``gateway`` 下提供三个策略开关，用于控制客户端、Envoy 代理与后端 Pod 之间的流量。"
 
-#: ../../source/production/gateway.rst:439
+#: ../../source/production/gateway.rst:457
 msgid "Client Traffic Policy"
 msgstr "客户端流量策略"
 
-#: ../../source/production/gateway.rst:441
+#: ../../source/production/gateway.rst:459
 msgid ""
 "``clientTrafficPolicy`` governs connections and request sizes arriving "
 "from external clients:"
 msgstr "``clientTrafficPolicy`` 控制来自外部客户端的连接和请求大小："
 
-#: ../../source/production/gateway.rst:443
+#: ../../source/production/gateway.rst:461
 msgid ""
 "**bufferLimit** — maximum bytes buffered per request/response body "
 "(input/output size). The default ``4194304`` is 4 MiB. Increase this if "
@@ -638,35 +683,35 @@ msgstr ""
 "**bufferLimit** — 每个请求/响应体缓冲的最大字节数（输入/输出大小）。默认 ``4194304`` 为 4 "
 "MiB。如果工作负载发送较大 prompt 或接收较大 completion，请增大该值。"
 
-#: ../../source/production/gateway.rst:446
+#: ../../source/production/gateway.rst:464
 msgid ""
 "**connectionLimit** — maximum simultaneous TCP connections accepted by "
 "the proxy."
 msgstr "**connectionLimit** — 代理接受的最大同时 TCP 连接数。"
 
-#: ../../source/production/gateway.rst:447
+#: ../../source/production/gateway.rst:465
 msgid ""
 "**http2.maxConcurrentStreams** — maximum concurrent HTTP/2 streams per "
 "connection from a client."
 msgstr "**http2.maxConcurrentStreams** — 每个来自客户端的连接上的最大并发 HTTP/2 流数。"
 
-#: ../../source/production/gateway.rst:461
+#: ../../source/production/gateway.rst:479
 msgid "Backend Traffic Policy"
 msgstr "后端流量策略"
 
-#: ../../source/production/gateway.rst:463
+#: ../../source/production/gateway.rst:481
 msgid ""
 "``backendTrafficPolicy`` controls how Envoy distributes load across "
 "backend pods and limits the blast radius of a single slow or failing pod:"
 msgstr "``backendTrafficPolicy`` 控制 Envoy 如何在后端 Pod 之间分配负载，并限制单个缓慢或故障 Pod 的影响范围："
 
-#: ../../source/production/gateway.rst:466
+#: ../../source/production/gateway.rst:484
 msgid ""
 "**circuitBreaker.maxConnections** — maximum TCP connections to a single "
 "backend pod."
 msgstr "**circuitBreaker.maxConnections** — 到单个后端 Pod 的最大 TCP 连接数。"
 
-#: ../../source/production/gateway.rst:467
+#: ../../source/production/gateway.rst:485
 msgid ""
 "**circuitBreaker.maxParallelRequests** — maximum in-flight requests to a "
 "single backend pod (effective QPS cap when combined with latency)."
@@ -674,35 +719,35 @@ msgstr ""
 "**circuitBreaker.maxParallelRequests** — 到单个后端 Pod 的最大进行中请求数（结合延迟时相当于有效 "
 "QPS 上限）。"
 
-#: ../../source/production/gateway.rst:468
+#: ../../source/production/gateway.rst:486
 msgid ""
 "**circuitBreaker.maxPendingRequests** — maximum requests queued waiting "
 "for a connection to a backend pod."
 msgstr "**circuitBreaker.maxPendingRequests** — 等待连接到后端 Pod 的最大排队请求数。"
 
-#: ../../source/production/gateway.rst:469
+#: ../../source/production/gateway.rst:487
 msgid ""
 "**circuitBreaker.maxParallelRetries** — maximum concurrent retries to a "
 "backend pod."
 msgstr "**circuitBreaker.maxParallelRetries** — 到后端 Pod 的最大并发重试数。"
 
-#: ../../source/production/gateway.rst:470
+#: ../../source/production/gateway.rst:488
 msgid ""
 "**circuitBreaker.maxRequestsPerConnection** — maximum requests served on "
 "a single connection before it is recycled."
 msgstr "**circuitBreaker.maxRequestsPerConnection** — 单条连接在回收前可服务的最大请求数。"
 
-#: ../../source/production/gateway.rst:471
+#: ../../source/production/gateway.rst:489
 msgid ""
 "**http2.maxConcurrentStreams** — maximum concurrent HTTP/2 streams per "
 "connection to a backend pod."
 msgstr "**http2.maxConcurrentStreams** — 到后端 Pod 的每个连接上的最大并发 HTTP/2 流数。"
 
-#: ../../source/production/gateway.rst:487
+#: ../../source/production/gateway.rst:505
 msgid "Envoy Patch Policy"
 msgstr "Envoy Patch Policy"
 
-#: ../../source/production/gateway.rst:489
+#: ../../source/production/gateway.rst:507
 msgid ""
 "``envoyPatchPolicy`` provides lower-level overrides applied directly to "
 "the Envoy xDS configuration, covering route timeouts and the limits for "
@@ -711,19 +756,19 @@ msgstr ""
 "``envoyPatchPolicy`` 提供直接作用于 Envoy xDS 配置的更底层覆盖，涵盖路由超时和 original-"
 "destination 集群的限制："
 
-#: ../../source/production/gateway.rst:492
+#: ../../source/production/gateway.rst:510
 msgid ""
 "**route.timeout** — maximum duration Envoy waits for a backend response. "
 "Increase this for long-running inference requests."
 msgstr "**route.timeout** — Envoy 等待后端响应的最长时间。对长时间推理请求请增大该值。"
 
-#: ../../source/production/gateway.rst:494
+#: ../../source/production/gateway.rst:512
 msgid ""
 "**route.connectTimeout** — maximum time to establish a TCP connection to "
 "a backend pod."
 msgstr "**route.connectTimeout** — 与后端 Pod 建立 TCP 连接的最长时间。"
 
-#: ../../source/production/gateway.rst:495
+#: ../../source/production/gateway.rst:513
 msgid ""
 "**circuitBreakers.maxConnections / maxRequests / maxPendingRequests** — "
 "same semantics as the backend traffic policy above but applied at the "
@@ -732,21 +777,21 @@ msgstr ""
 "**circuitBreakers.maxConnections / maxRequests / maxPendingRequests** — "
 "语义与上述后端流量策略相同，但作用于 Envoy 集群级别。"
 
-#: ../../source/production/gateway.rst:511
+#: ../../source/production/gateway.rst:529
 msgid "Choosing a Routing Strategy"
 msgstr "选择路由策略"
 
-#: ../../source/production/gateway.rst:513
+#: ../../source/production/gateway.rst:531
 msgid ""
 "If no ``routing-strategy`` header is provided, the gateway defaults to "
 "``random`` routing."
 msgstr "如果未提供 ``routing-strategy`` 头，网关默认使用 ``random`` 路由。"
 
-#: ../../source/production/gateway.rst:516
+#: ../../source/production/gateway.rst:534
 msgid "External decision services"
 msgstr ""
 
-#: ../../source/production/gateway.rst:518
+#: ../../source/production/gateway.rst:536
 msgid ""
 "For production ``external`` routing, run at least two decision-service "
 "replicas behind a stable Kubernetes Service, budget its synchronous "
@@ -759,19 +804,19 @@ msgid ""
 ":doc:`../features/gateway-routing/external-replica-routing`."
 msgstr ""
 
-#: ../../source/production/gateway.rst:538
+#: ../../source/production/gateway.rst:556
 msgid ""
 "For production workloads we recommend selecting a strategy based on your "
 "traffic pattern:"
 msgstr "对于生产负载，建议根据流量模式选择策略："
 
-#: ../../source/production/gateway.rst:540
+#: ../../source/production/gateway.rst:558
 msgid ""
 "**Multi-turn conversations or workloads with prompt prefix overlap — "
 "use** ``prefix-cache``"
 msgstr "**多轮对话或 prompt 前缀重叠的负载 — 使用** ``prefix-cache``"
 
-#: ../../source/production/gateway.rst:542
+#: ../../source/production/gateway.rst:560
 msgid ""
 "When requests share a common prompt prefix (e.g. a system prompt, few-"
 "shot examples, or conversation history), ``prefix-cache`` routes each "
@@ -786,11 +831,11 @@ msgstr ""
 "cache routing details "
 "<../../../pkg/plugins/gateway/algorithms/prefix_cache_readme.md>`_ 。"
 
-#: ../../source/production/gateway.rst:562
+#: ../../source/production/gateway.rst:580
 msgid "**Independent requests with no prefix overlap — use** ``least-request``"
 msgstr "**无前缀重叠的独立请求 — 使用** ``least-request``"
 
-#: ../../source/production/gateway.rst:564
+#: ../../source/production/gateway.rst:582
 msgid ""
 "When each request has a unique prompt and there is no KV-cache reuse "
 "benefit, ``least-request`` distributes load evenly by always routing to "
@@ -799,11 +844,11 @@ msgstr ""
 "当每个请求的 prompt 都不同且无法从 KV-cache 复用中获益时，``least-request`` 始终路由到进行中请求最少的 "
 "Pod，从而均匀分配负载。"
 
-#: ../../source/production/gateway.rst:578
+#: ../../source/production/gateway.rst:596
 msgid "**High-throughput workloads requiring compute separation — use** ``pd``"
 msgstr "**需要计算分离的高吞吐负载 — 使用** ``pd``"
 
-#: ../../source/production/gateway.rst:580
+#: ../../source/production/gateway.rst:598
 msgid ""
 "Prefill-Decode (PD) disaggregation splits the two phases of LLM inference"
 " across dedicated pods: prefill pods process the prompt and decode pods "
@@ -813,7 +858,7 @@ msgstr ""
 "Prefill-Decode（PD）分离将 LLM 推理的两个阶段拆分到专用 Pod：prefill Pod 处理 prompt，decode "
 "Pod 生成 token。这样可以对每种 Pod 独立规划容量和扩缩容，在高请求量下提升 GPU 利用率。"
 
-#: ../../source/production/gateway.rst:595
+#: ../../source/production/gateway.rst:613
 msgid ""
 "See `prefill-decode disaggregation details "
 "<../../../pkg/plugins/gateway/algorithms/pd_readme.md>`_ for deployment "
@@ -822,7 +867,7 @@ msgstr ""
 "部署要求与配置选项见 `prefill-decode disaggregation details "
 "<../../../pkg/plugins/gateway/algorithms/pd_readme.md>`_ 。"
 
-#: ../../source/production/gateway.rst:599
+#: ../../source/production/gateway.rst:617
 msgid ""
 "``random`` is suitable for testing and low-traffic scenarios where "
 "routing quality is not critical. For any production deployment, "
@@ -831,11 +876,11 @@ msgstr ""
 "``random`` 适用于测试和低流量、对路由质量要求不高的场景。任何生产部署都应显式设置 ``routing-strategy`` "
 "，避免依赖默认值。"
 
-#: ../../source/production/gateway.rst:604
+#: ../../source/production/gateway.rst:622
 msgid "Draining Pods"
 msgstr "排空 Pod"
 
-#: ../../source/production/gateway.rst:606
+#: ../../source/production/gateway.rst:624
 msgid ""
 "The gateway excludes Pods annotated with ``aibrix.ai/draining=true`` from"
 " its ready-pod routing candidates. RoleSet and PodSet controllers set "
@@ -847,21 +892,21 @@ msgstr ""
 "``drain.timeoutSeconds > 0`` 时，RoleSet 和 PodSet 控制器会在删除服务 Pod "
 "之前设置该注解。这给网关时间停止分配新请求，然后再由控制器移除该 Pod。"
 
-#: ../../source/production/gateway.rst:612
+#: ../../source/production/gateway.rst:630
 msgid "The gateway treats the drain annotation as a routing signal only:"
 msgstr "网关仅将排空注解视为路由信号："
 
-#: ../../source/production/gateway.rst:630
+#: ../../source/production/gateway.rst:648
 msgid ""
 "The controller owns the timeout and deletion decision. The gateway does "
 "not parse ``drain-start-time`` and does not emit drain lifecycle events."
 msgstr "超时与删除决策由控制器负责。网关不解析 ``drain-start-time`` ，也不发出排空生命周期事件。"
 
-#: ../../source/production/gateway.rst:634
+#: ../../source/production/gateway.rst:652
 msgid "Per-Model Routing Configuration"
 msgstr "按模型配置路由"
 
-#: ../../source/production/gateway.rst:636
+#: ../../source/production/gateway.rst:654
 msgid ""
 "When a single gateway deployment serves multiple models, you may need "
 "different routing strategies per model — for example, ``prefix-cache`` "
@@ -874,7 +919,7 @@ msgstr ""
 "``pd`` 。AIBrix 通过 **Model Config Profiles** 支持这一点：可用注解将路由配置直接附加到每个模型的 "
 "Pod，并在请求时通过 ``config-profile`` 头选择 profile。"
 
-#: ../../source/production/gateway.rst:654
+#: ../../source/production/gateway.rst:672
 msgid ""
 "If the ``config-profile`` header is omitted, the model's "
 "``defaultProfile`` is used. This allows the same gateway to enforce "
@@ -884,7 +929,7 @@ msgstr ""
 "如果省略 ``config-profile`` 头，则使用该模型的 ``defaultProfile`` "
 "。这样同一网关可按模型实施不同的路由策略、prompt 长度分桶和 PD 模式，而无需部署单独的网关实例。"
 
-#: ../../source/production/gateway.rst:658
+#: ../../source/production/gateway.rst:676
 msgid ""
 "For config profile setup and the full annotation schema see "
 ":ref:`config_profiles` in the Gateway Routing guide. For production "
@@ -893,19 +938,19 @@ msgstr ""
 "配置 profile 的设置和完整注解 schema 见网关路由指南中的 :ref:`config_profiles` 。包含 RPS "
 "限制在内的生产指导见 :ref:`model_deployment_production` 。"
 
-#: ../../source/production/gateway.rst:660
+#: ../../source/production/gateway.rst:678
 msgid "What's next?"
 msgstr "下一步？"
 
-#: ../../source/production/gateway.rst:663
+#: ../../source/production/gateway.rst:681
 msgid ":doc:`model-deployment`: deploy models behind this gateway"
 msgstr ":doc:`model-deployment` ：在该网关后部署模型"
 
-#: ../../source/production/gateway.rst:664
+#: ../../source/production/gateway.rst:682
 msgid ":doc:`observability`: gateway metrics and dashboards"
 msgstr ":doc:`observability` ：网关指标与仪表盘"
 
-#: ../../source/production/gateway.rst:665
+#: ../../source/production/gateway.rst:683
 msgid ""
 ":doc:`../features/gateway-routing/pd-disaggregation`: split prefill from "
 "decode"
@@ -913,7 +958,7 @@ msgstr ""
 ":doc:`../features/gateway-routing/pd-disaggregation` ：将 prefill 与 decode "
 "分离"
 
-#: ../../source/production/gateway.rst:666
+#: ../../source/production/gateway.rst:684
 msgid ":doc:`../designs/aibrix-gateway`: how routing decisions are made"
 msgstr ":doc:`../designs/aibrix-gateway` ：路由决策如何产生"
 

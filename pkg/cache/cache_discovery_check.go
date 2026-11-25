@@ -26,7 +26,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
+	k8sdiscovery "k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
@@ -143,6 +146,9 @@ type DiscoveryChecker struct {
 	unreachable    prometheus.GaugeFunc
 	consistencyAge prometheus.GaugeFunc
 	watchProgress  prometheus.GaugeFunc
+	// watchProgressSupported is always registered, so a replica without the
+	// watch progress age says so instead of looking like a missing scrape.
+	watchProgressSupported prometheus.GaugeFunc
 }
 
 // NewDiscoveryChecker returns a checker whose last success is now, because it
@@ -208,13 +214,23 @@ func NewDiscoveryChecker(opts DiscoveryCheckOptions) (*DiscoveryChecker, error) 
 			Help:      "Seconds since the cached Pods and ModelAdapters last matched a full LIST, counted from the start of that LIST, whichever caller (this check or /v1/models) ran it; from gateway start if none has. Only with --model-list-discovery-max-age. It rises by up to the max age between LISTs; a rise well beyond that means the cache is not converging",
 		}, func() float64 { return c.ConsistencyAge().Seconds() })
 	}
+	c.watchProgressSupported = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Subsystem: constants.AibrixSubsystemName,
+		Name:      "gateway_discovery_watch_progress_supported",
+		Help:      "1 when this replica exports aibrix_gateway_discovery_watch_progress_age_seconds, because the API server reported Kubernetes 1.31 or newer at startup; 0 otherwise, including when its version could not be read. The 1.31 floor is observed behaviour, not a known mechanism: on 1.29 an idle Pod watch did not advance even with the reachability check",
+	}, func() float64 {
+		if c.watchRV != nil {
+			return 1
+		}
+		return 0
+	})
 	if c.watchRV != nil {
 		c.lastWatchRV = c.watchRV()
 		c.watchProgressed = c.started
 		c.watchProgress = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Subsystem: constants.AibrixSubsystemName,
 			Name:      "gateway_discovery_watch_progress_age_seconds",
-			Help:      "Seconds since the Pod informer's resource version last moved (a watch event, a bookmark, or a relist), sampled every --discovery-check-interval, so it can read up to one interval high; from gateway start if it has not moved. With no Pod changes it relies on the reachability check's LIST to keep watch bookmarks advancing about once a minute. A rise well beyond that while aibrix_gateway_discovery_unreachable is 0 suggests a stuck Pod watch. Export only: readiness does not use it",
+			Help:      "Seconds since the Pod informer's resource version last moved (a watch event, a bookmark, or a relist), sampled every --discovery-check-interval, so it can read up to one interval high; from gateway start if it has not moved. With no Pod changes it relies on the reachability check's LIST to keep watch bookmarks advancing about once a minute. A rise well beyond that while aibrix_gateway_discovery_unreachable is 0 suggests a stuck Pod watch. Exported only when the API server reported Kubernetes 1.31 or newer at startup (see aibrix_gateway_discovery_watch_progress_supported): that floor is observed behaviour, not a known mechanism. Export only: readiness does not use it",
 		}, func() float64 { return c.WatchProgressAge().Seconds() })
 	}
 	return c, nil
@@ -222,7 +238,7 @@ func NewDiscoveryChecker(opts DiscoveryCheckOptions) (*DiscoveryChecker, error) 
 
 // Register adds the checker's metrics to reg.
 func (c *DiscoveryChecker) Register(reg prometheus.Registerer) error {
-	collectors := []prometheus.Collector{c.failures, c.age, c.unreachable}
+	collectors := []prometheus.Collector{c.failures, c.age, c.unreachable, c.watchProgressSupported}
 	if c.consistencyAge != nil {
 		collectors = append(collectors, c.consistencyAge)
 	}
@@ -291,8 +307,9 @@ func (c *DiscoveryChecker) SampleWatchProgress() {
 // Unreachable reports whether ReachabilityAge has reached the threshold. It
 // means this replica cannot read from the API server, not that its watch is
 // stuck: a watch that is connected but not delivering events shows in the
-// watch progress and consistency ages instead. It depends on reachability alone: the consistency
-// check is exact, so churn during its LIST can fail it on a healthy replica.
+// watch progress and consistency ages instead. It depends on reachability
+// alone: the consistency check is exact, so churn during its LIST can fail it
+// on a healthy replica.
 func (c *DiscoveryChecker) Unreachable() bool {
 	return c.ReachabilityAge() >= c.threshold
 }
@@ -488,4 +505,53 @@ func PodListReachability(client kubernetes.Interface) func(context.Context) erro
 		_, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{Limit: 1})
 		return err
 	}
+}
+
+// watchProgressMinVersion is the oldest API server on which an idle Pod watch
+// was observed to keep advancing while the reachability check runs (envtest
+// 1.31 and 1.37; on 1.29 it did not, and 1.30 was not measured). It is an
+// observed floor, not a known mechanism.
+var watchProgressMinVersion = utilversion.MajorMinor(1, 31)
+
+// WatchProgressSupported reports whether gitVersion, the API server's
+// /version gitVersion such as "v1.31.0" or "v1.31.4-eks-1234", is at least
+// watchProgressMinVersion. A version that does not parse is unsupported.
+func WatchProgressSupported(gitVersion string) bool {
+	v, err := utilversion.ParseGeneric(gitVersion)
+	if err != nil {
+		return false
+	}
+	return v.AtLeast(watchProgressMinVersion)
+}
+
+// KubernetesWatchProgress returns the Pod watch resource version source for
+// the discovery checker when the API server is Kubernetes 1.31 or newer, and
+// nil otherwise, including when /version cannot be read within timeout. It
+// reads /version once and logs the decision with the detected version. Below
+// 1.31 an idle Pod watch was observed not to advance even with the
+// reachability check, so the age would rise on a healthy replica.
+func KubernetesWatchProgress(config *rest.Config, provider *discovery.KubernetesProvider,
+	timeout time.Duration) func() string {
+	versionConfig := rest.CopyConfig(config)
+	versionConfig.Timeout = timeout
+	gitVersion := ""
+	client, err := k8sdiscovery.NewDiscoveryClientForConfig(versionConfig)
+	if err == nil {
+		info, versionErr := client.ServerVersion()
+		err = versionErr
+		if err == nil {
+			gitVersion = info.GitVersion
+		}
+	}
+	switch {
+	case err != nil:
+		klog.InfoS("Discovery watch progress age not exported: cannot read the API server version", "err", err)
+		return nil
+	case !WatchProgressSupported(gitVersion):
+		klog.InfoS("Discovery watch progress age not exported: below this API server version an idle Pod watch was observed not to advance",
+			"serverVersion", gitVersion, "minimum", watchProgressMinVersion.String())
+		return nil
+	}
+	klog.InfoS("Discovery watch progress age exported", "serverVersion", gitVersion, "minimum", watchProgressMinVersion.String())
+	return provider.PodWatchResourceVersion
 }

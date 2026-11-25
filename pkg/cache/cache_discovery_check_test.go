@@ -18,7 +18,10 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
@@ -117,7 +121,10 @@ func (f *fakeResourceVersion) callCount() int {
 	return f.calls
 }
 
-const watchProgressMetric = "aibrix_gateway_discovery_watch_progress_age_seconds"
+const (
+	watchProgressMetric          = "aibrix_gateway_discovery_watch_progress_age_seconds"
+	watchProgressSupportedMetric = "aibrix_gateway_discovery_watch_progress_supported"
+)
 
 func TestWatchProgressAgeGrowsWhileTheVersionStandsAndResetsWhenItMoves(t *testing.T) {
 	source := &fakeResourceVersion{rv: "100"}
@@ -195,11 +202,15 @@ func TestRunSamplesWatchProgressEveryInterval(t *testing.T) {
 	require.Eventually(t, func() bool { return source.callCount() >= created+3 },
 		2*time.Second, 5*time.Millisecond)
 
-	// A move is picked up by the loop, with no direct call to SampleWatchProgress.
-	time.Sleep(50 * time.Millisecond)
+	// A move is picked up by the loop, with no direct call to
+	// SampleWatchProgress, and restarts the age from that sample.
+	movedAt := time.Now()
 	source.set("2")
-	require.Eventually(t, func() bool { return checker.WatchProgressAge() < 40*time.Millisecond },
-		2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool {
+		checker.mu.Lock()
+		defer checker.mu.Unlock()
+		return checker.lastWatchRV == "2" && !checker.watchProgressed.Before(movedAt)
+	}, 2*time.Second, 5*time.Millisecond)
 }
 
 func TestDiscoveryCheckerUnreachableAfterFailuresAndRecovers(t *testing.T) {
@@ -358,7 +369,9 @@ func TestDiscoveryCheckerMetricNames(t *testing.T) {
 		"aibrix_gateway_discovery_reachability_age_seconds",
 		"aibrix_gateway_discovery_unreachable",
 		"aibrix_gateway_discovery_verification_failures_total",
+		watchProgressSupportedMetric,
 	}, names)
+	assert.Equal(t, 0.0, testutil.ToFloat64(checker.watchProgressSupported), "no source: reported as unsupported")
 	n, err := testutil.GatherAndCount(reg, "aibrix_gateway_discovery_verification_failures_total")
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "only the reachability series exists while consistency is off")
@@ -377,6 +390,79 @@ func TestDiscoveryCheckerRegistersWatchProgressOnlyWithASource(t *testing.T) {
 	n, err := testutil.GatherAndCount(reg, watchProgressMetric)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
+	assert.Equal(t, 1.0, testutil.ToFloat64(checker.watchProgressSupported))
+}
+
+func TestWatchProgressSupported(t *testing.T) {
+	for gitVersion, want := range map[string]bool{
+		"v1.31.0":            true,
+		"v1.31.4-eks-1234":   true,
+		"v1.32.1+k3s1":       true,
+		"v1.37.0":            true,
+		"v2.0.0":             true,
+		"v1.30.14":           false,
+		"v1.30.14-gke.10000": false,
+		"v1.29.0":            false,
+		"v1.4.0":             false, // "v1.4.0" > "v1.31" as strings
+		"":                   false,
+		"unknown":            false,
+	} {
+		assert.Equal(t, want, WatchProgressSupported(gitVersion), gitVersion)
+	}
+}
+
+// versionServer answers /version with gitVersion, or with an error when
+// gitVersion is empty, and 404 for anything else.
+func versionServer(t *testing.T, gitVersion string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/version" {
+			http.NotFound(w, r)
+			return
+		}
+		if gitVersion == "" {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(version.Info{GitVersion: gitVersion})
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestStartDiscoveryCheckerExportsWatchProgressOnlyFrom131(t *testing.T) {
+	for _, tc := range []struct {
+		gitVersion string // "" makes /version fail
+		exported   bool
+	}{
+		{"v1.29.0", false},
+		{"v1.30.14", false},
+		{"", false},
+		{"v1.31.0", true},
+		{"v1.37.0", true},
+	} {
+		t.Run("version "+tc.gitVersion, func(t *testing.T) {
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			config := &rest.Config{Host: versionServer(t, tc.gitVersion).URL}
+			reg := prometheus.NewRegistry()
+			checker := startDiscoveryChecker(&Store{}, config, discovery.NewKubernetesProvider(config),
+				InitOptions{DiscoveryCheckInterval: time.Second, DiscoveryUnreachableThreshold: 3 * time.Second}, reg, stopCh)
+			require.NotNil(t, checker, "the discovery check runs whatever the version")
+
+			n, err := testutil.GatherAndCount(reg, watchProgressMetric)
+			require.NoError(t, err)
+			supported := testutil.ToFloat64(checker.watchProgressSupported)
+			if tc.exported {
+				assert.Equal(t, 1, n)
+				assert.Equal(t, 1.0, supported)
+			} else {
+				assert.Zero(t, n, "no watch progress age below 1.31 or without a version")
+				assert.Equal(t, 0.0, supported)
+			}
+		})
+	}
 }
 
 func TestPodListReachabilityListsOnePod(t *testing.T) {
@@ -425,10 +511,15 @@ func TestStartDiscoveryCheckerOnlyForKubernetes(t *testing.T) {
 			families, err := reg.Gather()
 			require.NoError(t, err)
 			if tc.started {
+				// No API server answers /version here, so the watch progress
+				// age is not exported and the supported gauge says so.
 				assert.Len(t, families, 4)
-				n, err := testutil.GatherAndCount(reg, watchProgressMetric)
+				n, err := testutil.GatherAndCount(reg, watchProgressSupportedMetric)
 				require.NoError(t, err)
-				assert.Equal(t, 1, n, "the Kubernetes provider's Pod watch is sampled")
+				assert.Equal(t, 1, n)
+				n, err = testutil.GatherAndCount(reg, watchProgressMetric)
+				require.NoError(t, err)
+				assert.Zero(t, n)
 			} else {
 				assert.Empty(t, families, "no discovery metric is reported when the check does not run")
 			}
@@ -453,7 +544,7 @@ func TestStartDiscoveryCheckerWiresTheModelListHealth(t *testing.T) {
 
 	families, err := reg.Gather()
 	require.NoError(t, err)
-	assert.Len(t, families, 5, "the four discovery gauges and the failure counter")
+	assert.Len(t, families, 5, "the failure counter, the reachability, unreachable, consistency and watch progress supported gauges")
 	n, err := testutil.GatherAndCount(reg, "aibrix_gateway_discovery_verification_failures_total")
 	require.NoError(t, err)
 	assert.Equal(t, 2, n, "reachability and consistency series")

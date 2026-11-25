@@ -627,7 +627,8 @@ func startDiscoveryChecker(store *Store, config *rest.Config, provider discovery
 		Interval:             opts.DiscoveryCheckInterval,
 		UnreachableThreshold: opts.DiscoveryUnreachableThreshold,
 		Reachability:         PodListReachability(client),
-		WatchResourceVersion: kubernetesProvider.PodWatchResourceVersion,
+		// Read once, before Run, bounded like a reachability check.
+		WatchResourceVersion: KubernetesWatchProgress(config, kubernetesProvider, opts.DiscoveryCheckInterval/2),
 	}
 	if health := store.modelListHealth; health != nil {
 		checkOpts.Consistency = health
