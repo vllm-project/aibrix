@@ -1230,12 +1230,23 @@ func (s *Server) encodeMedia(routeCtx *types.RoutingContext, encoders []*v1.Pod)
 
 // httpRouteStatusError checks both conditions on the same parent. Each parent
 // reports independently and status.parents can be empty before reconciliation.
-func httpRouteStatusError(namespace, name string, parents []gatewayv1.RouteParentStatus) error {
+// Non-zero ObservedGeneration behind generation is skipped as stale (0 is
+// accepted for controllers that omit it); when only stale conditions remain,
+// stale=true lets the caller fail open under the short error TTL.
+func httpRouteStatusError(namespace, name string, generation int64, parents []gatewayv1.RouteParentStatus) (err error, stale bool) {
 	var reasons []string
 	for _, parent := range parents {
 		var accepted, resolved bool
 		for _, condition := range parent.Conditions {
-			switch gatewayv1.RouteConditionType(condition.Type) {
+			condType := gatewayv1.RouteConditionType(condition.Type)
+			if condType != gatewayv1.RouteConditionAccepted && condType != gatewayv1.RouteConditionResolvedRefs {
+				continue
+			}
+			if condition.ObservedGeneration != 0 && condition.ObservedGeneration < generation {
+				stale = true
+				continue
+			}
+			switch condType {
 			case gatewayv1.RouteConditionAccepted:
 				accepted = condition.Status == metav1.ConditionTrue
 				if !accepted {
@@ -1249,19 +1260,24 @@ func httpRouteStatusError(namespace, name string, parents []gatewayv1.RouteParen
 			}
 		}
 		if accepted && resolved {
-			return nil
+			return nil, false
 		}
 	}
-	if len(reasons) == 0 {
-		reasons = append(reasons, "does not have valid status: no parent reports both Accepted=True and ResolvedRefs=True")
+	if len(reasons) > 0 {
+		return fmt.Errorf("httproute: %s/%s, %s", namespace, name, strings.Join(reasons, ", ")), false
 	}
-	return fmt.Errorf("httproute: %s/%s, %s", namespace, name, strings.Join(reasons, ", "))
+	if stale {
+		return nil, true
+	}
+	return fmt.Errorf("httproute: %s/%s, does not have valid status: no parent reports both Accepted=True and ResolvedRefs=True", namespace, name), false
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
 // Successful results are cached with a TTL (default 30s, configurable via
-// AIBRIX_HTTPROUTE_CACHE_TTL). Transient errors use a short TTL so route
-// creation and recovery are observed quickly without hammering the API server.
+// AIBRIX_HTTPROUTE_CACHE_TTL). Transient errors and stale-generation statuses
+// use a short TTL so route creation, updates, and recovery are observed quickly
+// without hammering the API server. Note that an existing warm cache entry
+// populated while its generation was current retains its normal expiry.
 func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
 	// Skip validation in standalone mode (no gateway client)
 	if s.gatewayClient == nil {
@@ -1309,9 +1325,13 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			return nil, err
 		}
 
-		result := httpRouteStatusError(namespace, name, httproute.Status.Parents)
+		result, stale := httpRouteStatusError(namespace, name, httproute.Generation, httproute.Status.Parents)
 		ttl := s.httprouteCacheTTL
-		if result != nil {
+		if result != nil || stale {
+			if stale {
+				klog.V(4).InfoS("HTTPRoute status has stale observedGeneration; caching under error TTL",
+					"namespace", namespace, "name", name, "generation", httproute.Generation)
+			}
 			ttl = s.httprouteErrorTTL
 			if ttl <= 0 {
 				ttl = defaultHTTPRouteErrorTTL

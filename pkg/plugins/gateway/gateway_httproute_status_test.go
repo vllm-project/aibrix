@@ -440,6 +440,146 @@ func TestValidateHTTPRouteStatus_UnresolvedRouteErrorExpires(t *testing.T) {
 	checkHTTPRouteErrorExpiry(t, invalidRoute)
 }
 
+func makeTestHTTPRoute(model string, generation int64, parents ...gatewayv1.RouteParentStatus) *gatewayv1.HTTPRoute {
+	return &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "aibrix-system", Name: utils.ModelRouterName(model), Generation: generation},
+		Status:     gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{Parents: parents}},
+	}
+}
+
+func makeRouteCond(condType gatewayv1.RouteConditionType, status metav1.ConditionStatus, reason string, gen int64) metav1.Condition {
+	return metav1.Condition{Type: string(condType), Status: status, Reason: reason, ObservedGeneration: gen}
+}
+
+func TestValidateHTTPRouteStatus_ObservedGeneration(t *testing.T) {
+	const (
+		model    = "probe"
+		cacheTTL = 30 * time.Second
+		errorTTL = 2 * time.Second
+	)
+	parent := func(conds ...metav1.Condition) gatewayv1.RouteParentStatus {
+		return gatewayv1.RouteParentStatus{Conditions: conds}
+	}
+	acc := func(gen int64) metav1.Condition {
+		return makeRouteCond(gatewayv1.RouteConditionAccepted, metav1.ConditionTrue, string(gatewayv1.RouteReasonAccepted), gen)
+	}
+	res := func(gen int64) metav1.Condition {
+		return makeRouteCond(gatewayv1.RouteConditionResolvedRefs, metav1.ConditionTrue, string(gatewayv1.RouteReasonResolvedRefs), gen)
+	}
+	resErr := func(gen int64) metav1.Condition {
+		return makeRouteCond(gatewayv1.RouteConditionResolvedRefs, metav1.ConditionFalse, "BackendNotFound", gen)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		gen          int64
+		parents      []gatewayv1.RouteParentStatus
+		wantErr      string
+		wantShortTTL bool
+	}{
+		{"stale observedGeneration fails open under error TTL", 2, []gatewayv1.RouteParentStatus{parent(acc(1), res(1))}, "", true},
+		{"zero observedGeneration with generation zero", 0, []gatewayv1.RouteParentStatus{parent(acc(0), res(0))}, "", false},
+		{"zero observedGeneration with positive generation", 2, []gatewayv1.RouteParentStatus{parent(acc(0), res(0))}, "", false},
+		{"current observedGeneration", 2, []gatewayv1.RouteParentStatus{parent(acc(2), res(2))}, "", false},
+		{"higher observedGeneration than generation", 2, []gatewayv1.RouteParentStatus{parent(acc(3), res(3))}, "", false},
+		{"mixed current and stale conditions on same parent", 2, []gatewayv1.RouteParentStatus{parent(acc(2), res(1))}, "", true},
+		{"current conditions split across different parents", 2, []gatewayv1.RouteParentStatus{parent(acc(2), res(1)), parent(acc(1), res(2))}, "", true},
+		{"one stale parent and one current parent", 2, []gatewayv1.RouteParentStatus{parent(acc(1), res(1)), parent(acc(2), res(2))}, "", false},
+		{"stale False condition does not leak reason", 2, []gatewayv1.RouteParentStatus{parent(acc(2), resErr(1))}, "", true},
+		{"current failing with stale passing reports current reason", 2, []gatewayv1.RouteParentStatus{parent(acc(1), resErr(2))}, "BackendNotFound", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{
+				gatewayClient:     gatewayfake.NewSimpleClientset(makeTestHTTPRoute(model, tc.gen, tc.parents...)),
+				gatewayNamespace:  "aibrix-system",
+				httprouteCacheTTL: cacheTTL,
+				httprouteErrorTTL: errorTTL,
+			}
+			err := s.validateHTTPRouteStatus(context.Background(), model)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			raw, ok := s.httprouteCache.Load(model)
+			require.True(t, ok)
+			remaining := time.Until(raw.(httpRouteCacheEntry).expiresAt)
+			if tc.wantShortTTL {
+				assert.LessOrEqual(t, remaining, errorTTL+time.Second)
+			} else {
+				assert.Greater(t, remaining, cacheTTL/2)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPRouteStatus_StaleGenerationTransitions(t *testing.T) {
+	const (
+		model    = "probe"
+		cacheTTL = 30 * time.Second
+		errorTTL = 2 * time.Second
+	)
+	acc := func(gen int64) metav1.Condition {
+		return makeRouteCond(gatewayv1.RouteConditionAccepted, metav1.ConditionTrue, string(gatewayv1.RouteReasonAccepted), gen)
+	}
+	res := func(status metav1.ConditionStatus, reason string, gen int64) metav1.Condition {
+		return makeRouteCond(gatewayv1.RouteConditionResolvedRefs, status, reason, gen)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		nextConds    []metav1.Condition
+		wantErr      string
+		wantShortTTL bool
+	}{
+		{"stale to BackendNotFound", []metav1.Condition{acc(2), res(metav1.ConditionFalse, "BackendNotFound", 2)}, "BackendNotFound", true},
+		{"stale to healthy recovers full cache TTL", []metav1.Condition{acc(2), res(metav1.ConditionTrue, string(gatewayv1.RouteReasonResolvedRefs), 2)}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := makeTestHTTPRoute(model, 2, gatewayv1.RouteParentStatus{
+				Conditions: []metav1.Condition{acc(1), res(metav1.ConditionTrue, string(gatewayv1.RouteReasonResolvedRefs), 1)},
+			})
+			gwClient := gatewayfake.NewSimpleClientset(route)
+			s := &Server{
+				gatewayClient:     gwClient,
+				gatewayNamespace:  "aibrix-system",
+				httprouteCacheTTL: cacheTTL,
+				httprouteErrorTTL: errorTTL,
+			}
+
+			// Cache miss on stale status fails open under short error TTL.
+			require.NoError(t, s.validateHTTPRouteStatus(context.Background(), model))
+			raw, ok := s.httprouteCache.Load(model)
+			require.True(t, ok)
+			entry := raw.(httpRouteCacheEntry)
+			assert.LessOrEqual(t, time.Until(entry.expiresAt), errorTTL+time.Second)
+
+			// Controller writes generation 2 status; expire cache without wall-clock sleep.
+			updated := route.DeepCopy()
+			updated.Status.Parents[0].Conditions = tc.nextConds
+			_, err := gwClient.GatewayV1().HTTPRoutes("aibrix-system").UpdateStatus(context.Background(), updated, metav1.UpdateOptions{})
+			require.NoError(t, err)
+			entry.expiresAt = time.Now().Add(-time.Second)
+			s.httprouteCache.Store(model, entry)
+
+			err = s.validateHTTPRouteStatus(context.Background(), model)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			raw, ok = s.httprouteCache.Load(model)
+			require.True(t, ok)
+			remaining := time.Until(raw.(httpRouteCacheEntry).expiresAt)
+			if tc.wantShortTTL {
+				assert.LessOrEqual(t, remaining, errorTTL+time.Second)
+			} else {
+				assert.Greater(t, remaining, cacheTTL/2)
+			}
+		})
+	}
+}
+
 func checkHTTPRouteErrorExpiry(t *testing.T, invalidRoute *gatewayv1.HTTPRoute) {
 	t.Helper()
 	mockGW := &MockGatewayClient{}
