@@ -98,8 +98,8 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			// Even an unrelated rid must never trigger SGLang's abort endpoint.
 			ctx.SetPDRequestID("not-a-trt-abort-id")
 			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-			exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
-			exec.tokenLoad.AcquirePrefill(ctx.RequestID, podKey, 100)
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
+			exec.tokenLoad.AcquirePrefill(ctx.TrackerKey(), podKey, 100)
 			require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 			if class == pd.PrefillFailureCanceled {
 				select {
@@ -160,7 +160,7 @@ func TestTRTAsyncFailureAfterContextReuse(t *testing.T) {
 	ctx.Engine = pd.EngineTRTLLM
 	pod := failFastPod(t, "ctx", strings.TrimPrefix(srv.URL, "http://"))
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
+	exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
 	require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 	select {
 	case <-started:
