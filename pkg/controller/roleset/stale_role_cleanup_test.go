@@ -19,12 +19,17 @@ package roleset
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -36,6 +41,12 @@ func roleSetWithRoles(names ...string) *orchestrationv1alpha1.RoleSet {
 		rs.Spec.Roles = append(rs.Spec.Roles, orchestrationv1alpha1.RoleSpec{Name: n})
 	}
 	return rs
+}
+
+// newSweepReconciler builds a RoleSetReconciler for the sweep tests. It carries an event recorder
+// because the removed-role pod deletes now flow through controllerdrain.DeletePods.
+func newSweepReconciler(cli client.Client, scheme *runtime.Scheme) *RoleSetReconciler {
+	return &RoleSetReconciler{Client: cli, Scheme: scheme, EventRecorder: record.NewFakeRecorder(16)}
 }
 
 func podNameSet(t *testing.T, cli client.Client) map[string]struct{} {
@@ -63,7 +74,7 @@ func podSetNameSet(t *testing.T, cli client.Client) map[string]struct{} {
 // TestRoleSetReconciler_CleanupStaleRoles covers the removed-role sweep (#3587): when a role is
 // dropped from Spec.Roles (as an in-place StormService update does), the RoleSet-owned Pods and
 // PodSets of that role must be deleted, while surviving roles -- and objects owned by a different
-// RoleSet, or with no role label -- are left untouched.
+// RoleSet, with no role label, or already terminating -- are left untouched.
 func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 	scheme := newTestScheme(t)
 	ctx := context.Background()
@@ -76,14 +87,10 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 			newOrphanPod("decode-1", ns, "decode", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
 		}
 		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-		r := &RoleSetReconciler{Client: cli, Scheme: scheme}
+		r := newSweepReconciler(cli, scheme)
 
-		changed, err := r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill")) // "decode" removed
-		require.NoError(t, err)
-		assert.True(t, changed)
-
-		remaining := podNameSet(t, cli)
-		assert.Equal(t, map[string]struct{}{"prefill-0": {}}, remaining, "only the surviving role's pod must remain")
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill"))) // "decode" removed
+		assert.Equal(t, map[string]struct{}{"prefill-0": {}}, podNameSet(t, cli), "only the surviving role's pod must remain")
 	})
 
 	t.Run("Pooled: a removed role's podsets are deleted, the surviving role kept", func(t *testing.T) {
@@ -92,12 +99,9 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 			newOrphanPodSet("decode-ps", ns, "decode", "test-roleset", testRoleSetUID),
 		}
 		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-		r := &RoleSetReconciler{Client: cli, Scheme: scheme}
+		r := newSweepReconciler(cli, scheme)
 
-		changed, err := r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill")) // "decode" removed
-		require.NoError(t, err)
-		assert.True(t, changed)
-
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill"))) // "decode" removed
 		assert.Equal(t, map[string]struct{}{"prefill-ps": {}}, podSetNameSet(t, cli), "only the surviving role's podset must remain")
 	})
 
@@ -107,11 +111,9 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 			newOrphanPodSet("worker-ps", ns, "worker", "test-roleset", testRoleSetUID),
 		}
 		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-		r := &RoleSetReconciler{Client: cli, Scheme: scheme}
+		r := newSweepReconciler(cli, scheme)
 
-		changed, err := r.cleanupStaleRoles(ctx, roleSetWithRoles("worker"))
-		require.NoError(t, err)
-		assert.False(t, changed, "nothing is stale")
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("worker")))
 		assert.Len(t, podNameSet(t, cli), 1)
 		assert.Len(t, podSetNameSet(t, cli), 1)
 	})
@@ -121,12 +123,10 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 			newOrphanPod("decode-0", ns, "decode", "test-roleset", orchestrationv1alpha1.RoleSetKind, "different-uid"),
 		}
 		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-		r := &RoleSetReconciler{Client: cli, Scheme: scheme}
+		r := newSweepReconciler(cli, scheme)
 
-		changed, err := r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill")) // "decode" removed
-		require.NoError(t, err)
-		assert.False(t, changed, "a pod owned by another RoleSet must not be swept")
-		assert.Len(t, podNameSet(t, cli), 1)
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill"))) // "decode" removed
+		assert.Len(t, podNameSet(t, cli), 1, "a pod owned by another RoleSet must not be swept")
 	})
 
 	t.Run("does not delete a pod that has no role label", func(t *testing.T) {
@@ -134,12 +134,10 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 			newOrphanPod("no-role-0", ns, "", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
 		}
 		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-		r := &RoleSetReconciler{Client: cli, Scheme: scheme}
+		r := newSweepReconciler(cli, scheme)
 
-		changed, err := r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill"))
-		require.NoError(t, err)
-		assert.False(t, changed, "a pod with no role label must not be swept")
-		assert.Len(t, podNameSet(t, cli), 1)
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill")))
+		assert.Len(t, podNameSet(t, cli), 1, "a pod with no role label must not be swept")
 	})
 
 	t.Run("sweeps both pods and podsets of a removed role at once", func(t *testing.T) {
@@ -149,12 +147,39 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 			newOrphanPodSet("decode-ps", ns, "decode", "test-roleset", testRoleSetUID),
 		}
 		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-		r := &RoleSetReconciler{Client: cli, Scheme: scheme}
+		r := newSweepReconciler(cli, scheme)
 
-		changed, err := r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill")) // "decode" removed
-		require.NoError(t, err)
-		assert.True(t, changed)
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill"))) // "decode" removed
 		assert.Equal(t, map[string]struct{}{"prefill-0": {}}, podNameSet(t, cli))
 		assert.Empty(t, podSetNameSet(t, cli))
+	})
+
+	t.Run("skips objects already being deleted", func(t *testing.T) {
+		// Stale objects that are already terminating must not be re-deleted (or re-logged) every
+		// reconcile. A finalizer keeps them in the store so we can observe that no Delete is issued.
+		hold := []string{"aibrix.ai/test-hold"}
+		termPod := newOrphanPod("decode-term", ns, "decode", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID)
+		termPod.Finalizers = hold
+		termPod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+		termPodSet := newOrphanPodSet("decode-term-ps", ns, "decode", "test-roleset", testRoleSetUID)
+		termPodSet.Finalizers = hold
+		termPodSet.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+		liveStalePod := newOrphanPod("decode-live", ns, "decode", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID)
+
+		var deleted []string
+		cli := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(termPod, termPodSet, liveStalePod).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deleted = append(deleted, obj.GetName())
+					return c.Delete(ctx, obj, opts...)
+				},
+			}).Build()
+		r := newSweepReconciler(cli, scheme)
+
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill"))) // "decode" removed
+		assert.NotContains(t, deleted, "decode-term", "an already-terminating pod must not be re-deleted")
+		assert.NotContains(t, deleted, "decode-term-ps", "an already-terminating podset must not be re-deleted")
+		assert.Contains(t, deleted, "decode-live", "a live stale pod is still deleted")
 	})
 }
