@@ -108,6 +108,8 @@ spec:
     group: gateway.networking.k8s.io
     kind: Gateway
     name: eg
+  # Keep each route insertion immediately before its filter configuration patch.
+  # The filter patch targets the newly inserted route at /virtual_hosts/0/routes/0.
   jsonPatches:
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
     name: "$(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http"

@@ -158,7 +158,7 @@ or a kubelet.
 # Set KUBEBUILDER_ASSETS to the assets installed by make envtest.
 go test -tags=integration ./pkg/plugins/gateway \
   -run '^TestModelRouterGatewayNamespace$' -count=1
-# Requires Helm; checks both components against the release namespace.
+# Requires Helm; checks the route namespace and rendered Gateway name.
 go test ./test/e2e/installation \
   -run '^TestGatewayNamespaceManifests$' -count=1
 ```

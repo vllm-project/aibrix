@@ -42,12 +42,16 @@ func TestKustomizeGatewayReferences(t *testing.T) {
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		t.Skip("kubectl not found in PATH, skipping Kustomize render test")
 	}
-	for _, tt := range []struct{ name, namespace, prefix, suffix string }{
-		{"default", "aibrix-system", "aibrix-", ""},
-		{"namespace", "custom-gateway", "aibrix-", ""},
-		{"prefix", "aibrix-system", "custom-", ""},
-		{"namespace and prefix", "custom-gateway", "custom-", ""},
-		{"suffix", "custom-gateway", "custom-", "-test"},
+	for _, tt := range []struct {
+		name, namespace, prefix, suffix string
+		withRBAC                        bool
+	}{
+		{"default", "aibrix-system", "aibrix-", "", false},
+		{"namespace", "custom-gateway", "aibrix-", "", false},
+		{"prefix", "aibrix-system", "custom-", "", false},
+		{"namespace and prefix", "custom-gateway", "custom-", "", false},
+		{"suffix", "custom-gateway", "custom-", "-test", false},
+		{"gateway with RBAC", "custom-gateway", "custom-", "-test", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			base, err := filepath.Abs("../../../config/gateway")
@@ -62,12 +66,24 @@ func TestKustomizeGatewayReferences(t *testing.T) {
 			overlay := fmt.Sprintf("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
 				"namespace: %q\nnamePrefix: %q\nnameSuffix: %q\nresources:\n- %q\n",
 				tt.namespace, tt.prefix, tt.suffix, base)
+			if tt.withRBAC {
+				rbac, err := filepath.Abs("../../../config/rbac/gateway")
+				require.NoError(t, err)
+				rbac, err = filepath.EvalSymlinks(rbac)
+				require.NoError(t, err)
+				rbac, err = filepath.Rel(dir, rbac)
+				require.NoError(t, err)
+				overlay += fmt.Sprintf("- %q\n", rbac)
+			}
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "kustomization.yaml"), []byte(overlay), 0600))
 			objects := renderKustomize(t, dir)
 			gateway := objectOfKind(t, objects, "Gateway")
 			require.Equal(t, tt.namespace, gateway.GetNamespace())
 			require.Equal(t, tt.prefix+"eg"+tt.suffix, gateway.GetName())
 			filters := checkGatewayReferences(t, objects)
+			if tt.withRBAC {
+				checkGatewayRBACReferences(t, objects)
+			}
 			if tt.name == "default" {
 				checkDefaultXDSFilters(t, filters)
 			}
@@ -92,6 +108,26 @@ func TestKustomizeGatewayReferences(t *testing.T) {
 		checkGatewayReferences(t, objects)
 		checkGatewayComponentSettings(t, objects, gateway)
 	})
+}
+
+func checkGatewayRBACReferences(t *testing.T, objects []unstructured.Unstructured) {
+	t.Helper()
+	account := objectOfKind(t, objects, "ServiceAccount")
+	deployment := objectOfKind(t, objects, "Deployment")
+	require.Equal(t, account.GetNamespace(), deployment.GetNamespace())
+	require.Equal(t, account.GetName(),
+		objectString(t, deployment.Object, "spec", "template", "spec", "serviceAccountName"))
+	binding := objectOfKind(t, objects, "ClusterRoleBinding")
+	role := objectOfKind(t, objects, "ClusterRole")
+	require.Equal(t, role.GetName(), objectString(t, binding.Object, "roleRef", "name"))
+	subjects, found, err := unstructured.NestedSlice(binding.Object, "subjects")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, subjects, 1)
+	subject := subjects[0].(map[string]interface{})
+	require.Equal(t, "ServiceAccount", objectString(t, subject, "kind"))
+	require.Equal(t, account.GetName(), objectString(t, subject, "name"))
+	require.Equal(t, account.GetNamespace(), objectString(t, subject, "namespace"))
 }
 
 func renderKustomize(t *testing.T, dir string) []unstructured.Unstructured {

@@ -1,5 +1,11 @@
 # Customizing the gateway manifests
 
+This customization covers gateway references only. It does not establish
+support for relocating or renaming the entire AIBrix installation. An overlay
+of `config/default` can render consistent gateway references while other
+components still require separate configuration or fixes; see
+[deployment scope](#deployment-scope) below.
+
 The gateway manifests support Kustomize `namespace`, `namePrefix`, and
 `nameSuffix`. Gateway API references, Envoy policy targets, listener and route
 configuration names, and the ext_proc filter references follow the rendered
@@ -15,6 +21,7 @@ namespace: custom-gateway
 namePrefix: custom-
 resources:
 - ../config/gateway
+- ../config/rbac/gateway
 ```
 
 Render it with:
@@ -24,24 +31,45 @@ kubectl kustomize custom-gateway
 ```
 
 This renders Gateway `custom-gateway/custom-eg` and matching Envoy references.
+Including the gateway RBAC resources also creates ServiceAccount
+`custom-gateway/custom-gateway-plugins` and updates the gateway plugin Deployment
+and ClusterRoleBinding to reference it.
 An outer overlay can also change these names; no additional transformer entry
 is required in the overlay.
 
 ## Deployment scope
 
-This is gateway configuration support, not support for relocating or renaming
-the entire AIBrix installation. The example renders the gateway resources; it
-does not install Envoy Gateway, create the namespace, or supply gateway RBAC,
-Redis, or the metadata service. Include the supporting resources or configure
-their references for the intended deployment. Kustomize can update references
-to Services and ServiceAccounts when those resources are part of the render.
-The gateway's existing Redis settings remain explicit deployment inputs.
+The example renders gateway and gateway RBAC resources. It does not install
+Envoy Gateway, create the namespace, or supply Redis or the metadata service.
+Include the supporting resources or configure their references for the intended
+deployment. Kustomize can update Service and ServiceAccount references when
+those resources are part of the render. If `config/rbac/gateway` is omitted,
+the gateway plugin still references ServiceAccount `gateway-plugins`, which
+must already exist in the target namespace. The gateway's existing Redis
+settings remain explicit deployment inputs.
 
-The controller's certificate manager still uses fixed webhook resource names,
-and its leader-election namespace is configured separately. Changing only
-`namespace` or `namePrefix` on `config/default` does not establish a working
-customized installation of every component. It also does not restrict workload
-discovery, change RBAC permissions, or isolate installations.
+An outer overlay of `config/default` has additional limitations:
+
+- Kustomize renames the webhook Secret, the Deployment's Secret volume, and the
+  webhook configurations and their `clientConfig.service` references together.
+  However, the [certificate manager](../../pkg/cert/cert.go) still uses
+  fixed names: `aibrix-webhook-service`, `aibrix-webhook-server-cert`,
+  `aibrix-validating-webhook-configuration`, and
+  `aibrix-mutating-webhook-configuration`. Renaming the manifests does not update
+  the service DNS name or resource lookups used at runtime.
+- The [controller](../../cmd/controllers/main.go) defaults
+  `--leader-election-namespace` to `aibrix-system`. The Kustomize Deployment
+  does not override this flag, so changing the Pod namespace alone does not
+  move leader election. An explicitly empty flag value would use the in-cluster
+  namespace. The controller also passes this namespace to the certificate
+  manager. Helm sets the flag explicitly to the release namespace.
+- The bundled KubeRay role bindings retain fixed `aibrix-system` subjects and
+  ServiceAccount names. An outer prefix or namespace change can therefore leave
+  those bindings pointing at a different ServiceAccount from the rendered one.
+
+These are separate installation concerns. Gateway reference customization does
+not restrict workload discovery, change RBAC permissions, or isolate
+installations.
 
 ## ModelRouter configuration
 
@@ -57,6 +85,9 @@ ModelRouter and the gateway plugin; its absent or empty default remains
 `aibrix-system`. `POD_NAMESPACE` describes Pod placement and does not select
 the route namespace. `config/default` supplies both ModelRouter settings from
 the rendered Gateway, and `config/gateway` supplies the plugin's route namespace.
+The [Helm chart](../../dist/chart/README.md#gateway-and-model-httproute-namespace)
+supplies the controller's Gateway name and both components' route namespace
+from the chart's rendered resources as well.
 
 ## Transformation and validation
 
@@ -66,6 +97,9 @@ all overlay transformations. Kustomize deprecates `vars` and emits a warning.
 They are retained here because base-level `replacements` run before a parent
 overlay changes the namespace or prefix, and would require changing existing
 overlays to apply the replacements at the outermost level.
+The [migration follow-up request](https://github.com/vllm-project/aibrix/pull/3612#discussion_r4698247670)
+calls for evaluating alternatives and documenting any changes required in parent
+overlays before replacing `vars`.
 
 Kustomize does not substitute mapping keys. Each pinning route therefore starts
 with an empty `typed_per_filter_config`; the following JSON patch adds its
