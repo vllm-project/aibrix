@@ -5,6 +5,40 @@ resources:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+configurations:
+- kustomizeconfig.yaml
+
+# vars resolve after all overlays. Replacements in this base run before a
+# parent's namespace/namePrefix, leaving embedded Envoy names stale again.
+vars:
+- name: AIBRIX_GATEWAY_NAMESPACE
+  objref:
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: eg
+  fieldref:
+    fieldpath: metadata.namespace
+- name: AIBRIX_GATEWAY_NAME
+  objref:
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: eg
+- name: AIBRIX_EXT_PROC_POLICY_NAME
+  objref:
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyExtensionPolicy
+    name: gateway-plugins-extension-policy
+- name: AIBRIX_VIDEOS_EXT_PROC_POLICY_NAME
+  objref:
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyExtensionPolicy
+    name: gateway-plugins-videos-extension-policy
+- name: AIBRIX_STREAMING_EXT_PROC_POLICY_NAME
+  objref:
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyExtensionPolicy
+    name: gateway-plugins-videos-streaming-extension-policy
+
 labels:
   - pairs:
       app.kubernetes.io/component: aibrix-gateway-plugin

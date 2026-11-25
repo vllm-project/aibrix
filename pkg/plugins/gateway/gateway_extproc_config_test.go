@@ -36,8 +36,7 @@ import (
 // drift apart silently.
 const gatewayPluginManifestPath = "../../../config/gateway/gateway-plugin/gateway-plugin.yaml"
 
-// kustomizeNamePrefix is applied by config/default, which is why an
-// EnvoyExtensionPolicy targets "aibrix-<route name>".
+// kustomizeNamePrefix is applied by config/default to resource names and references.
 const kustomizeNamePrefix = "aibrix-"
 
 type manifestPathMatch struct {
@@ -129,7 +128,7 @@ func loadGatewayPluginManifest(t *testing.T) gatewayPluginManifest {
 
 func (m gatewayPluginManifest) policyFor(t *testing.T, routeName string) manifestExtensionPolicy {
 	t.Helper()
-	policy, ok := m.policies[kustomizeNamePrefix+routeName]
+	policy, ok := m.policies[routeName]
 	require.True(t, ok, "no EnvoyExtensionPolicy targets route %q, so its requests would never reach ext_proc", routeName)
 	require.Len(t, policy.Spec.ExtProc, 1)
 	return policy
@@ -370,8 +369,7 @@ func TestGatewayPluginManifest_EveryPolicyTargetsAnExistingRoute(t *testing.T) {
 
 	for target, policy := range manifest.policies {
 		assert.Equal(t, "HTTPRoute", policy.Spec.TargetRef.Kind)
-		routeName := strings.TrimPrefix(target, kustomizeNamePrefix)
-		assert.Contains(t, manifest.routes, routeName,
+		assert.Contains(t, manifest.routes, target,
 			"policy %q targets a route that is not in this manifest", policy.Metadata.Name)
 	}
 }

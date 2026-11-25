@@ -155,6 +155,9 @@ Create the name of the metadata service service account
 {{- if hasKey (index $.Values $component).container.envs "AIBRIX_GATEWAY_NAMESPACE" }}
 {{- fail "AIBRIX_GATEWAY_NAMESPACE is managed by the chart; select the installation namespace with --namespace instead of overriding component envs." }}
 {{- end }}
+{{- if hasKey (index $.Values $component).container.envs "AIBRIX_GATEWAY_NAME" }}
+{{- fail "AIBRIX_GATEWAY_NAME is managed by the chart; select the Gateway name through the release name, nameOverride or fullnameOverride instead of overriding component envs." }}
+{{- end }}
 {{- end }}
 {{- if and .Values.gateway.enable .Values.gateway.envoyAsSideCar -}}
 {{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}

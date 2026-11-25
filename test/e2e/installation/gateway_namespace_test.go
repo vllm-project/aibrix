@@ -30,59 +30,90 @@ import (
 )
 
 func TestGatewayNamespaceManifests(t *testing.T) {
-	for _, namespace := range []string{"aibrix-system", "gateway-system"} {
-		t.Run(namespace, func(t *testing.T) {
-			output, err := exec.Command("helm", "template", "aibrix", "../../../dist/chart",
-				"--namespace", namespace).CombinedOutput()
+	for _, tt := range []struct {
+		name, release, namespace, fullname string
+		values                             []string
+	}{
+		{"default", "aibrix", "aibrix-system", "aibrix", nil},
+		{"namespace", "aibrix", "gateway-system", "aibrix", nil},
+		{"release", "myrel", "gateway-system", "myrel-aibrix", nil},
+		{"fullname override", "myrel", "gateway-system", "custom-gateway",
+			[]string{"--set-string", "fullnameOverride=custom-gateway"}},
+		{"name override", "myrel", "gateway-system", "myrel-custom",
+			[]string{"--set-string", "nameOverride=custom"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"template", tt.release, "../../../dist/chart", "--namespace", tt.namespace}, tt.values...)
+			output, err := exec.Command("helm", args...).CombinedOutput()
 			require.NoError(t, err, "%s", output)
-			decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(output), 4096)
-			components := map[string]bool{"aibrix-controller-manager": false, "aibrix-gateway-plugins": false}
-			gatewayFound := false
-			for {
-				var object map[string]interface{}
-				err := decoder.Decode(&object)
-				if err == io.EOF {
-					break
-				}
-				require.NoError(t, err)
-				switch object["kind"] {
-				case "GatewayClass":
-					var gatewayClass gatewayv1.GatewayClass
-					require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(object, &gatewayClass))
-					require.Equal(t, "aibrix-eg", gatewayClass.Name)
-					require.NotNil(t, gatewayClass.Spec.ParametersRef)
-					require.Equal(t, gatewayv1.Namespace(namespace), *gatewayClass.Spec.ParametersRef.Namespace)
-					gatewayFound = true
-				case "Deployment":
-					var deployment appsv1.Deployment
-					require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(object, &deployment))
-					if _, relevant := components[deployment.Name]; !relevant {
-						continue
-					}
-					count := 0
-					for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
-						if env.Name == "AIBRIX_GATEWAY_NAMESPACE" {
-							require.Equal(t, namespace, env.Value)
-							require.Nil(t, env.ValueFrom, "the setting must not follow Pod placement")
-							count++
-						}
-					}
-					require.Equal(t, 1, count, deployment.Name)
-					components[deployment.Name] = true
-				}
-			}
-			require.True(t, gatewayFound)
-			for component, found := range components {
-				require.True(t, found, component)
-			}
+			checkHelmGatewayReferences(t, output, tt.namespace, tt.fullname)
 		})
 	}
 	for _, component := range []string{"controllerManager", "gatewayPlugin"} {
-		t.Run(component+" override", func(t *testing.T) {
-			output, err := exec.Command("helm", "template", "aibrix", "../../../dist/chart",
-				"--set-string", component+".container.envs.AIBRIX_GATEWAY_NAMESPACE=other").CombinedOutput()
-			require.Error(t, err)
-			require.Contains(t, string(output), "AIBRIX_GATEWAY_NAMESPACE is managed by the chart")
-		})
+		for _, key := range []string{"AIBRIX_GATEWAY_NAMESPACE", "AIBRIX_GATEWAY_NAME"} {
+			for _, value := range []string{"other", ""} {
+				t.Run(component+" override "+key+"="+value, func(t *testing.T) {
+					output, err := exec.Command("helm", "template", "aibrix", "../../../dist/chart",
+						"--set-string", component+".container.envs."+key+"="+value).CombinedOutput()
+					require.Error(t, err)
+					require.Contains(t, string(output), key+" is managed by the chart")
+				})
+			}
+		}
+	}
+}
+
+func checkHelmGatewayReferences(t *testing.T, output []byte, namespace, fullname string) {
+	t.Helper()
+	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(output), 4096)
+	components := map[string]bool{fullname + "-controller-manager": false, fullname + "-gateway-plugins": false}
+	gatewayFound, gatewayClassFound := false, false
+	for {
+		var object map[string]interface{}
+		err := decoder.Decode(&object)
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		switch object["kind"] {
+		case "GatewayClass":
+			var gatewayClass gatewayv1.GatewayClass
+			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(object, &gatewayClass))
+			require.Equal(t, fullname+"-eg", gatewayClass.Name)
+			require.NotNil(t, gatewayClass.Spec.ParametersRef)
+			require.Equal(t, gatewayv1.Namespace(namespace), *gatewayClass.Spec.ParametersRef.Namespace)
+			gatewayClassFound = true
+		case "Gateway":
+			var gateway gatewayv1.Gateway
+			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(object, &gateway))
+			require.Equal(t, fullname+"-eg", gateway.Name)
+			require.Equal(t, gatewayv1.ObjectName(fullname+"-eg"), gateway.Spec.GatewayClassName)
+			gatewayFound = true
+		case "Deployment":
+			var deployment appsv1.Deployment
+			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(object, &deployment))
+			if _, relevant := components[deployment.Name]; !relevant {
+				continue
+			}
+			want := map[string]string{"AIBRIX_GATEWAY_NAMESPACE": namespace}
+			if deployment.Name == fullname+"-controller-manager" {
+				want["AIBRIX_GATEWAY_NAME"] = fullname + "-eg"
+			}
+			actual := map[string]string{}
+			for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
+				if _, managed := want[env.Name]; managed {
+					require.NotContains(t, actual, env.Name, "duplicate setting in %s", deployment.Name)
+					require.Nil(t, env.ValueFrom, "the setting must not follow Pod placement")
+					actual[env.Name] = env.Value
+				}
+			}
+			require.Equal(t, want, actual, deployment.Name)
+			components[deployment.Name] = true
+		}
+	}
+	require.True(t, gatewayFound)
+	require.True(t, gatewayClassFound)
+	for component, found := range components {
+		require.True(t, found, component)
 	}
 }
