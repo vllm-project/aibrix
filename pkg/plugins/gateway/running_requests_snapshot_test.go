@@ -226,7 +226,7 @@ func TestSelectTargetPod_PDReadsRunningRequestsOnce(t *testing.T) {
 
 	// Pin today's token_load + requestsInflight baseline: narrowToInflightCapacity
 	// performs one fleet read and sharedDecodeLedger reads running counts + decode
-	// ledger in a second pipeline (now outside selectMu). A follow-up ledger-only
+	// ledger in a second pipeline (now outside the selection lock). A follow-up ledger-only
 	// cache read (#3588) can drop this from 2 to 1.
 	t.Run("pd/token_load/inflight=1000", func(t *testing.T) {
 		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, "pd-m", "hello world", "req-pd-token-load-inflight", "user")
