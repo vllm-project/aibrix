@@ -131,7 +131,7 @@ func isUnsupportedVideoTrailingSlash(requestPath string) bool {
 
 func parseVideoListOptions(requestPath string) (asyncjob.AsyncJobListOptions, error) {
 	_, rawQuery, hasQuery := strings.Cut(requestPath, "?")
-	options := asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultListLimit, Order: "desc"}
+	options := asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultAsyncJobListLimit, Order: "desc"}
 	if !hasQuery || rawQuery == "" {
 		return options, nil
 	}
@@ -158,7 +158,7 @@ func parseVideoListOptions(requestPath string) (asyncjob.AsyncJobListOptions, er
 	if rawOrder, ok := values["order"]; ok {
 		options.Order = rawOrder[0]
 	}
-	return asyncjob.NormalizeListOptions(options)
+	return asyncjob.NormalizeAsyncJobListOptions(options)
 }
 
 // asyncJobOwnerFromRoutingContext derives the job scope from the only principal
@@ -167,9 +167,9 @@ func parseVideoListOptions(requestPath string) (asyncjob.AsyncJobListOptions, er
 // view over everyone else's jobs.
 func asyncJobOwnerFromRoutingContext(routingCtx *types.RoutingContext) string {
 	if routingCtx == nil || routingCtx.User == nil {
-		return asyncjob.OwnerShared
+		return asyncjob.AsyncJobOwnerShared
 	}
-	return asyncjob.OwnerFromUserName(*routingCtx.User)
+	return asyncjob.AsyncJobOwnerFromUserName(*routingCtx.User)
 }
 
 // videoJobResponseNeedsBuffering reports whether a response body must be held
@@ -234,11 +234,11 @@ func videoJobStoreUnavailableResponse(publicJobID string) *extProcPb.ProcessingR
 // gets: absent or dead means terminal 404, transient means retryable 503.
 func videoJobErrorResponse(publicJobID string, err error) *extProcPb.ProcessingResponse {
 	switch {
-	case errors.Is(err, asyncjob.ErrNotFound):
+	case errors.Is(err, asyncjob.ErrAsyncJobNotFound):
 		return videoNotFoundResponse(publicJobID)
-	case errors.Is(err, asyncjob.ErrTargetUnavailable):
+	case errors.Is(err, asyncjob.ErrAsyncJobTargetUnavailable):
 		return videoJobPodUnavailableResponse(publicJobID)
-	case errors.Is(err, asyncjob.ErrStoreUnavailable):
+	case errors.Is(err, asyncjob.ErrAsyncJobStoreUnavailable):
 		return videoJobStoreUnavailableResponse(publicJobID)
 	default:
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
@@ -290,9 +290,9 @@ type videoListResponse struct {
 // own record of what the caller owns, deliberately without live status
 // enrichment, which would mean fanning out HTTP calls to every pinned pod.
 func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner string, options asyncjob.AsyncJobListOptions) *extProcPb.ProcessingResponse {
-	page, err := s.asyncJobRegistry().List(ctx, owner, asyncjob.TypeVideo, options)
+	page, err := s.asyncJobRegistry().List(ctx, owner, asyncjob.AsyncJobTypeVideo, options)
 	if err != nil {
-		if errors.Is(err, asyncjob.ErrNotFound) || errors.Is(err, asyncjob.ErrInvalidRecord) {
+		if errors.Is(err, asyncjob.ErrAsyncJobNotFound) || errors.Is(err, asyncjob.ErrAsyncJobInvalidRecord) {
 			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
 				"invalid video list cursor or parameters", "", "", HeaderErrorRequestBodyProcessing, "true")
 		}
@@ -538,7 +538,7 @@ func (s *Server) registerVideoJobFromCreateResponse(ctx context.Context, request
 
 	owner := asyncJobOwnerFromRoutingContext(routerCtx)
 	record, err := s.asyncJobRegistry().Register(ctx, asyncjob.AsyncJobRegistration{
-		JobType:      asyncjob.TypeVideo,
+		JobType:      asyncjob.AsyncJobTypeVideo,
 		Owner:        owner,
 		Model:        routerCtx.Model,
 		BackendJobID: backendJobID,

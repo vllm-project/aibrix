@@ -127,7 +127,7 @@ func testAsyncJobRecord(clock *fakeClock, owner, publicID, backendID string) Asy
 	now := clock.Now()
 	return AsyncJobRecord{
 		PublicJobID:  publicID,
-		JobType:      TypeVideo,
+		JobType:      AsyncJobTypeVideo,
 		Owner:        owner,
 		Model:        "wan2.1",
 		BackendJobID: backendID,
@@ -160,10 +160,10 @@ func TestAsyncJobOwnerScope(t *testing.T) {
 	// The static bearer token carries no principal, so a request without a user
 	// header shares one scope rather than being attributed to the token.
 	assert.Equal(t, "scope:user:alice", asyncJobOwnerFromUser(utils.User{Name: "alice"}))
-	assert.Equal(t, OwnerShared, asyncJobOwnerFromUser(utils.User{}))
-	assert.Equal(t, OwnerShared, OwnerFromUserName(""))
-	assert.Equal(t, OwnerShared, OwnerFromUserName("   "))
-	assert.Equal(t, "scope:user:bob", OwnerFromUserName("bob"))
+	assert.Equal(t, AsyncJobOwnerShared, asyncJobOwnerFromUser(utils.User{}))
+	assert.Equal(t, AsyncJobOwnerShared, AsyncJobOwnerFromUserName(""))
+	assert.Equal(t, AsyncJobOwnerShared, AsyncJobOwnerFromUserName("   "))
+	assert.Equal(t, "scope:user:bob", AsyncJobOwnerFromUserName("bob"))
 }
 
 func TestNewAsyncJobPublicID(t *testing.T) {
@@ -179,18 +179,18 @@ func TestNewAsyncJobPublicID(t *testing.T) {
 }
 
 func TestAsyncJobInvalidRecordErrorCanBeWrappedWithoutExposingSentinel(t *testing.T) {
-	_, err := NormalizeListOptions(AsyncJobListOptions{Limit: 0})
+	_, err := NormalizeAsyncJobListOptions(AsyncJobListOptions{Limit: 0})
 	require.Error(t, err)
 
 	wrapped := fmt.Errorf("parse video list options: %w", err)
-	assert.ErrorIs(t, wrapped, ErrInvalidRecord)
+	assert.ErrorIs(t, wrapped, ErrAsyncJobInvalidRecord)
 	assert.Equal(t, "parse video list options: list limit must be between 1 and 100", wrapped.Error())
-	assert.NotContains(t, wrapped.Error(), ErrInvalidRecord.Error())
+	assert.NotContains(t, wrapped.Error(), ErrAsyncJobInvalidRecord.Error())
 }
 
 func TestAsyncJobRecordValidate(t *testing.T) {
 	clock := newFakeClock()
-	valid := testAsyncJobRecord(clock, OwnerShared, "job-1", "backend-1")
+	valid := testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-1", "backend-1")
 	require.NoError(t, valid.validate())
 
 	tests := []struct {
@@ -211,7 +211,7 @@ func TestAsyncJobRecordValidate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			record := valid
 			tt.mutate(&record)
-			assert.ErrorIs(t, record.validate(), ErrInvalidRecord)
+			assert.ErrorIs(t, record.validate(), ErrAsyncJobInvalidRecord)
 		})
 	}
 }
@@ -220,10 +220,10 @@ func TestAsyncJobStore_PutGetListDelete(t *testing.T) {
 	for _, fixture := range asyncJobStoreFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
-			record := testAsyncJobRecord(fixture.clock, OwnerShared, "job-1", "backend-1")
+			record := testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-1", "backend-1")
 			require.NoError(t, fixture.store.put(ctx, record))
 
-			got, err := fixture.store.get(ctx, OwnerShared, "job-1")
+			got, err := fixture.store.get(ctx, AsyncJobOwnerShared, "job-1")
 			require.NoError(t, err)
 			assert.Equal(t, record.PublicJobID, got.PublicJobID)
 			assert.Equal(t, record.BackendJobID, got.BackendJobID)
@@ -234,25 +234,25 @@ func TestAsyncJobStore_PutGetListDelete(t *testing.T) {
 			assert.True(t, record.ExpiresAt.Equal(got.ExpiresAt), "want %v got %v", record.ExpiresAt, got.ExpiresAt)
 			assert.True(t, record.CreatedAt.Equal(got.CreatedAt), "want %v got %v", record.CreatedAt, got.CreatedAt)
 
-			listed, err := fixture.store.list(ctx, OwnerShared, TypeVideo)
+			listed, err := fixture.store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
 			require.NoError(t, err)
 			require.Len(t, listed, 1)
 			assert.Equal(t, "job-1", listed[0].PublicJobID)
 
-			require.NoError(t, fixture.store.delete(ctx, OwnerShared, "job-1"))
+			require.NoError(t, fixture.store.delete(ctx, AsyncJobOwnerShared, "job-1"))
 
-			_, err = fixture.store.get(ctx, OwnerShared, "job-1")
-			assert.ErrorIs(t, err, ErrNotFound)
+			_, err = fixture.store.get(ctx, AsyncJobOwnerShared, "job-1")
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
 			// The secondary index must go with the record, not linger as a
 			// dangling member that List would have to keep pruning.
-			listed, err = fixture.store.list(ctx, OwnerShared, TypeVideo)
+			listed, err = fixture.store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
 			require.NoError(t, err)
 			assert.Empty(t, listed)
 
 			// Deleting an already-deleted job is a no-op, so the DELETE cleanup
 			// path can be retried safely.
-			assert.NoError(t, fixture.store.delete(ctx, OwnerShared, "job-1"))
+			assert.NoError(t, fixture.store.delete(ctx, AsyncJobOwnerShared, "job-1"))
 		})
 	}
 }
@@ -260,8 +260,8 @@ func TestAsyncJobStore_PutGetListDelete(t *testing.T) {
 func TestAsyncJobStore_GetUnknownJobIsNotFound(t *testing.T) {
 	for _, fixture := range asyncJobStoreFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
-			_, err := fixture.store.get(context.Background(), OwnerShared, "nope")
-			assert.ErrorIs(t, err, ErrNotFound)
+			_, err := fixture.store.get(context.Background(), AsyncJobOwnerShared, "nope")
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 		})
 	}
 }
@@ -270,28 +270,28 @@ func TestAsyncJobStore_ScopeIsolation(t *testing.T) {
 	for _, fixture := range asyncJobStoreFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
-			alice := OwnerFromUserName("alice")
-			bob := OwnerFromUserName("bob")
+			alice := AsyncJobOwnerFromUserName("alice")
+			bob := AsyncJobOwnerFromUserName("bob")
 
 			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, alice, "job-alice", "backend-alice")))
-			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, OwnerShared, "job-shared", "backend-shared")))
+			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-shared", "backend-shared")))
 
 			// Another user's job is indistinguishable from a job that never existed.
 			_, err := fixture.store.get(ctx, bob, "job-alice")
-			assert.ErrorIs(t, err, ErrNotFound)
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
 			// scope:shared is a scope of its own, not a wildcard over user scopes.
-			_, err = fixture.store.get(ctx, OwnerShared, "job-alice")
-			assert.ErrorIs(t, err, ErrNotFound)
+			_, err = fixture.store.get(ctx, AsyncJobOwnerShared, "job-alice")
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 			_, err = fixture.store.get(ctx, alice, "job-shared")
-			assert.ErrorIs(t, err, ErrNotFound)
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
-			listed, err := fixture.store.list(ctx, alice, TypeVideo)
+			listed, err := fixture.store.list(ctx, alice, AsyncJobTypeVideo)
 			require.NoError(t, err)
 			require.Len(t, listed, 1)
 			assert.Equal(t, "job-alice", listed[0].PublicJobID)
 
-			listed, err = fixture.store.list(ctx, bob, TypeVideo)
+			listed, err = fixture.store.list(ctx, bob, AsyncJobTypeVideo)
 			require.NoError(t, err)
 			assert.Empty(t, listed)
 
@@ -307,14 +307,14 @@ func TestAsyncJobStore_ListFiltersByJobType(t *testing.T) {
 	for _, fixture := range asyncJobStoreFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
-			video := testAsyncJobRecord(fixture.clock, OwnerShared, "job-video", "backend-video")
-			other := testAsyncJobRecord(fixture.clock, OwnerShared, "job-other", "backend-other")
+			video := testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-video", "backend-video")
+			other := testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-other", "backend-other")
 			other.JobType = "some-other-type"
 
 			require.NoError(t, fixture.store.put(ctx, video))
 			require.NoError(t, fixture.store.put(ctx, other))
 
-			listed, err := fixture.store.list(ctx, OwnerShared, TypeVideo)
+			listed, err := fixture.store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
 			require.NoError(t, err)
 			require.Len(t, listed, 1)
 			assert.Equal(t, "job-video", listed[0].PublicJobID)
@@ -326,15 +326,15 @@ func TestAsyncJobStore_ExpiredRecordsAreAbsent(t *testing.T) {
 	for _, fixture := range asyncJobStoreFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
-			record := testAsyncJobRecord(fixture.clock, OwnerShared, "job-1", "backend-1")
+			record := testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-1", "backend-1")
 			require.NoError(t, fixture.store.put(ctx, record))
 
 			fixture.advance(2 * time.Hour)
 
-			_, err := fixture.store.get(ctx, OwnerShared, "job-1")
-			assert.ErrorIs(t, err, ErrNotFound)
+			_, err := fixture.store.get(ctx, AsyncJobOwnerShared, "job-1")
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
-			listed, err := fixture.store.list(ctx, OwnerShared, TypeVideo)
+			listed, err := fixture.store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
 			require.NoError(t, err)
 			assert.Empty(t, listed)
 		})
@@ -349,12 +349,12 @@ func TestAsyncJobStore_RepeatedPutIsIdempotent(t *testing.T) {
 	for _, fixture := range asyncJobStoreFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
-			record := testAsyncJobRecord(fixture.clock, OwnerShared, "job-1", "backend-1")
+			record := testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-1", "backend-1")
 			require.NoError(t, fixture.store.put(ctx, record))
 			require.NoError(t, fixture.store.put(ctx, record))
 			require.NoError(t, fixture.store.put(ctx, record))
 
-			listed, err := fixture.store.list(ctx, OwnerShared, TypeVideo)
+			listed, err := fixture.store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
 			require.NoError(t, err)
 			assert.Len(t, listed, 1)
 		})
@@ -362,9 +362,9 @@ func TestAsyncJobStore_RepeatedPutIsIdempotent(t *testing.T) {
 }
 
 func TestRedisAsyncJobStore_Keys(t *testing.T) {
-	assert.Equal(t, "aibrix:gateway:async_job:{scope:shared}:record:job-1", asyncJobRecordKey(OwnerShared, "job-1"))
-	assert.Equal(t, "aibrix:gateway:async_job:{scope:shared}:record:", asyncJobRecordKeyPrefix(OwnerShared))
-	assert.Equal(t, "aibrix:gateway:async_job:{scope:user:alice}:index:video", asyncJobIndexKey("scope:user:alice", TypeVideo))
+	assert.Equal(t, "aibrix:gateway:async_job:{scope:shared}:record:job-1", asyncJobRecordKey(AsyncJobOwnerShared, "job-1"))
+	assert.Equal(t, "aibrix:gateway:async_job:{scope:shared}:record:", asyncJobRecordKeyPrefix(AsyncJobOwnerShared))
+	assert.Equal(t, "aibrix:gateway:async_job:{scope:user:alice}:index:video", asyncJobIndexKey("scope:user:alice", AsyncJobTypeVideo))
 	assert.Equal(t, "aibrix:gateway:async_job:{scope:user:alice}:indexes", asyncJobIndexesKey("scope:user:alice"))
 }
 
@@ -385,12 +385,12 @@ func TestRedisAsyncJobStore_PutWritesRecordAndIndexOnce(t *testing.T) {
 	store := newRedisAsyncJobStore(client)
 	store.now = clock.Now
 
-	record := testAsyncJobRecord(clock, OwnerShared, "job-1", "backend-1")
+	record := testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-1", "backend-1")
 	require.NoError(t, store.put(ctx, record))
 	require.NoError(t, store.put(ctx, record))
 
-	recordKey := asyncJobRecordKey(OwnerShared, "job-1")
-	indexKey := asyncJobIndexKey(OwnerShared, TypeVideo)
+	recordKey := asyncJobRecordKey(AsyncJobOwnerShared, "job-1")
+	indexKey := asyncJobIndexKey(AsyncJobOwnerShared, AsyncJobTypeVideo)
 
 	members, err := client.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
@@ -399,7 +399,7 @@ func TestRedisAsyncJobStore_PutWritesRecordAndIndexOnce(t *testing.T) {
 	assert.Positive(t, mr.TTL(recordKey), "record must expire on its own")
 	assert.Positive(t, mr.TTL(indexKey), "index must expire on its own")
 
-	require.NoError(t, store.delete(ctx, OwnerShared, "job-1"))
+	require.NoError(t, store.delete(ctx, AsyncJobOwnerShared, "job-1"))
 	assert.False(t, mr.Exists(recordKey))
 	members, err = client.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
@@ -416,13 +416,13 @@ func TestRedisAsyncJobStore_DeleteReapsIndexOfExpiredRecord(t *testing.T) {
 	store := newRedisAsyncJobStore(client)
 	store.now = clock.Now
 
-	record := testAsyncJobRecord(clock, OwnerShared, "job-1", "backend-1")
+	record := testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-1", "backend-1")
 	require.NoError(t, store.put(ctx, record))
 
-	indexKey := asyncJobIndexKey(OwnerShared, TypeVideo)
-	mr.Del(asyncJobRecordKey(OwnerShared, "job-1"))
+	indexKey := asyncJobIndexKey(AsyncJobOwnerShared, AsyncJobTypeVideo)
+	mr.Del(asyncJobRecordKey(AsyncJobOwnerShared, "job-1"))
 
-	require.NoError(t, store.delete(ctx, OwnerShared, "job-1"))
+	require.NoError(t, store.delete(ctx, AsyncJobOwnerShared, "job-1"))
 	members, err := client.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
 	assert.Empty(t, members, "index member must not survive its record")
@@ -438,16 +438,16 @@ func TestRedisAsyncJobStore_ListPrunesStaleIndexMembers(t *testing.T) {
 	store := newRedisAsyncJobStore(client)
 	store.now = clock.Now
 
-	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, OwnerShared, "job-1", "backend-1")))
-	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, OwnerShared, "job-2", "backend-2")))
-	mr.Del(asyncJobRecordKey(OwnerShared, "job-2"))
+	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-1", "backend-1")))
+	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-2", "backend-2")))
+	mr.Del(asyncJobRecordKey(AsyncJobOwnerShared, "job-2"))
 
-	listed, err := store.list(ctx, OwnerShared, TypeVideo)
+	listed, err := store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	assert.Equal(t, "job-1", listed[0].PublicJobID)
 
-	members, err := client.ZRange(ctx, asyncJobIndexKey(OwnerShared, TypeVideo), 0, -1).Result()
+	members, err := client.ZRange(ctx, asyncJobIndexKey(AsyncJobOwnerShared, AsyncJobTypeVideo), 0, -1).Result()
 	require.NoError(t, err)
 	assert.Equal(t, []string{"job-1"}, members)
 }
@@ -460,18 +460,18 @@ func TestRedisAsyncJobStore_ListPageUsesBoundedCursorRange(t *testing.T) {
 	store.now = clock.Now
 
 	for _, id := range []string{"job-1", "job-2", "job-3"} {
-		require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, OwnerShared, id, "backend-"+id)))
+		require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, id, "backend-"+id)))
 		clock.advance(time.Microsecond)
 	}
 
-	first, err := store.listPage(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{Limit: 2, Order: "desc"})
+	first, err := store.listPage(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{Limit: 2, Order: "desc"})
 	require.NoError(t, err)
 	require.Len(t, first.Records, 2)
 	assert.True(t, first.HasMore)
 	assert.Equal(t, "job-3", first.Records[0].PublicJobID)
 	assert.Equal(t, "job-2", first.Records[1].PublicJobID)
 
-	second, err := store.listPage(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{After: "job-2", Limit: 2, Order: "desc"})
+	second, err := store.listPage(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{After: "job-2", Limit: 2, Order: "desc"})
 	require.NoError(t, err)
 	require.Len(t, second.Records, 1)
 	assert.Equal(t, "job-1", second.Records[0].PublicJobID)
@@ -482,19 +482,19 @@ func TestAsyncJobStore_ListPageRejectsDeletedCursor(t *testing.T) {
 	for _, fixture := range asyncJobStoreFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
-			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, OwnerShared, "job-1", "backend-1")))
+			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-1", "backend-1")))
 			fixture.advance(time.Microsecond)
-			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, OwnerShared, "job-cursor", "backend-cursor")))
+			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, AsyncJobOwnerShared, "job-cursor", "backend-cursor")))
 
-			require.NoError(t, fixture.store.delete(ctx, OwnerShared, "job-cursor"))
+			require.NoError(t, fixture.store.delete(ctx, AsyncJobOwnerShared, "job-cursor"))
 			pageStore, ok := fixture.store.(asyncJobPageStore)
 			require.True(t, ok)
-			_, err := pageStore.listPage(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{
+			_, err := pageStore.listPage(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{
 				After: "job-cursor",
 				Limit: 1,
 				Order: "desc",
 			})
-			assert.ErrorIs(t, err, ErrNotFound,
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound,
 				"a deleted cursor has lost its sort position; callers must restart from the first page")
 		})
 	}
@@ -537,7 +537,7 @@ func TestRedisAsyncJobStore_ListPageCursorIsStableAcrossConcurrentInsert(t *test
 	store.now = clock.Now
 
 	for _, id := range []string{"job-1", "job-2", "job-3", "job-4"} {
-		require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, OwnerShared, id, "backend-"+id)))
+		require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, id, "backend-"+id)))
 		clock.advance(time.Microsecond)
 	}
 	otherClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -545,11 +545,11 @@ func TestRedisAsyncJobStore_ListPageCursorIsStableAcrossConcurrentInsert(t *test
 	otherStore := newRedisAsyncJobStore(otherClient)
 	otherStore.now = clock.Now
 	hook := &asyncJobConcurrentInsertHook{insert: func() error {
-		return otherStore.put(ctx, testAsyncJobRecord(clock, OwnerShared, "job-5", "backend-job-5"))
+		return otherStore.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-5", "backend-job-5"))
 	}}
 	client.AddHook(hook)
 
-	page, err := store.listPage(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{After: "job-3", Limit: 2, Order: "desc"})
+	page, err := store.listPage(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{After: "job-3", Limit: 2, Order: "desc"})
 	require.NoError(t, err)
 	require.NoError(t, hook.err)
 	require.Len(t, page.Records, 2)
@@ -566,15 +566,15 @@ func TestRedisAsyncJobStore_ListPageSkipsStaleMembersAndFillsPage(t *testing.T) 
 	store.now = clock.Now
 
 	for _, id := range []string{"job-1", "job-2", "job-3"} {
-		require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, OwnerShared, id, "backend-"+id)))
+		require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, id, "backend-"+id)))
 		clock.advance(time.Microsecond)
 	}
-	indexKey := asyncJobIndexKey(OwnerShared, TypeVideo)
+	indexKey := asyncJobIndexKey(AsyncJobOwnerShared, AsyncJobTypeVideo)
 	require.NoError(t, client.ZAdd(ctx, indexKey,
 		redis.Z{Score: float64(clock.Now().UnixMicro()), Member: "job-stale-1"},
 		redis.Z{Score: float64(clock.Now().Add(time.Microsecond).UnixMicro()), Member: "job-stale-2"}).Err())
 
-	page, err := store.listPage(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{Limit: 2, Order: "desc"})
+	page, err := store.listPage(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{Limit: 2, Order: "desc"})
 	require.NoError(t, err)
 	require.Len(t, page.Records, 2)
 	assert.Equal(t, "job-3", page.Records[0].PublicJobID)
@@ -593,18 +593,18 @@ func TestRedisAsyncJobStore_ListPageScanBudgetIsRetryableAndMakesProgress(t *tes
 	store := newRedisAsyncJobStore(client)
 	store.now = clock.Now
 
-	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, OwnerShared, "job-live", "backend-live")))
-	indexKey := asyncJobIndexKey(OwnerShared, TypeVideo)
+	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-live", "backend-live")))
+	indexKey := asyncJobIndexKey(AsyncJobOwnerShared, AsyncJobTypeVideo)
 	stale := make([]redis.Z, 0, asyncJobListMaxScan+1)
 	for i := 0; i < asyncJobListMaxScan+1; i++ {
 		stale = append(stale, redis.Z{Score: float64(clock.Now().Add(time.Duration(i+1) * time.Microsecond).UnixMicro()), Member: fmt.Sprintf("job-stale-%04d", i)})
 	}
 	require.NoError(t, client.ZAdd(ctx, indexKey, stale...).Err())
 
-	_, err := store.listPage(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{Limit: 1, Order: "desc"})
-	assert.ErrorIs(t, err, ErrStoreUnavailable, "an inconclusive bounded scan must be retryable")
+	_, err := store.listPage(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{Limit: 1, Order: "desc"})
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable, "an inconclusive bounded scan must be retryable")
 
-	page, err := store.listPage(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{Limit: 1, Order: "desc"})
+	page, err := store.listPage(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{Limit: 1, Order: "desc"})
 	require.NoError(t, err, "the first bounded scan must retain its stale-member cleanup")
 	require.Len(t, page.Records, 1)
 	assert.Equal(t, "job-live", page.Records[0].PublicJobID)
@@ -613,7 +613,7 @@ func TestRedisAsyncJobStore_ListPageScanBudgetIsRetryableAndMakesProgress(t *tes
 
 // TestRedisAsyncJobStore_TransientFailureIsRetryable checks the end-to-end
 // classification: an unreachable Redis is a transient failure, so callers get
-// ErrStoreUnavailable (a retryable 503) rather than a bare error that
+// ErrAsyncJobStoreUnavailable (a retryable 503) rather than a bare error that
 // would be reported as a permanent failure.
 func TestRedisAsyncJobStore_TransientFailureIsRetryable(t *testing.T) {
 	ctx := context.Background()
@@ -623,16 +623,16 @@ func TestRedisAsyncJobStore_TransientFailureIsRetryable(t *testing.T) {
 	store.now = clock.Now
 	mr.Close()
 
-	record := testAsyncJobRecord(clock, OwnerShared, "job-1", "backend-1")
-	assert.ErrorIs(t, store.put(ctx, record), ErrStoreUnavailable)
+	record := testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-1", "backend-1")
+	assert.ErrorIs(t, store.put(ctx, record), ErrAsyncJobStoreUnavailable)
 
-	_, err := store.get(ctx, OwnerShared, "job-1")
-	assert.ErrorIs(t, err, ErrStoreUnavailable)
+	_, err := store.get(ctx, AsyncJobOwnerShared, "job-1")
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 
-	_, err = store.list(ctx, OwnerShared, TypeVideo)
-	assert.ErrorIs(t, err, ErrStoreUnavailable)
+	_, err = store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 
-	assert.ErrorIs(t, store.delete(ctx, OwnerShared, "job-1"), ErrStoreUnavailable)
+	assert.ErrorIs(t, store.delete(ctx, AsyncJobOwnerShared, "job-1"), ErrAsyncJobStoreUnavailable)
 }
 
 // fakeRedisServerError stands in for a server-side reply error: redis.Error is
@@ -665,7 +665,7 @@ func TestIsTransientRedisError(t *testing.T) {
 		{"connection refused", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
 		{"context canceled", context.Canceled, false},
 		{"deadline exceeded", context.DeadlineExceeded, false},
-		{"serialization failure is permanent", ErrInvalidRecord, false},
+		{"serialization failure is permanent", ErrAsyncJobInvalidRecord, false},
 		{"wrapped transient", fmt.Errorf("put: %w", io.EOF), true},
 	}
 	for _, tt := range tests {
@@ -708,7 +708,7 @@ func TestRetryAsyncJobStoreOp_RetriesOnlyTransientFailures(t *testing.T) {
 			attempts++
 			return io.EOF
 		})
-		assert.ErrorIs(t, err, ErrStoreUnavailable)
+		assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 		assert.Equal(t, asyncJobStoreMaxAttempts, attempts, "the attempt budget is total attempts, not retries on top of the first")
 	})
 
@@ -720,7 +720,7 @@ func TestRetryAsyncJobStoreOp_RetriesOnlyTransientFailures(t *testing.T) {
 			return permanent
 		})
 		assert.ErrorIs(t, err, permanent)
-		assert.NotErrorIs(t, err, ErrStoreUnavailable)
+		assert.NotErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 		assert.Equal(t, 1, attempts)
 	})
 
@@ -728,9 +728,9 @@ func TestRetryAsyncJobStoreOp_RetriesOnlyTransientFailures(t *testing.T) {
 		attempts := 0
 		err := retryAsyncJobStoreOp(ctx, policy, "get", func(context.Context) error {
 			attempts++
-			return ErrNotFound
+			return ErrAsyncJobNotFound
 		})
-		assert.ErrorIs(t, err, ErrNotFound)
+		assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 		assert.Equal(t, 1, attempts)
 	})
 }
@@ -746,7 +746,7 @@ func TestRetryAsyncJobStoreOp_BoundedByDeadline(t *testing.T) {
 		attempts++
 		return io.EOF
 	})
-	assert.ErrorIs(t, err, ErrStoreUnavailable)
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 	assert.Less(t, attempts, asyncJobStoreMaxAttempts, "a deadline shorter than the backoff must cut the attempts short")
 	assert.Less(t, time.Since(started), time.Second)
 }
@@ -760,7 +760,7 @@ func TestRetryAsyncJobStoreOp_StopsOnCancelledContext(t *testing.T) {
 		attempts++
 		return io.EOF
 	})
-	assert.ErrorIs(t, err, ErrStoreUnavailable)
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 	assert.Equal(t, 1, attempts, "a cancelled request must not keep hammering Redis")
 }
 
@@ -805,8 +805,8 @@ func TestAsyncJobRegistry_RegisterGeneratesOpaquePublicID(t *testing.T) {
 	pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
 
 	record, err := fixture.registry.Register(context.Background(), AsyncJobRegistration{
-		JobType:      TypeVideo,
-		Owner:        OwnerShared,
+		JobType:      AsyncJobTypeVideo,
+		Owner:        AsyncJobOwnerShared,
 		Model:        "wan2.1",
 		BackendJobID: "video_gen_abc123",
 		Pod:          pod,
@@ -824,7 +824,7 @@ func TestAsyncJobRegistry_RegisterGeneratesOpaquePublicID(t *testing.T) {
 
 	// The record is durable before Register returns: no gateway-replica cache
 	// stands between the caller and the store.
-	stored, err := fixture.store.get(context.Background(), OwnerShared, record.PublicJobID)
+	stored, err := fixture.store.get(context.Background(), AsyncJobOwnerShared, record.PublicJobID)
 	require.NoError(t, err)
 	assert.Equal(t, "video_gen_abc123", stored.BackendJobID)
 }
@@ -835,8 +835,8 @@ func TestAsyncJobRegistry_RegisterAppliesBackendExpiry(t *testing.T) {
 	backendExpiry := fixture.clock.Now().Add(30 * time.Minute)
 
 	record, err := fixture.registry.Register(context.Background(), AsyncJobRegistration{
-		JobType:      TypeVideo,
-		Owner:        OwnerShared,
+		JobType:      AsyncJobTypeVideo,
+		Owner:        AsyncJobOwnerShared,
 		Model:        "wan2.1",
 		BackendJobID: "backend-1",
 		Pod:          pod,
@@ -858,8 +858,8 @@ func TestAsyncJobRegistry_RegisterDefaultsExpiry(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			record, err := fixture.registry.Register(context.Background(), AsyncJobRegistration{
-				JobType:      TypeVideo,
-				Owner:        OwnerShared,
+				JobType:      AsyncJobTypeVideo,
+				Owner:        AsyncJobOwnerShared,
 				Model:        "wan2.1",
 				BackendJobID: "backend-1",
 				Pod:          pod,
@@ -881,16 +881,16 @@ func TestAsyncJobRegistry_RegisterRejectsIncompleteInput(t *testing.T) {
 		name string
 		reg  AsyncJobRegistration
 	}{
-		{"no pod", AsyncJobRegistration{JobType: TypeVideo, Owner: OwnerShared, BackendJobID: "backend-1"}},
-		{"no backend id", AsyncJobRegistration{JobType: TypeVideo, Owner: OwnerShared, Pod: pod}},
-		{"no job type", AsyncJobRegistration{Owner: OwnerShared, BackendJobID: "backend-1", Pod: pod}},
-		{"no owner", AsyncJobRegistration{JobType: TypeVideo, BackendJobID: "backend-1", Pod: pod}},
-		{"pod without uid", AsyncJobRegistration{JobType: TypeVideo, Owner: OwnerShared, BackendJobID: "backend-1", Pod: podWithoutUID}},
+		{"no pod", AsyncJobRegistration{JobType: AsyncJobTypeVideo, Owner: AsyncJobOwnerShared, BackendJobID: "backend-1"}},
+		{"no backend id", AsyncJobRegistration{JobType: AsyncJobTypeVideo, Owner: AsyncJobOwnerShared, Pod: pod}},
+		{"no job type", AsyncJobRegistration{Owner: AsyncJobOwnerShared, BackendJobID: "backend-1", Pod: pod}},
+		{"no owner", AsyncJobRegistration{JobType: AsyncJobTypeVideo, BackendJobID: "backend-1", Pod: pod}},
+		{"pod without uid", AsyncJobRegistration{JobType: AsyncJobTypeVideo, Owner: AsyncJobOwnerShared, BackendJobID: "backend-1", Pod: podWithoutUID}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := fixture.registry.Register(context.Background(), tt.reg)
-			assert.ErrorIs(t, err, ErrInvalidRecord)
+			assert.ErrorIs(t, err, ErrAsyncJobInvalidRecord)
 		})
 	}
 }
@@ -901,8 +901,8 @@ func TestAsyncJobRegistry_GetResolvesRecordedPod(t *testing.T) {
 	pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
 
 	record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-		JobType:      TypeVideo,
-		Owner:        OwnerShared,
+		JobType:      AsyncJobTypeVideo,
+		Owner:        AsyncJobOwnerShared,
 		Model:        "wan2.1",
 		BackendJobID: "backend-1",
 		Pod:          pod,
@@ -911,7 +911,7 @@ func TestAsyncJobRegistry_GetResolvesRecordedPod(t *testing.T) {
 
 	fixture.cache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 
-	got, resolved, err := fixture.registry.Get(ctx, OwnerShared, record.PublicJobID)
+	got, resolved, err := fixture.registry.Get(ctx, AsyncJobOwnerShared, record.PublicJobID)
 	require.NoError(t, err)
 	assert.Equal(t, "backend-1", got.BackendJobID)
 	assert.Same(t, pod, resolved)
@@ -927,8 +927,8 @@ func TestAsyncJobRegistry_GetRejectsReplacedPodUID(t *testing.T) {
 	pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
 
 	record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-		JobType:      TypeVideo,
-		Owner:        OwnerShared,
+		JobType:      AsyncJobTypeVideo,
+		Owner:        AsyncJobOwnerShared,
 		Model:        "wan2.1",
 		BackendJobID: "backend-1",
 		Pod:          pod,
@@ -939,11 +939,11 @@ func TestAsyncJobRegistry_GetRejectsReplacedPodUID(t *testing.T) {
 	replacement.UID = "uid-pod-a-recreated"
 	fixture.cache.On("GetPod", "pod-a", "ns-a").Return(replacement, nil)
 
-	_, _, err = fixture.registry.Get(ctx, OwnerShared, record.PublicJobID)
-	assert.ErrorIs(t, err, ErrNotFound)
+	_, _, err = fixture.registry.Get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+	assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
-	_, err = fixture.store.get(ctx, OwnerShared, record.PublicJobID)
-	assert.ErrorIs(t, err, ErrNotFound, "a record pointing at a replaced pod is terminal and must be dropped")
+	_, err = fixture.store.get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+	assert.ErrorIs(t, err, ErrAsyncJobNotFound, "a record pointing at a replaced pod is terminal and must be dropped")
 	fixture.cache.AssertExpectations(t)
 }
 
@@ -967,8 +967,8 @@ func TestAsyncJobRegistry_GetDropsRecordWhenPodIsGone(t *testing.T) {
 			pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
 
 			record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-				JobType:      TypeVideo,
-				Owner:        OwnerShared,
+				JobType:      AsyncJobTypeVideo,
+				Owner:        AsyncJobOwnerShared,
 				Model:        "wan2.1",
 				BackendJobID: "backend-1",
 				Pod:          pod,
@@ -977,11 +977,11 @@ func TestAsyncJobRegistry_GetDropsRecordWhenPodIsGone(t *testing.T) {
 
 			fixture.cache.On("GetPod", "pod-a", "ns-a").Return(tt.pod, tt.err)
 
-			_, _, err = fixture.registry.Get(ctx, OwnerShared, record.PublicJobID)
-			assert.ErrorIs(t, err, ErrNotFound)
+			_, _, err = fixture.registry.Get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
-			_, err = fixture.store.get(ctx, OwnerShared, record.PublicJobID)
-			assert.ErrorIs(t, err, ErrNotFound)
+			_, err = fixture.store.get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+			assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 			fixture.cache.AssertExpectations(t)
 		})
 	}
@@ -1006,8 +1006,8 @@ func TestAsyncJobRegistry_GetKeepsRecordWhenPodIsOnlyTransientlyUnavailable(t *t
 			pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
 
 			record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-				JobType:      TypeVideo,
-				Owner:        OwnerShared,
+				JobType:      AsyncJobTypeVideo,
+				Owner:        AsyncJobOwnerShared,
 				Model:        "wan2.1",
 				BackendJobID: "backend-1",
 				Pod:          pod,
@@ -1016,10 +1016,10 @@ func TestAsyncJobRegistry_GetKeepsRecordWhenPodIsOnlyTransientlyUnavailable(t *t
 
 			fixture.cache.On("GetPod", "pod-a", "ns-a").Return(tt.pod, nil)
 
-			_, _, err = fixture.registry.Get(ctx, OwnerShared, record.PublicJobID)
-			assert.ErrorIs(t, err, ErrTargetUnavailable)
+			_, _, err = fixture.registry.Get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+			assert.ErrorIs(t, err, ErrAsyncJobTargetUnavailable)
 
-			_, err = fixture.store.get(ctx, OwnerShared, record.PublicJobID)
+			_, err = fixture.store.get(ctx, AsyncJobOwnerShared, record.PublicJobID)
 			assert.NoError(t, err, "a transiently unavailable pod must not cost the client its job record")
 			fixture.cache.AssertExpectations(t)
 		})
@@ -1030,10 +1030,10 @@ func TestAsyncJobRegistry_GetEnforcesOwnerScope(t *testing.T) {
 	fixture := newAsyncJobRegistryFixture(t)
 	ctx := context.Background()
 	pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
-	alice := OwnerFromUserName("alice")
+	alice := AsyncJobOwnerFromUserName("alice")
 
 	record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-		JobType:      TypeVideo,
+		JobType:      AsyncJobTypeVideo,
 		Owner:        alice,
 		Model:        "wan2.1",
 		BackendJobID: "backend-1",
@@ -1041,11 +1041,11 @@ func TestAsyncJobRegistry_GetEnforcesOwnerScope(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, err = fixture.registry.Get(ctx, OwnerFromUserName("bob"), record.PublicJobID)
-	assert.ErrorIs(t, err, ErrNotFound)
+	_, _, err = fixture.registry.Get(ctx, AsyncJobOwnerFromUserName("bob"), record.PublicJobID)
+	assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
-	_, _, err = fixture.registry.Get(ctx, OwnerShared, record.PublicJobID)
-	assert.ErrorIs(t, err, ErrNotFound, "scope:shared must not act as a wildcard over user scopes")
+	_, _, err = fixture.registry.Get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+	assert.ErrorIs(t, err, ErrAsyncJobNotFound, "scope:shared must not act as a wildcard over user scopes")
 
 	// A rejected read must not have touched the pod cache, and must not have
 	// dropped the owner's record.
@@ -1060,8 +1060,8 @@ func TestAsyncJobRegistry_GetExpiredRecordIsNotFound(t *testing.T) {
 	pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
 
 	record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-		JobType:      TypeVideo,
-		Owner:        OwnerShared,
+		JobType:      AsyncJobTypeVideo,
+		Owner:        AsyncJobOwnerShared,
 		Model:        "wan2.1",
 		BackendJobID: "backend-1",
 		Pod:          pod,
@@ -1071,10 +1071,10 @@ func TestAsyncJobRegistry_GetExpiredRecordIsNotFound(t *testing.T) {
 
 	fixture.clock.advance(2 * time.Minute)
 
-	_, _, err = fixture.registry.Get(ctx, OwnerShared, record.PublicJobID)
-	assert.ErrorIs(t, err, ErrNotFound)
+	_, _, err = fixture.registry.Get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+	assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
-	listed, err := listTestAsyncJobs(ctx, fixture.registry, OwnerShared, TypeVideo)
+	listed, err := listTestAsyncJobs(ctx, fixture.registry, AsyncJobOwnerShared, AsyncJobTypeVideo)
 	require.NoError(t, err)
 	assert.Empty(t, listed)
 }
@@ -1083,11 +1083,11 @@ func TestAsyncJobRegistry_ListIsScopedAndTyped(t *testing.T) {
 	fixture := newAsyncJobRegistryFixture(t)
 	ctx := context.Background()
 	pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
-	alice := OwnerFromUserName("alice")
+	alice := AsyncJobOwnerFromUserName("alice")
 
 	for _, backendID := range []string{"backend-1", "backend-2"} {
 		_, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-			JobType:      TypeVideo,
+			JobType:      AsyncJobTypeVideo,
 			Owner:        alice,
 			Model:        "wan2.1",
 			BackendJobID: backendID,
@@ -1096,19 +1096,19 @@ func TestAsyncJobRegistry_ListIsScopedAndTyped(t *testing.T) {
 		require.NoError(t, err)
 	}
 	_, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-		JobType:      TypeVideo,
-		Owner:        OwnerShared,
+		JobType:      AsyncJobTypeVideo,
+		Owner:        AsyncJobOwnerShared,
 		Model:        "wan2.1",
 		BackendJobID: "backend-shared",
 		Pod:          pod,
 	})
 	require.NoError(t, err)
 
-	listed, err := listTestAsyncJobs(ctx, fixture.registry, alice, TypeVideo)
+	listed, err := listTestAsyncJobs(ctx, fixture.registry, alice, AsyncJobTypeVideo)
 	require.NoError(t, err)
 	assert.Len(t, listed, 2)
 
-	listed, err = listTestAsyncJobs(ctx, fixture.registry, OwnerShared, TypeVideo)
+	listed, err = listTestAsyncJobs(ctx, fixture.registry, AsyncJobOwnerShared, AsyncJobTypeVideo)
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	assert.Equal(t, "backend-shared", listed[0].BackendJobID)
@@ -1121,10 +1121,10 @@ func TestAsyncJobRegistry_DeleteIsScopedAndIdempotent(t *testing.T) {
 	fixture := newAsyncJobRegistryFixture(t)
 	ctx := context.Background()
 	pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
-	alice := OwnerFromUserName("alice")
+	alice := AsyncJobOwnerFromUserName("alice")
 
 	record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-		JobType:      TypeVideo,
+		JobType:      AsyncJobTypeVideo,
 		Owner:        alice,
 		Model:        "wan2.1",
 		BackendJobID: "backend-1",
@@ -1132,13 +1132,13 @@ func TestAsyncJobRegistry_DeleteIsScopedAndIdempotent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, fixture.registry.Delete(ctx, OwnerFromUserName("bob"), record.PublicJobID))
+	require.NoError(t, fixture.registry.Delete(ctx, AsyncJobOwnerFromUserName("bob"), record.PublicJobID))
 	_, err = fixture.store.get(ctx, alice, record.PublicJobID)
 	require.NoError(t, err, "another scope's delete must not reach this record")
 
 	require.NoError(t, fixture.registry.Delete(ctx, alice, record.PublicJobID))
 	_, err = fixture.store.get(ctx, alice, record.PublicJobID)
-	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, err, ErrAsyncJobNotFound)
 
 	assert.NoError(t, fixture.registry.Delete(ctx, alice, record.PublicJobID))
 }
@@ -1158,17 +1158,17 @@ func TestRedisAsyncJobStore_DeleteReapsIndexOfAnyJobType(t *testing.T) {
 	store := newRedisAsyncJobStore(client)
 	store.now = clock.Now
 
-	record := testAsyncJobRecord(clock, OwnerShared, "job-audio", "backend-audio")
+	record := testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-audio", "backend-audio")
 	record.JobType = asyncJobTypeTestAudio
 	require.NoError(t, store.put(ctx, record))
 
-	indexKey := asyncJobIndexKey(OwnerShared, asyncJobTypeTestAudio)
+	indexKey := asyncJobIndexKey(AsyncJobOwnerShared, asyncJobTypeTestAudio)
 	members, err := client.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
 	require.Equal(t, []string{"job-audio"}, members)
 
-	require.NoError(t, store.delete(ctx, OwnerShared, "job-audio"))
-	assert.False(t, mr.Exists(asyncJobRecordKey(OwnerShared, "job-audio")))
+	require.NoError(t, store.delete(ctx, AsyncJobOwnerShared, "job-audio"))
+	assert.False(t, mr.Exists(asyncJobRecordKey(AsyncJobOwnerShared, "job-audio")))
 	members, err = client.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
 	assert.Empty(t, members, "a non-video job's index member must not survive its record")
@@ -1184,13 +1184,13 @@ func TestRedisAsyncJobStore_DeleteReapsExpiredRecordIndexOfAnyJobType(t *testing
 	store := newRedisAsyncJobStore(client)
 	store.now = clock.Now
 
-	record := testAsyncJobRecord(clock, OwnerShared, "job-audio", "backend-audio")
+	record := testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-audio", "backend-audio")
 	record.JobType = asyncJobTypeTestAudio
 	require.NoError(t, store.put(ctx, record))
-	mr.Del(asyncJobRecordKey(OwnerShared, "job-audio"))
+	mr.Del(asyncJobRecordKey(AsyncJobOwnerShared, "job-audio"))
 
-	require.NoError(t, store.delete(ctx, OwnerShared, "job-audio"))
-	members, err := client.ZRange(ctx, asyncJobIndexKey(OwnerShared, asyncJobTypeTestAudio), 0, -1).Result()
+	require.NoError(t, store.delete(ctx, AsyncJobOwnerShared, "job-audio"))
+	members, err := client.ZRange(ctx, asyncJobIndexKey(AsyncJobOwnerShared, asyncJobTypeTestAudio), 0, -1).Result()
 	require.NoError(t, err)
 	assert.Empty(t, members, "an expired record's index member must still be reaped")
 }
@@ -1205,19 +1205,19 @@ func TestRedisAsyncJobStore_DeleteLeavesOtherJobsIndexed(t *testing.T) {
 	store := newRedisAsyncJobStore(client)
 	store.now = clock.Now
 
-	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, OwnerShared, "job-1", "backend-1")))
-	audio := testAsyncJobRecord(clock, OwnerShared, "job-2", "backend-2")
+	require.NoError(t, store.put(ctx, testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-1", "backend-1")))
+	audio := testAsyncJobRecord(clock, AsyncJobOwnerShared, "job-2", "backend-2")
 	audio.JobType = asyncJobTypeTestAudio
 	require.NoError(t, store.put(ctx, audio))
 
-	require.NoError(t, store.delete(ctx, OwnerShared, "job-2"))
+	require.NoError(t, store.delete(ctx, AsyncJobOwnerShared, "job-2"))
 
-	video, err := store.list(ctx, OwnerShared, TypeVideo)
+	video, err := store.list(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo)
 	require.NoError(t, err)
 	require.Len(t, video, 1)
 	assert.Equal(t, "job-1", video[0].PublicJobID)
 
-	remaining, err := store.list(ctx, OwnerShared, asyncJobTypeTestAudio)
+	remaining, err := store.list(ctx, AsyncJobOwnerShared, asyncJobTypeTestAudio)
 	require.NoError(t, err)
 	assert.Empty(t, remaining)
 }
@@ -1240,7 +1240,7 @@ func TestRetryAsyncJobStoreOp_BoundsAHungAttempt(t *testing.T) {
 	})
 	elapsed := time.Since(started)
 
-	assert.ErrorIs(t, err, ErrStoreUnavailable, "a store that never answered is retryable for the client")
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable, "a store that never answered is retryable for the client")
 	assert.Equal(t, 1, attempts)
 	assert.Less(t, elapsed, 2*policy.deadline, "the whole operation must be bounded by the policy deadline")
 }
@@ -1258,7 +1258,7 @@ func TestRetryAsyncJobStoreOp_BoundedByCallerDeadline(t *testing.T) {
 	})
 	elapsed := time.Since(started)
 
-	assert.ErrorIs(t, err, ErrStoreUnavailable)
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 	assert.Less(t, elapsed, asyncJobStoreRetryDeadline, "a caller deadline shorter than the policy's must cap the operation")
 }
 
@@ -1271,7 +1271,7 @@ type failingDeleteAsyncJobStore struct {
 
 func (s *failingDeleteAsyncJobStore) delete(context.Context, string, string) error {
 	s.deletes++
-	return fmt.Errorf("%w: delete: %v", ErrStoreUnavailable, io.EOF)
+	return fmt.Errorf("%w: delete: %v", ErrAsyncJobStoreUnavailable, io.EOF)
 }
 
 // TestAsyncJobRegistry_GetReportsFailedCleanupAsRetryable covers the case where
@@ -1303,8 +1303,8 @@ func TestAsyncJobRegistry_GetReportsFailedCleanupAsRetryable(t *testing.T) {
 			pod := asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")
 
 			record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-				JobType:      TypeVideo,
-				Owner:        OwnerShared,
+				JobType:      AsyncJobTypeVideo,
+				Owner:        AsyncJobOwnerShared,
 				Model:        "wan2.1",
 				BackendJobID: "backend-1",
 				Pod:          pod,
@@ -1315,14 +1315,14 @@ func TestAsyncJobRegistry_GetReportsFailedCleanupAsRetryable(t *testing.T) {
 			fixture.registry.store = broken
 			fixture.cache.On("GetPod", "pod-a", "ns-a").Return(tt.pod, tt.err)
 
-			got, resolved, err := fixture.registry.Get(ctx, OwnerShared, record.PublicJobID)
-			assert.ErrorIs(t, err, ErrStoreUnavailable)
-			assert.NotErrorIs(t, err, ErrNotFound, "a 404 must not be reported while the stale record is still durable")
+			got, resolved, err := fixture.registry.Get(ctx, AsyncJobOwnerShared, record.PublicJobID)
+			assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
+			assert.NotErrorIs(t, err, ErrAsyncJobNotFound, "a 404 must not be reported while the stale record is still durable")
 			assert.Nil(t, resolved)
 			assert.Equal(t, "wan2.1", got.Model, "the caller still needs the model to attribute the failure")
 			assert.Positive(t, broken.deletes, "the mandatory cleanup must have been attempted")
 
-			_, err = fixture.store.get(ctx, OwnerShared, record.PublicJobID)
+			_, err = fixture.store.get(ctx, AsyncJobOwnerShared, record.PublicJobID)
 			assert.NoError(t, err, "the record is still there, which is exactly why the answer is retryable")
 			fixture.cache.AssertExpectations(t)
 		})
@@ -1348,17 +1348,17 @@ func TestAsyncJobRegistry_RegisterRejectsElapsedBackendExpiry(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			record, err := fixture.registry.Register(ctx, AsyncJobRegistration{
-				JobType:      TypeVideo,
-				Owner:        OwnerShared,
+				JobType:      AsyncJobTypeVideo,
+				Owner:        AsyncJobOwnerShared,
 				Model:        "wan2.1",
 				BackendJobID: "backend-1",
 				Pod:          asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5"),
 				ExpiresAt:    tt.expiresAt,
 			})
-			assert.ErrorIs(t, err, ErrInvalidRecord)
+			assert.ErrorIs(t, err, ErrAsyncJobInvalidRecord)
 			assert.Empty(t, record.PublicJobID, "no public id may be minted for a job that is already expired")
 
-			records, listErr := listTestAsyncJobs(ctx, fixture.registry, OwnerShared, TypeVideo)
+			records, listErr := listTestAsyncJobs(ctx, fixture.registry, AsyncJobOwnerShared, AsyncJobTypeVideo)
 			require.NoError(t, listErr)
 			assert.Empty(t, records, "an expired registration must leave nothing behind")
 		})
@@ -1494,8 +1494,8 @@ func TestAsyncJobStoreClient_DisablesGoRedisInternalRetries(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	store := newRedisAsyncJobStore(asyncJobStoreClient(client))
-	_, err := store.get(context.Background(), OwnerShared, "job-1")
-	assert.ErrorIs(t, err, ErrStoreUnavailable)
+	_, err := store.get(context.Background(), AsyncJobOwnerShared, "job-1")
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 
 	assert.Equal(t, asyncJobStoreMaxAttempts, server.count("GET"),
 		"a transient failure must cost exactly the policy's attempts, retries included")
@@ -1512,10 +1512,10 @@ func TestAsyncJobStoreClient_BoundsBlockedNetworkReadByContext(t *testing.T) {
 	store.retry = asyncJobRetryPolicy{maxAttempts: 1, baseBackoff: time.Millisecond, deadline: 80 * time.Millisecond}
 
 	started := time.Now()
-	_, err := store.get(context.Background(), OwnerShared, "job-1")
+	_, err := store.get(context.Background(), AsyncJobOwnerShared, "job-1")
 	elapsed := time.Since(started)
 
-	assert.ErrorIs(t, err, ErrStoreUnavailable)
+	assert.ErrorIs(t, err, ErrAsyncJobStoreUnavailable)
 	assert.Less(t, elapsed, 2*store.retry.deadline, "the operation deadline must interrupt a blocked Redis read")
 	assert.Equal(t, 1, server.count("GET"))
 }
@@ -1539,7 +1539,7 @@ func TestAsyncJobStoreClient_KeepsConnectionSettings(t *testing.T) {
 func registerTestVideoJob(t *testing.T, registry AsyncJobRegistry, owner, model, backendJobID string, pod *v1.Pod) AsyncJobRecord {
 	t.Helper()
 	record, err := registry.Register(context.Background(), AsyncJobRegistration{
-		JobType:      TypeVideo,
+		JobType:      AsyncJobTypeVideo,
 		Owner:        owner,
 		Model:        model,
 		BackendJobID: backendJobID,
@@ -1557,24 +1557,24 @@ func TestAsyncJobRegistry_ListPageUsesOpenAICursors(t *testing.T) {
 
 	jobs := make([]AsyncJobRecord, 0, 3)
 	for _, backendID := range []string{"video-1", "video-2", "video-3"} {
-		jobs = append(jobs, registerTestVideoJob(t, registry, OwnerShared, "wan2.1", backendID, asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")))
+		jobs = append(jobs, registerTestVideoJob(t, registry, AsyncJobOwnerShared, "wan2.1", backendID, asyncJobReadyPod("pod-a", "ns-a", "10.0.0.5")))
 		now = now.Add(time.Microsecond)
 	}
 
-	first, err := registry.List(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{Limit: 2, Order: "desc"})
+	first, err := registry.List(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{Limit: 2, Order: "desc"})
 	require.NoError(t, err)
 	require.Len(t, first.Records, 2)
 	assert.True(t, first.HasMore)
 	assert.Equal(t, jobs[2].PublicJobID, first.Records[0].PublicJobID)
 	assert.Equal(t, jobs[1].PublicJobID, first.Records[1].PublicJobID)
 
-	second, err := registry.List(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{After: first.Records[1].PublicJobID, Limit: 2, Order: "desc"})
+	second, err := registry.List(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{After: first.Records[1].PublicJobID, Limit: 2, Order: "desc"})
 	require.NoError(t, err)
 	require.Len(t, second.Records, 1)
 	assert.False(t, second.HasMore)
 	assert.Equal(t, jobs[0].PublicJobID, second.Records[0].PublicJobID)
 
-	ascending, err := registry.List(ctx, OwnerShared, TypeVideo, AsyncJobListOptions{Limit: 3, Order: "asc"})
+	ascending, err := registry.List(ctx, AsyncJobOwnerShared, AsyncJobTypeVideo, AsyncJobListOptions{Limit: 3, Order: "asc"})
 	require.NoError(t, err)
 	require.Len(t, ascending.Records, 3)
 	assert.Equal(t, jobs[0].PublicJobID, ascending.Records[0].PublicJobID)

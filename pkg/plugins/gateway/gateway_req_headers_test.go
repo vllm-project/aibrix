@@ -660,8 +660,8 @@ func TestHandleRequestHeaders_VideoCreateWithoutRoutingStrategyForcesRematch(t *
 func TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	alice := registerTestVideoJob(t, registry, asyncjob.OwnerFromUserName("alice"), "wan2.1-vace-1.3b", "video_gen_alice", pod)
-	shared := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1-vace-1.3b", "video_gen_anon", pod)
+	alice := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerFromUserName("alice"), "wan2.1-vace-1.3b", "video_gen_alice", pod)
+	shared := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_anon", pod)
 
 	listRequest := func(username string) *extProcPb.ProcessingRequest {
 		headers := []*configPb.HeaderValue{
@@ -713,8 +713,8 @@ func TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser(t *testing.T) {
 func TestHandleRequestHeaders_VideoListDeletedCursorReturns400(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	cursor := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_cursor", pod)
-	require.NoError(t, registry.Delete(context.Background(), asyncjob.OwnerShared, cursor.PublicJobID))
+	cursor := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_cursor", pod)
+	require.NoError(t, registry.Delete(context.Background(), asyncjob.AsyncJobOwnerShared, cursor.PublicJobID))
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{

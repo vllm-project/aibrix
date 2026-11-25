@@ -105,10 +105,10 @@ func TestRewriteVideoPathID(t *testing.T) {
 // identity the gateway actually has: the user request header. A request without
 // one is shared scope, never a wildcard over other users' jobs.
 func TestAsyncJobOwnerFromRoutingContext(t *testing.T) {
-	assert.Equal(t, asyncjob.OwnerShared, asyncJobOwnerFromRoutingContext(nil))
+	assert.Equal(t, asyncjob.AsyncJobOwnerShared, asyncJobOwnerFromRoutingContext(nil))
 
 	anonymous := types.NewRoutingContext(context.Background(), "", "", "", "req-1", "")
-	assert.Equal(t, asyncjob.OwnerShared, asyncJobOwnerFromRoutingContext(anonymous))
+	assert.Equal(t, asyncjob.AsyncJobOwnerShared, asyncJobOwnerFromRoutingContext(anonymous))
 
 	named := types.NewRoutingContext(context.Background(), "", "", "", "req-2", "alice")
 	assert.Equal(t, "scope:user:alice", asyncJobOwnerFromRoutingContext(named))
@@ -192,14 +192,14 @@ func readyPod(name, namespace, ip string) *v1.Pod {
 func newTestVideoJobServer(t *testing.T) (*Server, *MockCache, asyncjob.AsyncJobRegistry) {
 	t.Helper()
 	mockCache := new(MockCache)
-	registry := asyncjob.NewRegistryForClient(nil, mockCache)
+	registry := asyncjob.NewAsyncJobRegistryForClient(nil, mockCache)
 	return &Server{cache: mockCache, asyncJobs: registry}, mockCache, registry
 }
 
 func registerTestVideoJob(t *testing.T, registry asyncjob.AsyncJobRegistry, owner, model, backendJobID string, pod *v1.Pod) asyncjob.AsyncJobRecord {
 	t.Helper()
 	record, err := registry.Register(context.Background(), asyncjob.AsyncJobRegistration{
-		JobType:      asyncjob.TypeVideo,
+		JobType:      asyncjob.AsyncJobTypeVideo,
 		Owner:        owner,
 		Model:        model,
 		BackendJobID: backendJobID,
@@ -211,7 +211,7 @@ func registerTestVideoJob(t *testing.T, registry asyncjob.AsyncJobRegistry, owne
 
 func videoJobRecordCount(t *testing.T, registry asyncjob.AsyncJobRegistry, owner string) int {
 	t.Helper()
-	records, err := listTestAsyncJobs(context.Background(), registry, owner, asyncjob.TypeVideo)
+	records, err := listTestAsyncJobs(context.Background(), registry, owner, asyncjob.AsyncJobTypeVideo)
 	require.NoError(t, err)
 	return len(records)
 }
@@ -253,7 +253,7 @@ func TestHandleVideoJobSubResourceHeaders_PinsAndRewritesPath(t *testing.T) {
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
 
 	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1-vace-1.3b").Return(int64(7))
@@ -290,7 +290,7 @@ func TestHandleVideoJobSubResource_PinsAndClearsRouteCache(t *testing.T) {
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1").Return(int64(3))
@@ -329,7 +329,7 @@ func TestHandleVideoJobSubResourceHeaders_ContentPathStaysStreaming(t *testing.T
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1").Return(int64(1))
@@ -359,7 +359,7 @@ func TestHandleVideoJobSubResourceHeaders_SendsNoModeOverride(t *testing.T) {
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1").Return(int64(1))
@@ -451,7 +451,7 @@ func TestHandleVideoJobSubResourceHeaders_ReplacedPodUIDReturns404(t *testing.T)
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	replacement := readyPod("pod-a", "ns-a", "10.0.0.9")
 	replacement.UID = k8stypes.UID("uid-recreated")
@@ -466,7 +466,7 @@ func TestHandleVideoJobSubResourceHeaders_ReplacedPodUIDReturns404(t *testing.T)
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
-	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.OwnerShared), "a record pinned to a replaced pod is dead and must be dropped")
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared), "a record pinned to a replaced pod is dead and must be dropped")
 	assert.Equal(t, "wan2.1", routingCtx.Model, "the model must be attributed even on the failure path so the fail-metric is not silently dropped")
 
 	mockCache.AssertExpectations(t)
@@ -480,7 +480,7 @@ func TestHandleVideoJobSubResourceHeaders_MissingPodReturns404AndDeletesRecord(t
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	mockCache.On("GetPod", "pod-a", "ns-a").Return((*v1.Pod)(nil), errors.New("pod not found"))
 
@@ -493,7 +493,7 @@ func TestHandleVideoJobSubResourceHeaders_MissingPodReturns404AndDeletesRecord(t
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
-	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.OwnerShared))
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 	assert.Equal(t, "wan2.1", routingCtx.Model)
 
 	mockCache.AssertExpectations(t)
@@ -507,7 +507,7 @@ func TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndDeletesReco
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	terminating := readyPod("pod-a", "ns-a", "10.0.0.5")
 	now := metav1.Now()
@@ -523,7 +523,7 @@ func TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndDeletesReco
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
-	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.OwnerShared))
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 
 	mockCache.AssertExpectations(t)
 }
@@ -537,7 +537,7 @@ func TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsRecord(t 
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
 
 	notReady := readyPod("pod-a", "ns-a", "10.0.0.5")
 	notReady.Status.Conditions = nil
@@ -553,7 +553,7 @@ func TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsRecord(t 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
 	assert.EqualValues(t, 0, term)
-	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncjob.OwnerShared), "record must survive a transient NotReady pod so a retry can still resolve it")
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared), "record must survive a transient NotReady pod so a retry can still resolve it")
 	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model)
 
 	mockCache.AssertExpectations(t)
@@ -564,12 +564,12 @@ func TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsRecord(t 
 // would tell the client its job is gone.
 func TestHandleVideoJobSubResourceHeaders_StoreUnavailableReturns503(t *testing.T) {
 	mockCache := new(MockCache)
-	store := &failingAsyncJobRegistry{AsyncJobRegistry: asyncjob.NewRegistryForClient(nil, mockCache)}
+	store := &failingAsyncJobRegistry{AsyncJobRegistry: asyncjob.NewAsyncJobRegistryForClient(nil, mockCache)}
 	s := &Server{cache: mockCache, asyncJobs: store}
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, s.asyncJobs, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, s.asyncJobs, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 	store.AsyncJobRegistry = storeUnavailableAsyncJobRegistry{}
 
 	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
@@ -587,19 +587,19 @@ func TestHandleVideoJobSubResourceHeaders_StoreUnavailableReturns503(t *testing.
 type storeUnavailableAsyncJobRegistry struct{}
 
 func (storeUnavailableAsyncJobRegistry) Register(context.Context, asyncjob.AsyncJobRegistration) (asyncjob.AsyncJobRecord, error) {
-	return asyncjob.AsyncJobRecord{}, fmt.Errorf("%w: put", asyncjob.ErrStoreUnavailable)
+	return asyncjob.AsyncJobRecord{}, fmt.Errorf("%w: put", asyncjob.ErrAsyncJobStoreUnavailable)
 }
 
 func (storeUnavailableAsyncJobRegistry) Get(context.Context, string, string) (asyncjob.AsyncJobRecord, *v1.Pod, error) {
-	return asyncjob.AsyncJobRecord{}, nil, fmt.Errorf("%w: get", asyncjob.ErrStoreUnavailable)
+	return asyncjob.AsyncJobRecord{}, nil, fmt.Errorf("%w: get", asyncjob.ErrAsyncJobStoreUnavailable)
 }
 
 func (storeUnavailableAsyncJobRegistry) List(context.Context, string, string, asyncjob.AsyncJobListOptions) (asyncjob.AsyncJobListPage, error) {
-	return asyncjob.AsyncJobListPage{}, fmt.Errorf("%w: list", asyncjob.ErrStoreUnavailable)
+	return asyncjob.AsyncJobListPage{}, fmt.Errorf("%w: list", asyncjob.ErrAsyncJobStoreUnavailable)
 }
 
 func (storeUnavailableAsyncJobRegistry) Delete(context.Context, string, string) error {
-	return fmt.Errorf("%w: delete", asyncjob.ErrStoreUnavailable)
+	return fmt.Errorf("%w: delete", asyncjob.ErrAsyncJobStoreUnavailable)
 }
 
 // TestHandleRequestHeaders_VideoStatusPoll_Bodyless drives the bodyless pin
@@ -610,7 +610,7 @@ func TestHandleRequestHeaders_VideoStatusPoll_Bodyless(t *testing.T) {
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
 
 	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1-vace-1.3b").Return(int64(1))
@@ -649,7 +649,7 @@ func TestHandleRequestHeaders_VideoStatusPoll_WithBody(t *testing.T) {
 	ctx := context.Background()
 
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", pod)
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{
@@ -701,7 +701,7 @@ func TestHandleVideoListHeaders_ReturnsOwnerScopedPublicCatalog(t *testing.T) {
 	mine := registerTestVideoJob(t, registry, "scope:user:alice", "wan2.1", "video_gen_mine", readyPod("pod-a", "ns-a", "10.0.0.5"))
 	theirs := registerTestVideoJob(t, registry, "scope:user:bob", "wan2.1", "video_gen_theirs", readyPod("pod-b", "ns-a", "10.0.0.6"))
 
-	resp := s.handleVideoListHeaders(ctx, "req-1", "scope:user:alice", asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultListLimit, Order: "desc"})
+	resp := s.handleVideoListHeaders(ctx, "req-1", "scope:user:alice", asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultAsyncJobListLimit, Order: "desc"})
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_OK, resp.GetImmediateResponse().GetStatus().GetCode())
@@ -729,7 +729,7 @@ func TestHandleVideoListHeaders_StoreUnavailableReturns503(t *testing.T) {
 	mockCache := new(MockCache)
 	s := &Server{cache: mockCache, asyncJobs: storeUnavailableAsyncJobRegistry{}}
 
-	resp := s.handleVideoListHeaders(context.Background(), "req-1", asyncjob.OwnerShared, asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultListLimit, Order: "desc"})
+	resp := s.handleVideoListHeaders(context.Background(), "req-1", asyncjob.AsyncJobOwnerShared, asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultAsyncJobListLimit, Order: "desc"})
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
@@ -742,7 +742,7 @@ func TestHandleRequestHeaders_VideoList_NoModelRequired(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{
@@ -784,7 +784,7 @@ func TestHandleRequestHeaders_VideoListValidationDoesNotExposeInternalError(t *t
 	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode())
 	body := resp.GetImmediateResponse().GetBody()
 	assert.Contains(t, body, "list limit must be between 1 and 100")
-	assert.NotContains(t, body, asyncjob.ErrInvalidRecord.Error())
+	assert.NotContains(t, body, asyncjob.ErrAsyncJobInvalidRecord.Error())
 }
 
 func TestHandleRequestHeaders_RejectsVideoTrailingSlash(t *testing.T) {
@@ -845,7 +845,7 @@ func TestHandleVideoJobResponseBody_RegistersCreateAndRewritesID(t *testing.T) {
 	assert.True(t, strings.HasPrefix(publicID, "aibrixjob-"), "public ids are minted by aibrix, not taken from the backend: %q", publicID)
 	assert.Equal(t, "queued", gjson.Get(out, "status").String(), "the rest of the create response must pass through unchanged")
 
-	records, err := listTestAsyncJobs(ctx, registry, "scope:user:alice", asyncjob.TypeVideo)
+	records, err := listTestAsyncJobs(ctx, registry, "scope:user:alice", asyncjob.AsyncJobTypeVideo)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	assert.Equal(t, publicID, records[0].PublicJobID)
@@ -880,7 +880,7 @@ func TestHandleVideoJobResponseBody_AppliesBackendExpiry(t *testing.T) {
 	})
 	require.True(t, handled)
 
-	records, err := listTestAsyncJobs(ctx, registry, asyncjob.OwnerShared, asyncjob.TypeVideo)
+	records, err := listTestAsyncJobs(ctx, registry, asyncjob.AsyncJobOwnerShared, asyncjob.AsyncJobTypeVideo)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	assert.Equal(t, expires, records[0].ExpiresAt.Unix())
@@ -912,7 +912,7 @@ func TestHandleVideoJobResponseBody_RejectsElapsedBackendExpiry(t *testing.T) {
 			require.NotNil(t, resp.GetImmediateResponse())
 			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
 			assert.NotContains(t, resp.GetImmediateResponse().GetBody(), "video_gen_abc")
-			assert.Empty(t, videoJobRecordCount(t, registry, asyncjob.OwnerShared), "an elapsed backend expiry must not fall back to the default TTL")
+			assert.Empty(t, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared), "an elapsed backend expiry must not fall back to the default TTL")
 		})
 	}
 }
@@ -940,7 +940,7 @@ func TestHandleVideoJobResponseBody_ForwardsBodyWithoutIDUntouched(t *testing.T)
 	assert.True(t, complete)
 	assert.Nil(t, resp.GetImmediateResponse())
 	assert.Equal(t, body, string(resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()))
-	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.OwnerShared))
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 }
 
 func TestRewriteVideoJobErrorBody_CreateFailureWithoutPublicIDIsUnchanged(t *testing.T) {
@@ -988,8 +988,8 @@ func TestRewriteVideoJobErrorBody_RewritesOnlyKnownJSONFields(t *testing.T) {
 func TestHandleVideoJobResponseBody_RegistrationFailureReturns503(t *testing.T) {
 	mockCache := new(MockCache)
 	store := &failingAsyncJobRegistry{
-		AsyncJobRegistry: asyncjob.NewRegistryForClient(nil, mockCache),
-		putErr:           fmt.Errorf("%w: register", asyncjob.ErrStoreUnavailable),
+		AsyncJobRegistry: asyncjob.NewAsyncJobRegistryForClient(nil, mockCache),
+		putErr:           fmt.Errorf("%w: register", asyncjob.ErrAsyncJobStoreUnavailable),
 	}
 	s := &Server{cache: mockCache, asyncJobs: store}
 	ctx := context.Background()
@@ -1022,7 +1022,7 @@ func TestHandleVideoJobResponseBody_StatusRewritesIDBackToPublic(t *testing.T) {
 	requestID := "req-status-1"
 	t.Cleanup(func() { requestBuffers.Delete(requestID) })
 
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
 	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
@@ -1084,7 +1084,7 @@ func TestMaybeDeleteVideoJobAfterDelete_DeletesOnBackendSuccessAndNotFound(t *te
 			s, _, registry := newTestVideoJobServer(t)
 			ctx := context.Background()
 
-			record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+			record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 			routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
 			routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
@@ -1093,7 +1093,7 @@ func TestMaybeDeleteVideoJobAfterDelete_DeletesOnBackendSuccessAndNotFound(t *te
 			resp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, statusCode)
 
 			assert.Nil(t, resp)
-			assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.OwnerShared))
+			assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 		})
 	}
 }
@@ -1105,7 +1105,7 @@ func TestMaybeDeleteVideoJobAfterDelete_KeepsRecordOnBackendFailure(t *testing.T
 	s, _, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
 	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
@@ -1114,7 +1114,7 @@ func TestMaybeDeleteVideoJobAfterDelete_KeepsRecordOnBackendFailure(t *testing.T
 	resp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, http.StatusInternalServerError)
 
 	assert.Nil(t, resp)
-	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncjob.OwnerShared))
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 }
 
 // TestMaybeDeleteVideoJobAfterDelete_IgnoresNonDeleteMethods makes sure a status
@@ -1123,14 +1123,14 @@ func TestMaybeDeleteVideoJobAfterDelete_IgnoresNonDeleteMethods(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	record := registerTestVideoJob(t, registry, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
 	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
 	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
 
 	assert.Nil(t, s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, http.StatusNotFound))
-	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncjob.OwnerShared))
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 }
 
 // TestMaybeDeleteVideoJobAfterDelete_Returns503WhenCleanupFails covers the one
@@ -1139,12 +1139,12 @@ func TestMaybeDeleteVideoJobAfterDelete_IgnoresNonDeleteMethods(t *testing.T) {
 // than being handed a 200 over a stale entry.
 func TestMaybeDeleteVideoJobAfterDelete_Returns503WhenCleanupFails(t *testing.T) {
 	mockCache := new(MockCache)
-	store := &failingAsyncJobRegistry{AsyncJobRegistry: asyncjob.NewRegistryForClient(nil, mockCache)}
+	store := &failingAsyncJobRegistry{AsyncJobRegistry: asyncjob.NewAsyncJobRegistryForClient(nil, mockCache)}
 	s := &Server{cache: mockCache, asyncJobs: store}
 	ctx := context.Background()
 
-	record := registerTestVideoJob(t, s.asyncJobs, asyncjob.OwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
-	store.deleteErr = fmt.Errorf("%w: delete", asyncjob.ErrStoreUnavailable)
+	record := registerTestVideoJob(t, s.asyncJobs, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+	store.deleteErr = fmt.Errorf("%w: delete", asyncjob.ErrAsyncJobStoreUnavailable)
 
 	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
 	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID

@@ -396,7 +396,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	klog.InfoS("HTTPRoute lookup namespace configured", "namespace", s.gatewayNamespace)
-	s.asyncJobs = asyncjob.NewRegistryForClient(redisClient, c)
+	s.asyncJobs = asyncjob.NewAsyncJobRegistryForClient(redisClient, c)
 	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
@@ -414,7 +414,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 func (s *Server) asyncJobRegistry() asyncjob.AsyncJobRegistry {
 	s.asyncJobsOnce.Do(func() {
 		if s.asyncJobs == nil {
-			s.asyncJobs = asyncjob.NewRegistryForClient(s.redisClient, s.cache)
+			s.asyncJobs = asyncjob.NewAsyncJobRegistryForClient(s.redisClient, s.cache)
 		}
 	})
 	return s.asyncJobs
