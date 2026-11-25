@@ -18,11 +18,16 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,10 +39,15 @@ import (
 	"github.com/tidwall/gjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
+	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -660,6 +670,117 @@ func TestDecodeWatchdogStreamIdleNotArmedForNonStreaming(t *testing.T) {
 // can raise. A client-level Timeout would cap that value without a word.
 func TestDecodeAbortClientHasNoTimeout(t *testing.T) {
 	assert.Zero(t, decodeAbortClient.Timeout)
+	tr, ok := decodeAbortClient.Transport.(*http.Transport)
+	require.True(t, ok, "decodeAbortClient transport must be *http.Transport")
+	assert.Equal(t, pdrouter.DefaultHTTPMaxIdleConns, tr.MaxIdleConns)
+	assert.Equal(t, pdrouter.DefaultHTTPMaxIdleConnsPerHost, tr.MaxIdleConnsPerHost)
+	assert.Equal(t, pdrouter.DefaultHTTPIdleConnTimeout, tr.IdleConnTimeout)
+}
+
+// TestNewEncodeExecutor_ReusesConnectionsAboveOldPoolCaps verifies that the
+// standalone E+PD encode executor (gateway.go:newEncodeExecutor) retains and
+// reuses 128 simultaneous connections across 4 encoder hosts (32 per host),
+// catching regressions back to either MaxIdleConnsPerHost=10 or MaxIdleConns=100.
+func TestNewEncodeExecutor_ReusesConnectionsAboveOldPoolCaps(t *testing.T) {
+	const (
+		numHosts = 4
+		perHost  = 32
+		total    = numHosts * perHost
+	)
+
+	var (
+		waveMu      sync.Mutex
+		waveArrived int
+		waveGate    = make(chan struct{})
+		newTCPConns atomic.Int64
+	)
+
+	encoderPods := make([]*v1.Pod, numHosts)
+	for h := 0; h < numHosts; h++ {
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			_ = r.Body.Close()
+
+			waveMu.Lock()
+			waveArrived++
+			gate := waveGate
+			if waveArrived == total {
+				close(gate)
+			}
+			waveMu.Unlock()
+
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				newTCPConns.Add(1)
+			}
+		}
+		srv.Start()
+		t.Cleanup(srv.Close)
+
+		u, err := url.Parse(srv.URL)
+		require.NoError(t, err)
+		encoderPods[h] = &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("encoder-%d", h),
+				Namespace: "default",
+				Labels: map[string]string{
+					pd.RoleLabel:             encode.Role,
+					constants.ModelLabelPort: u.Port(),
+				},
+			},
+			Status: v1.PodStatus{PodIP: u.Hostname()},
+		}
+	}
+
+	exec := newEncodeExecutor()
+	items := []string{`{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}`}
+	reqBody := []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`)
+
+	runWave := func(wave int) {
+		t.Helper()
+		waveMu.Lock()
+		waveArrived = 0
+		waveGate = make(chan struct{})
+		waveMu.Unlock()
+
+		errCh := make(chan error, total)
+		var wg sync.WaitGroup
+		for h := 0; h < numHosts; h++ {
+			pod := encoderPods[h]
+			for i := 0; i < perHost; i++ {
+				wg.Add(1)
+				go func(h, i int, pod *v1.Pod) {
+					defer wg.Done()
+					ctx := types.NewRoutingContext(context.Background(), "least-request", "qwen-vl", "", fmt.Sprintf("enc-w%d-h%d-%d", wave, h, i), "user")
+					defer ctx.Delete()
+					ctx.ReqPath = "/v1/chat/completions"
+					ctx.ReqBody = reqBody
+					if _, err := exec.Execute(ctx, []*v1.Pod{pod}, items, 10*time.Second); err != nil {
+						errCh <- err
+					}
+				}(h, i, pod)
+			}
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			require.NoError(t, err)
+		}
+	}
+
+	runWave(1)
+	assert.Equal(t, int64(total), newTCPConns.Load(), "wave 1 opens one connection per concurrent encode request")
+
+	runWave(2)
+	assert.Equal(t, int64(total), newTCPConns.Load(), "wave 2 must reuse all %d pooled connections with zero new TCP handshakes", total)
 }
 
 // TestDecodeWatchdogNotArmedWithoutRID: only SGLang PD requests carry a

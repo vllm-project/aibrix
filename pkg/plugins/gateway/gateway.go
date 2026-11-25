@@ -1194,11 +1194,7 @@ func countRoutablePodsFromList(pods types.PodList) int {
 }
 
 func newEncodeExecutor() *encode.Executor {
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	}
+	transport := pdrouter.NewHTTPTransport()
 	// No client timeout: every encode call carries its own deadline.
 	return encode.NewExecutor(&http.Client{Transport: otelhttp.NewTransport(transport)})
 }
