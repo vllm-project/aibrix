@@ -507,13 +507,35 @@ func (r *pdRouter) AddRequestCount(_ *types.RoutingContext, _ string, _ string) 
 // so nothing of it can still be resident on its prefill pod. The callbacks
 // fire for every gateway request, not only pd-routed ones; unknown request
 // IDs are a cheap no-op. ctx may be nil (request cancelled before routing).
-func (r *pdRouter) DoneRequestCount(_ *types.RoutingContext, requestID string, _ string, _ int64) {
-	r.releaseTokenLoad(requestID)
+func (r *pdRouter) DoneRequestCount(ctx *types.RoutingContext, requestID string, _ string, _ int64) {
+	r.releaseTokenLoad(trackerKeyFor(ctx, requestID))
 }
 
 // DoneRequestTrace implements cache.RequestTracker; see DoneRequestCount.
-func (r *pdRouter) DoneRequestTrace(_ *types.RoutingContext, requestID string, _ string, _, _, _ int64) {
-	r.releaseTokenLoad(requestID)
+func (r *pdRouter) DoneRequestTrace(ctx *types.RoutingContext, requestID string, _ string, _, _, _ int64) {
+	r.releaseTokenLoad(trackerKeyFor(ctx, requestID))
+}
+
+// trackerKeyFor returns the request's gateway-internal load-tracker key. The completion callbacks
+// above receive the routing context, which is nil only when the request was cancelled before
+// routing -- nothing was charged in that case, so the fallback requestID is a harmless no-op. When
+// present, charges are keyed by ctx.TrackerKey() (never the client-controllable RequestID) so a
+// shared traceparent cannot release another request's charge.
+//
+// RoutingContext is pooled. In the current flow the completion callback runs on the request's own
+// goroutine before the context is returned to the pool (Process calls finishRequestCount before
+// RoutingContext.Delete), so ctx is always this request's. The passed requestID equals
+// ctx.RequestID because HandleRequestHeaders syncs them (st.requestID = st.routerCtx.RequestID in
+// gateway.go, the "sync requestID if it was overridden by traceparent header" line), so the guard
+// is a no-op on today's path. It is a cheap safeguard against a future reordering or async path
+// handing us a context already reused by another request: on a mismatch, fall back to requestID
+// rather than release the wrong request's charge -- the tracker then no-ops and the charge is
+// reclaimed by its TTL. If the two ids are ever intentionally decoupled, revisit this.
+func trackerKeyFor(ctx *types.RoutingContext, requestID string) string {
+	if ctx != nil && ctx.RequestID == requestID {
+		return ctx.TrackerKey()
+	}
+	return requestID
 }
 
 // chargeTokenLoad charges the request's estimated prefill cost to pod when
@@ -550,7 +572,7 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 			"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
 			"prefix_match_percent", matchPct, "cost", cost)
 	}
-	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, podKey, cost, overrides.TokenLoad.TTL)
+	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.TrackerKey(), podKey, cost, overrides.TokenLoad.TTL)
 }
 
 // chargeDecodeTokenLoad charges the request's prompt to the decode pod when the
@@ -570,16 +592,16 @@ func (r *pdRouter) chargeDecodeTokenLoad(routingCtx *types.RoutingContext, pod *
 		klog.V(4).InfoS("pd_router token_load decode charge",
 			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "prompt_tokens", cost)
 	}
-	r.tokenLoadTracker.AcquireDecodeWithTTL(routingCtx.RequestID, utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
+	r.tokenLoadTracker.AcquireDecodeWithTTL(routingCtx.TrackerKey(), utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
 }
 
 // releaseTokenLoad drops whatever the request still holds on the token-load
 // tracker: the terminal paths (prefill failure, request completion).
-func (r *pdRouter) releaseTokenLoad(requestID string) {
+func (r *pdRouter) releaseTokenLoad(trackerKey string) {
 	if r.tokenLoadTracker == nil {
 		return
 	}
-	r.tokenLoadTracker.ReleaseAll(requestID)
+	r.tokenLoadTracker.ReleaseAll(trackerKey)
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
@@ -616,21 +638,21 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	// Route owns the matching removals.
 	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
 	// Take the prefix credit selection recorded before any return below.
-	credit, hasCredit := r.pendingPrefixCredits.LoadAndDelete(ctx.RequestID)
+	credit, hasCredit := r.pendingPrefixCredits.LoadAndDelete(ctx.TrackerKey())
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
-	defer r.pendingDecodeTracker.RemovePendingDecode(ctx.RequestID)
+	defer r.pendingDecodeTracker.RemovePendingDecode(ctx.TrackerKey())
 
 	// Admit the decode pod against the gateway's per-replica in-flight cap before the
 	// prefill leg is sent. Once the prefill has run, a rejection would only throw away its
 	// work and leave its KV waiting for a decode that never comes.
 	if err := ctx.AdmitTarget(decodePod); err != nil {
-		r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
-		r.releaseTokenLoad(ctx.RequestID)
+		r.prefillRequestTracker.RemovePrefillRequest(ctx.TrackerKey())
+		r.releaseTokenLoad(ctx.TrackerKey())
 		return "", fmt.Errorf("decode pod %s rejected request %s: %w", decodePod.Name, ctx.RequestID, err)
 	}
 	// Credit the prefill pod only now that the request was admitted, but still before its
@@ -669,8 +691,8 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
-			r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
-			r.releaseTokenLoad(ctx.RequestID)
+			r.prefillRequestTracker.RemovePrefillRequest(ctx.TrackerKey())
+			r.releaseTokenLoad(ctx.TrackerKey())
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
@@ -833,7 +855,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 					"requestId", routingCtx.RequestID, "promptLength", promptLength, "combinedPods", len(combinedPods),
 					"bucketPrefillPods", len(promptLengthBucketingPrefillPods), "bucketDecodePods", len(promptLengthBucketingDecodePods))
 				combinedPod := combinedPods[rand.IntN(len(combinedPods))]
-				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(combinedPod.Namespace, combinedPod.Name))
+				r.pendingDecodeTracker.AddPendingDecode(routingCtx.TrackerKey(), utils.GeneratePodKey(combinedPod.Namespace, combinedPod.Name))
 				return nil, combinedPod, nil
 			}
 			// Do not fall back to unfiltered PD pods: each pod group (storm) is sized for a
@@ -869,7 +891,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
 				klog.InfoS("load imbalance detected, selecting combined pod", "requestId", routingCtx.RequestID, "selectedCombinedPod", combinedPod.Name)
-				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(combinedPod.Namespace, combinedPod.Name))
+				r.pendingDecodeTracker.AddPendingDecode(routingCtx.TrackerKey(), utils.GeneratePodKey(combinedPod.Namespace, combinedPod.Name))
 				return nil, combinedPod, nil
 			}
 		}
@@ -949,8 +971,8 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	// Register while still holding the model's selection lock so the next selection counts this one.
-	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(selectedDecode.Namespace, selectedDecode.Name))
-	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(selectedPrefill.Namespace, selectedPrefill.Name))
+	r.pendingDecodeTracker.AddPendingDecode(routingCtx.TrackerKey(), utils.GeneratePodKey(selectedDecode.Namespace, selectedDecode.Name))
+	r.prefillRequestTracker.AddPrefillRequest(routingCtx.TrackerKey(), utils.GeneratePodKey(selectedPrefill.Namespace, selectedPrefill.Name))
 	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol, prefillScorer)
 	r.chargeDecodeTokenLoad(routingCtx, selectedDecode, decodePol)
 	return selectedPrefill, selectedDecode, nil
@@ -1669,7 +1691,7 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	}
 
 	if len(prefixHashes) > 0 {
-		r.pendingPrefixCredits.Store(routingCtx.RequestID, prefixUpdateJob{
+		r.pendingPrefixCredits.Store(routingCtx.TrackerKey(), prefixUpdateJob{
 			prefixHashes: append([]uint64(nil), prefixHashes...),
 			model:        routingCtx.Model,
 			pod:          utils.GeneratePodKey(targetPrefillPod.Namespace, targetPrefillPod.Name),
