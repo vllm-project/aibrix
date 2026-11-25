@@ -19,6 +19,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
@@ -44,7 +45,12 @@ type KubernetesProvider struct {
 	// watchModelClaims adds ModelClaim objects to what is watched.
 	watchModelClaims bool
 	modelListHealth  *ModelListHealth
+	// podInformer holds the Pod informer once Watch has created it, for
+	// PodWatchResourceVersion.
+	podInformer atomic.Pointer[podInformerRef]
 }
+
+type podInformerRef struct{ informer cache.SharedIndexInformer }
 
 // NewKubernetesProvider creates a new Kubernetes discovery provider.
 func NewKubernetesProvider(config *rest.Config) *KubernetesProvider {
@@ -74,6 +80,18 @@ func (p *KubernetesProvider) WithModelListHealth(maxAge time.Duration) *Kubernet
 // ModelListHealth returns the verification state after WatchApplied starts.
 func (p *KubernetesProvider) ModelListHealth() *ModelListHealth {
 	return p.modelListHealth
+}
+
+// PodWatchResourceVersion returns the resource version the Pod informer has
+// reached: the reflector updates it after every list and every watch event,
+// bookmarks included, so it stops moving when the watch stops delivering. It
+// is "" before Watch starts the informer. It makes no API request.
+func (p *KubernetesProvider) PodWatchResourceVersion() string {
+	ref := p.podInformer.Load()
+	if ref == nil {
+		return ""
+	}
+	return ref.informer.LastSyncResourceVersion()
 }
 
 // Type returns the provider type identifier.
@@ -132,6 +150,7 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
 
 	podInformer := factory.Core().V1().Pods().Informer()
+	p.podInformer.Store(&podInformerRef{informer: podInformer})
 	var modelInformer cache.SharedIndexInformer
 	var claimInformer cache.SharedIndexInformer
 	var crdFactory crdinformers.SharedInformerFactory
