@@ -24,6 +24,7 @@ import pytest
 import pytest_asyncio
 from starlette.requests import Request
 
+from aibrix.openai_frontend.engine import proxy_engine
 from aibrix.openai_frontend.engine.proxy_engine import EngineState, ProxyEngine
 from aibrix.openai_frontend.frontend.fastapi_frontend import FastApiFrontend
 from aibrix.openai_frontend.proxy.output import output_writer
@@ -58,6 +59,9 @@ async def harness(monkeypatch, tmp_path, request):
         release_upload=asyncio.Event(),
     )
     monkeypatch.setattr(video_sync, "VIDEO_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        proxy_engine, "DEFAULT_VIDEO_STORAGE_PATH", str(tmp_path / "omni")
+    )
 
     async def put_object(key, data, **kwargs):
         h.uploading.set()
@@ -81,7 +85,7 @@ async def harness(monkeypatch, tmp_path, request):
         output_writer=OutputWriter(storage_factory=lambda: store),
     )
     h.storage_path = Path(h.engine._media_dir)
-    h.owns_media_dir = h.engine._owned_media_dir is not None
+    assert h.engine._owned_media_dir is None
     h.source = h.storage_path / h.video_id
     h.engine._set_state(EngineState.READY)
 
@@ -387,7 +391,7 @@ async def test_video_sync_failure_never_returns_a_receipt(harness, failure):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("interrupt", ["cancel", "disconnect", "shutdown"])
 @pytest.mark.parametrize(
-    "harness", [False, True], indirect=True, ids=["explicit-dir", "temporary-dir"]
+    "harness", [False, True], indirect=True, ids=["explicit-dir", "default-dir"]
 )
 async def test_video_sync_interruption_waits_for_upload_before_deleting_source(
     harness, interrupt
@@ -434,7 +438,7 @@ async def test_video_sync_interruption_waits_for_upload_before_deleting_source(
             await asyncio.wait_for(task, 2)
         if stopper is not None:
             await asyncio.wait_for(stopper, 2)
-            assert h.storage_path.exists() is (not h.owns_media_dir)
+            assert h.storage_path.is_dir()
     finally:
         h.release_upload.set()
         await asyncio.gather(task, return_exceptions=True)

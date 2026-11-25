@@ -138,9 +138,6 @@ class MultipartOutputFilter:
     def _append_header(
         self, target: bytearray, data: bytes, start: int, end: int
     ) -> None:
-        size = len(self._headers) + len(self._header_name) + len(self._header_value)
-        if size + end - start + 4 > MAX_METADATA_BYTES:
-            raise ValueError("Multipart metadata header exceeds 64 KiB")
         target.extend(data[start:end])
 
     def _header_end(self) -> None:

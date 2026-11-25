@@ -218,6 +218,7 @@ HEARTBEAT_INTERVAL_CYCLES = 6  # ~60s at 10s interval
 FORWARD_RETRY_ATTEMPTS = 3
 FORWARD_RETRY_BACKOFF_SECONDS = 0.5
 DEFAULT_VIDEO_OUTPUT_TIMEOUT_SECONDS = 30 * 60.0
+DEFAULT_VIDEO_STORAGE_PATH = "/tmp/storage"
 VIDEO_CONTENT_RESPONSE_HEADERS = frozenset(
     {
         "content-type",
@@ -578,8 +579,28 @@ class ProxyEngine(LLMEngine):
         if materialize_inline_media:
             self._fetch_media = True
         self._owned_media_dir: Optional[tempfile.TemporaryDirectory] = None
-        if media_dir is None:
-            # Generated videos also need local storage when fetching is off.
+        if self._spec.name == "vllm-omni":
+            # Share Omni's storage without overriding operator paths or deleting
+            # engine-owned job files when the frontend stops.
+            env = {**os.environ, **(engine_env or {})}
+            storage = json.loads(env.get("VLLM_OMNI_SERVER_STORAGE", "{}"))
+            storage_path = env.get(
+                "VLLM_OMNI_SERVER_STORAGE__PATH",
+                env.get(
+                    "VLLM_OMNI_STORAGE_PATH",
+                    storage.get("path", media_dir or DEFAULT_VIDEO_STORAGE_PATH),
+                ),
+            )
+            if not isinstance(storage_path, str) or not storage_path:
+                raise ValueError("vLLM-Omni storage path must be a non-empty string")
+            storage_path = os.path.realpath(storage_path)
+            if media_dir is not None and os.path.realpath(media_dir) != storage_path:
+                raise ValueError(
+                    "Conflicting vLLM-Omni storage path and --proxy-media-dir; "
+                    "configure both to use the same directory"
+                )
+            media_dir = storage_path
+        elif media_dir is None:
             self._owned_media_dir = tempfile.TemporaryDirectory(prefix="aibrix_media_")
             media_dir = self._owned_media_dir.name
         self._media_dir = os.path.realpath(media_dir)
@@ -826,8 +847,8 @@ class ProxyEngine(LLMEngine):
                 if not self._video_writers_stopped.is_set():
                     await asyncio.to_thread(self._subprocess.shutdown)
                     self._video_writers_stopped.set()
-                # The engine, upload readers, and request cleanup must finish
-                # before removing the shared media directory.
+                # Stop engine writers before cleaning tracked temporary inputs.
+                # Only frontend-owned directories may be removed recursively.
                 try:
                     cleanup_all = getattr(self._fetcher, "cleanup_all", None)
                     if callable(cleanup_all):
@@ -1083,7 +1104,7 @@ class ProxyEngine(LLMEngine):
         Sync video removes every ``output`` part while reading bounded metadata
         and rebuilding multipart framing. Other fields and file bytes retain
         their order and content; uploads are never spooled. With ``output``, the
-        completed MP4 is persisted and returned as a receipt. Engine errors take
+        completed video is persisted and returned as a receipt. Engine errors take
         precedence over output options. Other multipart endpoints retain the
         original request framing.
         """

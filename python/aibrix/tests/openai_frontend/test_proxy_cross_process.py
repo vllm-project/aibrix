@@ -696,6 +696,51 @@ class TestStreamingMultipartCrossProcess:
 
 
 class TestVideoSyncMultipartCrossProcess:
+    @pytest.mark.parametrize("setting", ["VLLM_OMNI_STORAGE_PATH", "--proxy-media-dir"])
+    def test_shared_storage_preserves_unmanaged_jobs_on_shutdown(
+        self, tmp_path, setting
+    ):
+        shared = (tmp_path / "shared").resolve()
+        args = (
+            [setting, str(shared)]
+            if setting.startswith("--")
+            else ["--setenv", setting, str(shared)]
+        )
+        proxy = ProxyProcess(str(tmp_path), *args)
+        try:
+            proxy.wait_ready()
+            configured = httpx.get(
+                f"{proxy.engine_url}/_test/env",
+                params={"name": "VLLM_OMNI_SERVER_STORAGE__PATH"},
+                timeout=10,
+            )
+            assert configured.json() == {"VLLM_OMNI_SERVER_STORAGE__PATH": str(shared)}
+            # A native Omni job outside the sync adapter remains engine-owned.
+            response = httpx.post(
+                f"{proxy.engine_url}/v1/videos",
+                files=[("model", (None, "minimax-h3"))],
+                timeout=30,
+            )
+            assert response.status_code == 200, response.text
+            source = shared / response.json()["id"]
+            video = source.read_bytes()
+            output = tmp_path / "output"
+            persisted = httpx.post(
+                f"{proxy.url}/v1/videos/sync",
+                files=[
+                    ("model", (None, "minimax-h3")),
+                    ("output", (None, json.dumps({"url": str(output)}))),
+                ],
+                timeout=30,
+            )
+            assert persisted.status_code == 200, persisted.text
+            (artifact,) = persisted.json()["output"]["artifacts"]
+            assert (output / artifact).read_bytes() == video
+            assert list(shared.iterdir()) == [source]
+        finally:
+            proxy.stop()
+        assert source.read_bytes() == video
+
     def test_persists_video_with_ordered_inputs(self, ready_proxy, tmp_path):
         output_dir = tmp_path / "videos"
         output = json.dumps({"url": str(output_dir)})

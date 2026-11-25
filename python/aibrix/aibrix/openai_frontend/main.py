@@ -317,7 +317,10 @@ def add_proxy_args(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help="Directory for downloaded media and vLLM-Omni generated videos "
-        "(default: a private temp dir, even when fetching is disabled). "
+        "(vllm-omni default: configured Omni storage path, otherwise /tmp/storage; "
+        "other engines: a private temp dir). An explicit directory must match any "
+        "configured Omni storage path. Omni storage and explicit directories are "
+        "not deleted on frontend shutdown. "
         "Passed to vLLM as --allowed-local-media-path.",
     )
     proxy_group.add_argument(

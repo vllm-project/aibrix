@@ -124,21 +124,43 @@ def test_removing_only_part_preserves_closing_boundary():
     assert parser.output_request().url == SECRET.decode()
 
 
-@pytest.mark.parametrize(
-    "suffix",
-    [
-        b'Content-Disposition: form-data; name="output"\r\nBroken header\r\n\r\n'
-        + SECRET,
-        b'Content-Disposition: form-data; name="output"\r\nX-Large: '
-        + b"x" * MAX_METADATA_BYTES
-        + b"\r\n\r\n"
-        + SECRET,
-    ],
-    ids=["malformed-header", "oversized-header"],
-)
-def test_unparsed_headers_never_fall_back_to_raw_forwarding(suffix):
+@pytest.mark.parametrize("name", ["model", "output"])
+@pytest.mark.parametrize("chunk_size", [13, 65536])
+def test_oversized_headers_preserve_native_parts_and_remove_output(name, chunk_size):
+    headers = {"X-Large": "x" * (MAX_METADATA_BYTES + 1)}
+    native = [
+        ("model", (None, "minimax-h3")),
+        ("input_references", ("reference.png", b"image\x00\xff", "image/png")),
+    ]
+    if name == "model":
+        native[0] = ("model", (None, "minimax-h3", "text/plain", headers))
+        parts = native
+    else:
+        parts = [("output", (None, OUTPUT, "application/json", headers)), *native]
+    body = multipart(parts)
     parser = MultipartOutputFilter(CONTENT_TYPE)
-    body = b"--aibrix-output-test\r\n" + suffix
+    forwarded = b"".join(
+        parser.feed(body[offset : offset + chunk_size])
+        for offset in range(0, len(body), chunk_size)
+    )
+    parser.finish()
+    assert forwarded == multipart(native)
+    assert SECRET not in forwarded
+    assert parser.model == "minimax-h3"
+    output = parser.output_request()
+    if name == "output":
+        assert output.url == SECRET.decode()
+    else:
+        assert output is None
+
+
+def test_unparsed_headers_never_fall_back_to_raw_forwarding():
+    parser = MultipartOutputFilter(CONTENT_TYPE)
+    body = (
+        b"--aibrix-output-test\r\n"
+        b'Content-Disposition: form-data; name="output"\r\nBroken header\r\n\r\n'
+        + SECRET
+    )
     forwarded = bytearray()
     with pytest.raises(ClientError):
         for offset in range(0, len(body), 13):
