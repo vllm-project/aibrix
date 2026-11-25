@@ -9,24 +9,17 @@ rules:
   resources:
   - pods
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - model.aibrix.ai
   resources:
   - modeladapters
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - model.aibrix.ai
@@ -41,10 +34,6 @@ rules:
   resources:
   - httproutes
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch

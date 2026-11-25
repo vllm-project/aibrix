@@ -1,0 +1,66 @@
+suite: Gateway Plugin RBAC
+templates:
+  - gateway-plugin/rbac.yaml
+tests:
+  - it: should grant only discovery reads and Pod patch for ModelClaim wake
+    documentSelector:
+      path: kind
+      value: ClusterRole
+    asserts:
+      - equal:
+          path: rules
+          value: &gatewayRules
+            - apiGroups: [""]
+              resources: [pods]
+              verbs: [get, list, patch, watch]
+            - apiGroups: [model.aibrix.ai]
+              resources: [modeladapters]
+              verbs: [get, list, watch]
+            - apiGroups: [model.aibrix.ai]
+              resources: [modelclaims]
+              verbs: [get, list, watch]
+            - apiGroups: [gateway.networking.k8s.io]
+              resources: [httproutes]
+              verbs: [get, list, watch]
+
+  - it: should grant the same permissions when using sidecar Envoy
+    set:
+      gateway.enable: false
+      gateway.envoyAsSideCar: true
+    documentSelector:
+      path: kind
+      value: ClusterRole
+    asserts:
+      - equal:
+          path: rules
+          value: *gatewayRules
+
+  - it: should bind the gateway ServiceAccount cluster-wide in the release namespace
+    release:
+      namespace: custom-system
+    set:
+      gatewayPlugin.serviceAccount.name: custom-gateway
+    documentSelector:
+      path: kind
+      value: ClusterRoleBinding
+    asserts:
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: RELEASE-NAME-aibrix-gateway-plugins
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: custom-gateway
+              namespace: custom-system
+
+  - it: should omit gateway RBAC when both gateway modes are disabled
+    set:
+      gateway.enable: false
+      gateway.envoyAsSideCar: false
+    asserts:
+      - hasDocuments:
+          count: 0
