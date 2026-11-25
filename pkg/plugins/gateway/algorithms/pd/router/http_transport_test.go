@@ -32,13 +32,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 )
 
 func TestNewHTTPTransport_Defaults(t *testing.T) {
-	tr := NewHTTPTransport()
-	assert.Equal(t, DefaultHTTPMaxIdleConns, tr.MaxIdleConns)
-	assert.Equal(t, DefaultHTTPMaxIdleConnsPerHost, tr.MaxIdleConnsPerHost)
-	assert.Equal(t, DefaultHTTPIdleConnTimeout, tr.IdleConnTimeout)
+	tr := pd.NewHTTPTransport()
+	assert.Equal(t, pd.DefaultHTTPMaxIdleConns, tr.MaxIdleConns)
+	assert.Equal(t, pd.DefaultHTTPMaxIdleConnsPerHost, tr.MaxIdleConnsPerHost)
+	assert.Equal(t, pd.DefaultHTTPIdleConnTimeout, tr.IdleConnTimeout)
 	assert.Equal(t, 1024, tr.MaxIdleConns)
 	assert.Equal(t, 128, tr.MaxIdleConnsPerHost)
 	assert.Equal(t, 90*time.Second, tr.IdleConnTimeout)

@@ -47,7 +47,6 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
-	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -672,9 +671,9 @@ func TestDecodeAbortClientHasNoTimeout(t *testing.T) {
 	assert.Zero(t, decodeAbortClient.Timeout)
 	tr, ok := decodeAbortClient.Transport.(*http.Transport)
 	require.True(t, ok, "decodeAbortClient transport must be *http.Transport")
-	assert.Equal(t, pdrouter.DefaultHTTPMaxIdleConns, tr.MaxIdleConns)
-	assert.Equal(t, pdrouter.DefaultHTTPMaxIdleConnsPerHost, tr.MaxIdleConnsPerHost)
-	assert.Equal(t, pdrouter.DefaultHTTPIdleConnTimeout, tr.IdleConnTimeout)
+	assert.Equal(t, pd.DefaultHTTPMaxIdleConns, tr.MaxIdleConns)
+	assert.Equal(t, pd.DefaultHTTPMaxIdleConnsPerHost, tr.MaxIdleConnsPerHost)
+	assert.Equal(t, pd.DefaultHTTPIdleConnTimeout, tr.IdleConnTimeout)
 }
 
 // TestNewEncodeExecutor_ReusesConnectionsAboveOldPoolCaps verifies that the
