@@ -406,3 +406,64 @@ func TestHeldPassDoesNotRewriteStatus(t *testing.T) {
 		t.Fatalf("ScalingActive lastTransitionTime moved from %v to %v", before, after)
 	}
 }
+
+// TestComputeScaleDecisionHoldsScaleDownOnDroppedReadyPods checks the scale-down hold extends to
+// the case where a Ready pod's metric sample was dropped (its scrape timed out). As with a failed
+// source, the hold is opt-in (hold-scale-down-on-metric-failure), holds only a net scale-down, and
+// never blocks a scale-up.
+func TestComputeScaleDecisionHoldsScaleDownOnDroppedReadyPods(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		hold        bool
+		dropped     int
+		recommended int32
+		current     int32
+		wantDesired int32
+		wantHeld    bool
+		wantReason  string
+	}{
+		{name: "hold keeps the replicas when a ready pod sample is dropped", hold: true, dropped: 1,
+			recommended: 1, current: 4, wantDesired: 4, wantHeld: true,
+			wantReason: "Scale-down held (1 ready pod metric sample(s) missing)"},
+		{name: "best-effort default scales down despite a dropped sample", dropped: 1,
+			recommended: 1, current: 4, wantDesired: 1, wantHeld: false,
+			wantReason: "All metrics below target"},
+		{name: "hold does not apply when no sample was dropped", hold: true, dropped: 0,
+			recommended: 1, current: 4, wantDesired: 1, wantHeld: false,
+			wantReason: "All metrics below target"},
+		{name: "hold still scales up with a dropped sample", hold: true, dropped: 1,
+			recommended: 8, current: 4, wantDesired: 8, wantHeld: false,
+			wantReason: "kpa above target"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
+			pa.Spec.MinReplicas = ptr.To(int32(1))
+			pa.Annotations = map[string]string{types.ScaleDownCooldownWindowLabel: "0s"}
+			if tt.hold {
+				pa.Annotations[types.HoldScaleDownOnMetricFailureLabel] = "true"
+			}
+			h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+			h.reconciler.autoScaler = &fakeAutoScaler{result: &ReplicaComputeResult{
+				DesiredReplicas:  tt.recommended,
+				Algorithm:        "kpa",
+				Valid:            true,
+				DroppedReadyPods: tt.dropped,
+			}}
+			scaleObj := buildScaleObject("apps/v1", "Deployment", ns, pa.Spec.ScaleTargetRef.Name)
+
+			decision, err := h.reconciler.computeScaleDecision(context.Background(), *pa, scaleObj, tt.current)
+			if err != nil {
+				t.Fatalf("computeScaleDecision returned error: %v", err)
+			}
+			if decision.DesiredReplicas != tt.wantDesired {
+				t.Fatalf("DesiredReplicas = %d, want %d", decision.DesiredReplicas, tt.wantDesired)
+			}
+			if decision.ScaleDownHeld != tt.wantHeld {
+				t.Fatalf("ScaleDownHeld = %t, want %t", decision.ScaleDownHeld, tt.wantHeld)
+			}
+			if decision.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", decision.Reason, tt.wantReason)
+			}
+		})
+	}
+}

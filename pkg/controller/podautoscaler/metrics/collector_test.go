@@ -279,3 +279,26 @@ func TestCollectFromPodsClampsNonPositiveConcurrency(t *testing.T) {
 	assert.Len(t, snapshot.Values, 2, "clamping concurrency to 1 must not deadlock; both pods are scraped")
 	assert.NoError(t, snapshot.Error)
 }
+
+// TestCollectFromPodsCountsDroppedReadyPods: DroppedReadyPods counts only Ready pods whose scrape
+// was dropped (timed out/failed) -- a not-Ready pod that fails is not counted, and a Ready pod
+// that succeeds is not counted. The autoscaler uses this to optionally hold a scale-down.
+func TestCollectFromPodsCountsDroppedReadyPods(t *testing.T) {
+	pods := []corev1.Pod{
+		readyPodForScrape("ready-dropped", "10.0.0.1"), // Ready + unreachable  -> counted
+		podForScrape("notready-dropped", "10.0.0.2"),   // not Ready + unreachable -> not counted
+		readyPodForScrape("ready-ok", "10.0.0.3"),      // Ready + reachable    -> not dropped
+	}
+	fetcher := &reachabilityFetcher{
+		unreachable: map[string]bool{"ready-dropped": true, "notready-dropped": true},
+		value:       5,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	snapshot, err := CollectMetrics(ctx, podCollectionSpec(pods), staticMetricFetcherFactory{fetcher: fetcher})
+	require.NoError(t, err)
+	assert.Equal(t, 1, snapshot.DroppedReadyPods, "only the Ready pod whose scrape was dropped is counted")
+	assert.Equal(t, []float64{5}, snapshot.Values, "only the reachable Ready pod reported")
+	assert.NoError(t, snapshot.Error, "partial success is not a total failure")
+}

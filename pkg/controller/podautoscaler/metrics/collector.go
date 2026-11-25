@@ -49,6 +49,11 @@ type collectBounds struct {
 	// overallTimeout bounds the whole concurrent collection. It is kept well below the reconcile
 	// deadline (DefaultReconcileTimeoutDuration, 10s) so that even a large batch of slow or
 	// unreachable pods still returns with time to spare to act on the partial metrics.
+	//
+	// Note this budget is per metric source. A PodAutoscaler with N POD sources collects them
+	// serially (ComputeDesiredReplicas iterates MetricsSources), so in the worst case the budgets
+	// sum to N*overallTimeout and can exceed the reconcile deadline. A shared budget across sources
+	// is tracked as a follow-up; today each source gets the full overallTimeout.
 	overallTimeout time.Duration
 	// maxConcurrency bounds how many pods are scraped in parallel, keeping collection fast without
 	// opening an unbounded number of connections against a large fleet. Values below 1 are clamped
@@ -68,13 +73,55 @@ func CollectMetrics(ctx context.Context, spec types.CollectionSpec, factory Metr
 	fetcher := factory.For(spec.MetricSource)
 
 	switch spec.MetricSource.MetricSourceType {
-	case autoscalingv1alpha1.POD, autoscalingv1alpha1.RESOURCE, autoscalingv1alpha1.CUSTOM:
+	case autoscalingv1alpha1.POD, autoscalingv1alpha1.RESOURCE:
+		// POD scrapes over HTTP and RESOURCE via the metrics API both honor the context, so the
+		// concurrent per-pod/overall sub-deadlines actually bound a slow or unreachable pod.
 		return collectFromPods(ctx, spec, fetcher, defaultCollectBounds)
+	case autoscalingv1alpha1.CUSTOM:
+		// The Kubernetes custom-metrics client (GetForObject) takes no context, so a sub-deadline
+		// would not cut a hung request and would only block the collection's WaitGroup. Keep CUSTOM
+		// on the pre-existing serial path -- #3585 is about direct POD scrapes -- so this change
+		// makes no claim it does not keep. Bounding the custom-metrics client is tracked separately.
+		return collectFromPodsSerial(ctx, spec, fetcher)
 	case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
 		return collectFromExternal(ctx, spec, fetcher)
 	default:
 		return collectFromPods(ctx, spec, fetcher, defaultCollectBounds) // Default to pod collection
 	}
+}
+
+// collectFromPodsSerial scrapes pods one at a time with no added sub-deadline, matching the
+// pre-concurrency behavior. It is used for CUSTOM metrics, whose client ignores the context (so
+// the concurrent path's deadlines are a no-op for it); the only bound is the caller's reconcile
+// context. Error semantics match collectFromPods: only a total failure sets snapshot.Error.
+func collectFromPodsSerial(ctx context.Context, spec types.CollectionSpec, fetcher MetricFetcher) (*types.MetricSnapshot, error) {
+	var values []float64
+	var collectErrors []error
+	successCount := 0
+	for _, pod := range spec.Pods {
+		value, err := fetcher.FetchPodMetrics(ctx, pod, spec.MetricSource)
+		if err != nil {
+			collectErrors = append(collectErrors, fmt.Errorf("pod %s/%s: %w", pod.Namespace, pod.Name, err))
+			continue
+		}
+		values = append(values, value)
+		successCount++
+	}
+
+	var finalErr error
+	if len(collectErrors) > 0 && successCount == 0 {
+		finalErr = fmt.Errorf("failed to collect metrics from all %d pods: %v", len(spec.Pods), combineErrors(collectErrors))
+	}
+
+	return &types.MetricSnapshot{
+		Namespace:  spec.Namespace,
+		TargetName: spec.TargetName,
+		MetricName: spec.MetricName,
+		Values:     values,
+		Timestamp:  spec.Timestamp,
+		Source:     string(spec.MetricSource.MetricSourceType),
+		Error:      finalErr,
+	}, nil
 }
 
 // scrapeOnePod wraps fetcher.FetchPodMetrics with a per-pod sub-deadline so one slow pod cannot
@@ -170,11 +217,18 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	var collectErrors []error
 	var timedOutPods []string
 	successCount := 0
+	droppedReadyPods := 0
 	for i, r := range results {
 		if r.err != nil {
 			collectErrors = append(collectErrors, fmt.Errorf("pod %s/%s: %w", spec.Pods[i].Namespace, spec.Pods[i].Name, r.err))
 			if errors.Is(r.err, context.DeadlineExceeded) || errors.Is(r.err, context.Canceled) {
 				timedOutPods = append(timedOutPods, fmt.Sprintf("%s/%s", spec.Pods[i].Namespace, spec.Pods[i].Name))
+			}
+			// A Ready pod whose sample is now missing biases the per-pod value low (its load is
+			// assumed to be the mean of the pods that did report), which can cause a spurious
+			// scale-down. Count it so the autoscaler can optionally hold scale-down on partial data.
+			if utils.IsPodReady(&spec.Pods[i]) {
+				droppedReadyPods++
 			}
 			continue
 		}
@@ -203,13 +257,14 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	}
 
 	return &types.MetricSnapshot{
-		Namespace:  spec.Namespace,
-		TargetName: spec.TargetName,
-		MetricName: spec.MetricName,
-		Values:     values,
-		Timestamp:  spec.Timestamp,
-		Source:     string(spec.MetricSource.MetricSourceType),
-		Error:      finalErr,
+		Namespace:        spec.Namespace,
+		TargetName:       spec.TargetName,
+		MetricName:       spec.MetricName,
+		Values:           values,
+		Timestamp:        spec.Timestamp,
+		Source:           string(spec.MetricSource.MetricSourceType),
+		Error:            finalErr,
+		DroppedReadyPods: droppedReadyPods,
 	}, nil
 }
 

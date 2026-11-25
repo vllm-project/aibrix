@@ -379,6 +379,20 @@ func withFailedMetrics(reason string, failedMetrics []string) string {
 	return fmt.Sprintf("%s (%s could not be read)", reason, strings.Join(failedMetrics, ", "))
 }
 
+// heldReason explains why a scale-down was held: a metric source could not be read, or a Ready
+// pod's metric sample was dropped (its scrape timed out), either of which leaves the decision on
+// partial data.
+func heldReason(failedMetrics []string, droppedReadyPods int) string {
+	switch {
+	case len(failedMetrics) > 0:
+		return fmt.Sprintf("Scale-down held (%s could not be read)", strings.Join(failedMetrics, ", "))
+	case droppedReadyPods > 0:
+		return fmt.Sprintf("Scale-down held (%d ready pod metric sample(s) missing)", droppedReadyPods)
+	default:
+		return "Scale-down held"
+	}
+}
+
 // metricSourceHealth is what was last reported for a PodAutoscaler's metric
 // sources: which failed, and whether a scale-down was held because of them.
 type metricSourceHealth struct {
@@ -1423,11 +1437,14 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 
 	// With hold-scale-down-on-metric-failure, a scale-down the remaining sources
 	// ask for while one fails is held, as Kubernetes HPA does: the failed source
-	// may be the one keeping the replicas up. Like the HPA, the held
-	// recommendation is not recorded for the cooldown windows, so data the hold
-	// does not trust cannot delay a later scale-up. Bounds still apply below.
+	// may be the one keeping the replicas up. The same applies when a Ready pod's
+	// sample was dropped (its scrape timed out): the recommendation rests on
+	// partial per-pod data that can under-count load and ask for a spurious
+	// scale-down. Like the HPA, the held recommendation is not recorded for the
+	// cooldown windows, so data the hold does not trust cannot delay a later
+	// scale-up. Bounds still apply below.
 	scaleDownHeld := pa.Spec.ScalingStrategy != autoscalingv1alpha1.HPA &&
-		len(replicaResult.FailedMetrics) > 0 &&
+		(len(replicaResult.FailedMetrics) > 0 || replicaResult.DroppedReadyPods > 0) &&
 		metricDesiredReplicas < currentReplicas &&
 		scalingContext.GetHoldScaleDownOnMetricFailure()
 
@@ -1471,7 +1488,7 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 			}
 		}
 	} else if scaleDownHeld {
-		reason = fmt.Sprintf("Scale-down held (%s could not be read)", strings.Join(replicaResult.FailedMetrics, ", "))
+		reason = heldReason(replicaResult.FailedMetrics, replicaResult.DroppedReadyPods)
 	} else if pendingGuardActive {
 		reason = replicaResult.Reason
 	} else {

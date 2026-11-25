@@ -1039,3 +1039,32 @@ func TestComputeDesiredReplicasPrunesStalePanicStates(t *testing.T) {
 	compute()
 	assert.NotContains(t, autoScaler.panicStates, key)
 }
+
+// TestComputeDesiredReplicasReportsDroppedReadyPods checks that a Ready pod whose scrape is
+// dropped is surfaced on the result as DroppedReadyPods, which the controller uses to optionally
+// hold a scale-down. (The pods carry a Ready condition, which production serving pods have; the
+// collector keys the count off that condition, not the lagging status.readyReplicas.)
+func TestComputeDesiredReplicasReportsDroppedReadyPods(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 50
+	fetcher.unscrapable = map[string]bool{"pod-0": true} // a Ready pod whose scrape is dropped
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+
+	podList := make([]corev1.Pod, 3)
+	for i := range podList {
+		podList[i].Name = fmt.Sprintf("pod-%d", i)
+		podList[i].Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	}
+
+	result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+		PodAutoscaler:   pa,
+		ScalingContext:  testScalingContext(t, &pa),
+		CurrentReplicas: 3,
+		ReplicaState:    ReplicaState{ReadyReplicas: 3},
+		Pods:            podList,
+		Timestamp:       time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.DroppedReadyPods, "the dropped Ready pod is surfaced for the scale-down hold")
+}
