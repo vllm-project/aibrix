@@ -163,6 +163,11 @@ go test ./test/e2e/installation \
   -run '^TestGatewayNamespaceManifests$' -count=1
 ```
 
+For Kustomize namespace and name transformations, see
+[Customizing the gateway manifests](../config/gateway/README.md).
+Its render regression checks resource references and the resolved Envoy patches
+without requiring a running cluster.
+
 #### ModelRouter Controller E2E
 
 The ModelRouter package runs as part of the default `controller` and `all`

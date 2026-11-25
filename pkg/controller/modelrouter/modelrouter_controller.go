@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
@@ -53,8 +54,6 @@ const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
 	modelPortIdentifier   = constants.ModelLabelPort
-	// TODO (varun): parameterize it or dynamically resolve it
-	aibrixEnvoyGateway = "aibrix-eg"
 
 	defaultModelServingPort = 8000
 
@@ -116,6 +115,11 @@ var modelPaths = []string{
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 
 func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
+	if runtimeConfig.GatewayName != "" {
+		if problems := validation.IsDNS1123Subdomain(runtimeConfig.GatewayName); len(problems) != 0 {
+			return fmt.Errorf("invalid AIBRIX_GATEWAY_NAME %q: %s", runtimeConfig.GatewayName, strings.Join(problems, "; "))
+		}
+	}
 	cacher := mgr.GetCache()
 
 	deploymentInformer, err := cacher.GetInformer(context.TODO(), &appsv1.Deployment{})
@@ -143,7 +147,7 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		resyncInterval: defaultResyncInterval,
 	}
 
-	klog.InfoS("Starting modelrouter controller", "gatewayNamespace", modelRouter.gatewayNamespace())
+	klog.InfoS("Starting modelrouter controller", "gatewayNamespace", modelRouter.gatewayNamespace(), "gatewayName", modelRouter.gatewayName())
 
 	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromDeployment,
@@ -217,6 +221,14 @@ func (m *ModelRouter) gatewayNamespace() string {
 		return config.DefaultGatewayNamespace
 	}
 	return m.RuntimeConfig.GatewayNamespace
+}
+
+// gatewayName preserves the default for directly constructed routers too.
+func (m *ModelRouter) gatewayName() gatewayv1.ObjectName {
+	if m.RuntimeConfig.GatewayName == "" {
+		return config.DefaultGatewayName
+	}
+	return gatewayv1.ObjectName(m.RuntimeConfig.GatewayName)
 }
 
 func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
@@ -413,7 +425,7 @@ func (m *ModelRouter) buildHTTPRoute(namespace, modelName string, labels map[str
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
 					{
-						Name:      aibrixEnvoyGateway,
+						Name:      m.gatewayName(),
 						Namespace: ptr.To(gatewayv1.Namespace(m.gatewayNamespace())),
 					},
 				},

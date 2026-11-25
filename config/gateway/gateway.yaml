@@ -2,22 +2,22 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: eg
-  namespace: aibrix-system
+  namespace: system
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
   parametersRef:
     group: gateway.envoyproxy.io
     kind: EnvoyProxy
-    name: aibrix-custom-proxy-config
-    namespace: aibrix-system
+    name: custom-proxy-config
+    namespace: system
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: eg
-  namespace: aibrix-system
+  namespace: system
 spec:
-  gatewayClassName: aibrix-eg
+  gatewayClassName: eg
   listeners:
     - name: http
       protocol: HTTP
@@ -27,7 +27,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
   name: custom-proxy-config
-  namespace: aibrix-system
+  namespace: system
 spec:
   provider:
     type: Kubernetes
@@ -88,12 +88,12 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: ClientTrafficPolicy
 metadata:
   name: client-connection-buffersize
-  namespace: aibrix-system
+  namespace: system
 spec:
   targetRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
-      name: aibrix-eg
+      name: eg
   connection:
     bufferLimit: 4194304
 ---
@@ -101,16 +101,16 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
 metadata:
   name: epp
-  namespace: aibrix-system
+  namespace: system
 spec:
   type: "JSONPatch"
   targetRef:
     group: gateway.networking.k8s.io
     kind: Gateway
-    name: aibrix-eg
+    name: eg
   jsonPatches:
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-    name: "aibrix-system/aibrix-eg/http"
+    name: "$(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http"
     operation:
       op: add
       path: "/virtual_hosts/0/routes/0"
@@ -126,10 +126,17 @@ spec:
         route:  
           cluster: original_destination_cluster
           timeout: 600s
-        typed_per_filter_config:
-          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0":
-            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
-            "config": {}
+        typed_per_filter_config: {}
+  # Put the filter key in a JSON Pointer: Kustomize expands scalar values,
+  # but cannot expand a mapping key. ~1 escapes each slash in the filter name.
+  - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+    name: "$(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http"
+    operation:
+      op: add
+      path: /virtual_hosts/0/routes/0/typed_per_filter_config/envoy.filters.http.ext_proc~1envoyextensionpolicy~1$(AIBRIX_GATEWAY_NAMESPACE)~1$(AIBRIX_EXT_PROC_POLICY_NAME)~1extproc~10
+      value:
+        "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+        "config": {}
   # Pinning re-routes: the plugin answers RequestHeaders with routing-strategy +
   # target-pod and clears the route cache, so every pinned request re-matches here
   # instead of on its path route. The route selected at that point is the one the
@@ -143,7 +150,7 @@ spec:
   # it, and the streaming one before the JSON one: /v1/videos/sync also matches
   # the JSON pattern's single-segment form.
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-    name: "aibrix-system/aibrix-eg/http"
+    name: "$(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http"
     operation:
       op: add
       path: "/virtual_hosts/0/routes/0"
@@ -162,12 +169,19 @@ spec:
         route:
           cluster: original_destination_cluster
           timeout: 600s
-        typed_per_filter_config:
-          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-extension-policy/extproc/0":
-            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
-            "config": {}
+        typed_per_filter_config: {}
+  # Put the filter key in a JSON Pointer: Kustomize expands scalar values,
+  # but cannot expand a mapping key. ~1 escapes each slash in the filter name.
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-    name: "aibrix-system/aibrix-eg/http"
+    name: "$(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http"
+    operation:
+      op: add
+      path: /virtual_hosts/0/routes/0/typed_per_filter_config/envoy.filters.http.ext_proc~1envoyextensionpolicy~1$(AIBRIX_GATEWAY_NAMESPACE)~1$(AIBRIX_VIDEOS_EXT_PROC_POLICY_NAME)~1extproc~10
+      value:
+        "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+        "config": {}
+  - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+    name: "$(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http"
     operation:
       op: add
       path: "/virtual_hosts/0/routes/0"
@@ -185,10 +199,17 @@ spec:
         route:
           cluster: original_destination_cluster
           timeout: 600s
-        typed_per_filter_config:
-          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-streaming-extension-policy/extproc/0":
-            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
-            "config": {}
+        typed_per_filter_config: {}
+  # Put the filter key in a JSON Pointer: Kustomize expands scalar values,
+  # but cannot expand a mapping key. ~1 escapes each slash in the filter name.
+  - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+    name: "$(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http"
+    operation:
+      op: add
+      path: /virtual_hosts/0/routes/0/typed_per_filter_config/envoy.filters.http.ext_proc~1envoyextensionpolicy~1$(AIBRIX_GATEWAY_NAMESPACE)~1$(AIBRIX_STREAMING_EXT_PROC_POLICY_NAME)~1extproc~10
+      value:
+        "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+        "config": {}
   - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
     name: "envoy-patch-policy-override2"
     operation:
@@ -204,7 +225,7 @@ spec:
         lb_policy: CLUSTER_PROVIDED
         dns_lookup_family: V4_ONLY
   - type: type.googleapis.com/envoy.config.listener.v3.Listener
-    name: aibrix-system/aibrix-eg/http
+    name: $(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http
     operation:
       op: add
       path: /default_filter_chain/filters/0/typed_config/preserve_external_request_id
