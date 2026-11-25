@@ -27,6 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -138,9 +139,9 @@ func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router 
 }
 
 func replicaInflightExceededResponse(model string, limit int64) *extProcPb.ProcessingResponse {
-	return buildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
+	return errresp.BuildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
 		fmt.Sprintf("model: %v has exceeded replica inflight limit: %v", model, limit),
-		ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
+		errresp.ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
 		HeaderErrorReplicaInflightExceeded, "true")
 }
 

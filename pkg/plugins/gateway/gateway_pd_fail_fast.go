@@ -42,6 +42,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -194,7 +195,7 @@ func (s *Server) handlePrefillFailFast(srv extProcPb.ExternalProcessor_ProcessSe
 func (s *Server) failStreamOnPrefillFailure(srv extProcPb.ExternalProcessor_ProcessServer,
 	st *processState, failure *types.PrefillFailure, statusCode envoyTypePb.StatusCode) error {
 	message := truncatePrefillMessage(failure.Message)
-	resp := buildErrorResponse(statusCode,
+	resp := errresp.BuildErrorResponse(statusCode,
 		"prefill request failed ("+failure.Class+"): "+message,
 		"", "",
 		HeaderErrorPDPrefill, "true",

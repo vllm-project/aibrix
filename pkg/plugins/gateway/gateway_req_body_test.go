@@ -43,6 +43,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -312,7 +313,7 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
-				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				// errresp.BuildErrorResponse returns x-error-routing: true (no Content-Type in headers)
 				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
 				assert.GreaterOrEqual(t, len(headers), 1)
 				foundErrorRouting := false
@@ -360,7 +361,7 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
-				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				// errresp.BuildErrorResponse returns x-error-routing: true (no Content-Type in headers)
 				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
 				assert.GreaterOrEqual(t, len(headers), 1)
 				foundErrorRouting := false
@@ -1950,7 +1951,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			ingressEngine: EngineTRTLLM,
 			wantReject:    true,
 			wantErrCode:   ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType:   ErrorTypeInvalidRequest,
+			wantErrType:   errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:    "routing strategy 'pd' is not supported for endpoint '/v1/responses' with engine 'trtllm'",
 		},
 		{
@@ -1960,7 +1961,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			headerValue: "pd",
 			wantReject:  true,
 			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
+			wantErrType: errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/messages'",
 		},
 		{
@@ -1970,7 +1971,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			headerValue: "pd",
 			wantReject:  true,
 			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
+			wantErrType: errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
 		},
 		{
@@ -1988,7 +1989,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			profileJSON:   `{"defaultProfile":"default","profiles":{"pd-profile":{"routingStrategy":"pd"},"default":{"routingStrategy":"test-router"}}}`,
 			wantReject:    true,
 			wantErrCode:   ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType:   ErrorTypeInvalidRequest,
+			wantErrType:   errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:    "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
 		},
 		{
@@ -1999,7 +2000,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			profileJSON: `{"lockedRoutingStrategy":"pd","defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
 			wantReject:  true,
 			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
+			wantErrType: errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/rerank'",
 		},
 		{

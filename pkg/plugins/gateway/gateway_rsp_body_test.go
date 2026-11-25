@@ -35,6 +35,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -598,7 +599,7 @@ func TestProcessLanguageResponse_InvalidJSON(t *testing.T) {
 
 	assert.True(t, complete)
 	assert.NotNil(t, res)
-	// buildErrorResponse returns ImmediateResponse, not ResponseBody
+	// errresp.BuildErrorResponse returns ImmediateResponse, not ResponseBody
 	immResp := res.GetImmediateResponse()
 	assert.NotNil(t, immResp)
 	headers := immResp.GetHeaders().GetSetHeaders()
@@ -893,10 +894,10 @@ func TestNormalizeUpstreamError(t *testing.T) {
 }
 
 func TestBuildErrorResponseWithBody(t *testing.T) {
-	resp := buildErrorResponseWithBody(
+	resp := errresp.BuildErrorResponseWithBody(
 		envoyTypePb.StatusCode_BadRequest,
 		`{"error":{"message":"bad","type":"BadRequestError"}}`,
-		buildEnvoyProxyHeaders(nil, "x-upstream-error", "true"),
+		errresp.BuildEnvoyProxyHeaders(nil, "x-upstream-error", "true"),
 	)
 	immResp := resp.GetImmediateResponse()
 	assert.NotNil(t, immResp)

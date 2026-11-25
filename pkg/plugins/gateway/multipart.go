@@ -26,6 +26,8 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 )
 
 // isMultipartFormPath returns true if requestPath is an endpoint whose request
@@ -72,18 +74,18 @@ func parseMultipartFormData(requestID, requestPath, contentType string, requestB
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		klog.ErrorS(err, "failed to parse content-type", "requestID", requestID, "contentType", contentType)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid content-type header", "", "", HeaderErrorMultipartParsing, trueStr)
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid content-type header", "", "", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 
 	if !strings.HasPrefix(mediaType, "multipart/") {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "expected multipart/form-data content-type", "", "", HeaderErrorMultipartParsing, trueStr)
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "expected multipart/form-data content-type", "", "", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 
 	boundary := params["boundary"]
 	if boundary == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "missing boundary in content-type", "", "", HeaderErrorMultipartParsing, trueStr)
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "missing boundary in content-type", "", "", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 
@@ -96,7 +98,7 @@ func parseMultipartFormData(requestID, requestPath, contentType string, requestB
 		}
 		if err != nil {
 			klog.ErrorS(err, "failed to read multipart part", "requestID", requestID)
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to parse multipart form", "", "", HeaderErrorMultipartParsing, trueStr)
+			errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to parse multipart form", "", "", HeaderErrorMultipartParsing, trueStr)
 			return
 		}
 
@@ -107,7 +109,7 @@ func parseMultipartFormData(requestID, requestPath, contentType string, requestB
 			modelBytes, err := io.ReadAll(part)
 			if err != nil {
 				klog.ErrorS(err, "failed to read model field", "requestID", requestID)
-				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to read model field", "", "model", HeaderErrorMultipartParsing, trueStr)
+				errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to read model field", "", "model", HeaderErrorMultipartParsing, trueStr)
 				return
 			}
 			model = strings.TrimSpace(string(modelBytes))
@@ -130,7 +132,7 @@ func parseMultipartFormData(requestID, requestPath, contentType string, requestB
 
 	// Validate required model field
 	if model == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorMultipartParsing, trueStr)
+		errRes = errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 

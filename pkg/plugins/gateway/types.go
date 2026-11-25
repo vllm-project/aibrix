@@ -106,13 +106,6 @@ const (
 	// Envs
 	EnvRoutingAlgorithm = "ROUTING_ALGORITHM"
 
-	// OpenAI Error Types
-	ErrorTypeInvalidRequest = "invalid_request_error"
-	ErrorTypeAuthentication = "authentication_error"
-	ErrorTypeRateLimit      = "rate_limit_error"
-	ErrorTypeApi            = "api_error"
-	ErrorTypeOverloaded     = "overloaded_error"
-
 	// OpenAI Error Codes
 	ErrorCodeInvalidAPIKey              = "invalid_api_key"
 	ErrorCodeModelNotFound              = "model_not_found"
