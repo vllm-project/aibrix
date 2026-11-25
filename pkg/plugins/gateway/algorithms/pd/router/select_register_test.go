@@ -30,11 +30,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -657,4 +659,135 @@ func TestPDRouter_ConcurrentMultiModelBurstsPreservePerModelAtomicity(t *testing
 			assert.Equalf(t, int32(wantPerPod), heldCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)], "model %s pod %s tracked count", modelNames[m], pod.Name)
 		}
 	}
+}
+
+// TestPDRouter_CrossStripeTokenLoadAndPrefixCacheRaceFree exercises concurrent
+// selections across distinct model stripes (including two model names sharing
+// the exact same base PD pods, as in multi-LoRA deployments) under
+// hybrid_cache_load prefill + token_load decode with the prefix-cache updater
+// active. This verifies under -race that all shared trackers (prefixCacheIndexer,
+// tokenLoadTracker, pendingPrefixCredits, countersMu, prefillRequestTracker,
+// pendingDecodeTracker) remain race-free and drain cleanly without a single
+// global lock.
+func TestPDRouter_CrossStripeTokenLoadAndPrefixCacheRaceFree(t *testing.T) {
+	// Pick two model names guaranteed to hash to distinct stripes that share
+	// the same base pods, plus two disjoint models on distinct stripes.
+	loraA := "lora-adapter-a"
+	loraB := "lora-adapter-b"
+	for i := 0; selectStripeIndex(loraA) == selectStripeIndex(loraB); i++ {
+		loraB = fmt.Sprintf("lora-adapter-b-%d", i)
+	}
+	require.NotEqual(t, selectStripeIndex(loraA), selectStripeIndex(loraB))
+
+	sharedPods := []*v1.Pod{
+		burstPod("shared-prefill-0", "prefill", "127.0.10.1"),
+		burstPod("shared-prefill-1", "prefill", "127.0.10.2"),
+		burstPod("shared-decode-0", "decode", "127.0.10.100"),
+		burstPod("shared-decode-1", "decode", "127.0.10.101"),
+	}
+	disjointC := []*v1.Pod{
+		burstPod("c-prefill-0", "prefill", "127.0.11.1"),
+		burstPod("c-prefill-1", "prefill", "127.0.11.2"),
+		burstPod("c-decode-0", "decode", "127.0.11.100"),
+		burstPod("c-decode-1", "decode", "127.0.11.101"),
+	}
+	disjointD := []*v1.Pod{
+		burstPod("d-prefill-0", "prefill", "127.0.12.1"),
+		burstPod("d-prefill-1", "prefill", "127.0.12.2"),
+		burstPod("d-decode-0", "decode", "127.0.12.100"),
+		burstPod("d-decode-1", "decode", "127.0.12.101"),
+	}
+
+	type modelSpec struct {
+		name    string
+		podList *utils.PodArray
+	}
+	models := []modelSpec{
+		{name: loraA, podList: &utils.PodArray{Pods: sharedPods}},
+		{name: loraB, podList: &utils.PodArray{Pods: sharedPods}},
+		{name: "disjoint-model-c", podList: &utils.PodArray{Pods: disjointC}},
+		{name: "disjoint-model-d", podList: &utils.PodArray{Pods: disjointD}},
+	}
+
+	gate := make(chan struct{})
+	close(gate) // let prefill requests complete immediately while selections overlap
+	prefixTable := prefixcacheindexer.NewPrefixHashTable()
+	tokenLoad := pd.NewTokenLoadTracker()
+	tracker := pd.NewPrefillRequestTracker()
+	pending := pd.NewPendingDecodeTracker()
+	client := &http.Client{Transport: &gatedTransport{gate: gate}}
+
+	r := &pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         newHybridCacheLoadPrefillPolicy(prefixTable, tokenLoad),
+		decodePolicy:          pd.TokenLoadDecodePolicy{},
+		prefixCacheIndexer:    prefixTable,
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pending,
+		tokenLoadTracker:      tokenLoad,
+		httpClient:            client,
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+		selectionCounts:       map[string]int64{},
+	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefill.WithTokenLoadTracker(tokenLoad))
+	r.startPrefixUpdater()
+	t.Cleanup(func() { close(r.prefixUpdateCh) })
+
+	const reqsPerModel = 32
+	prompt := strings.Repeat("shared prefix prompt for cross-stripe race check ", 16)
+	body := []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":%q}],"stream":true}`, prompt))
+
+	start := make(chan struct{})
+	errCh := make(chan error, len(models)*reqsPerModel)
+	var wg sync.WaitGroup
+	for mIdx, spec := range models {
+		for j := 0; j < reqsPerModel; j++ {
+			wg.Add(1)
+			go func(mIdx, j int, spec modelSpec) {
+				defer wg.Done()
+				reqID := fmt.Sprintf("xstripe-%d-%d", mIdx, j)
+				ctx := types.NewRoutingContext(context.Background(), "pd", spec.name, prompt, reqID, "user")
+				defer ctx.Delete()
+				ctx.Engine = "vllm"
+				ctx.ReqPath = testChatCompletionsPath
+				ctx.ReqBody = body
+				ctx.ReqHeaders = map[string]string{
+					constants.HeaderSessionKey: fmt.Sprintf("sess-%d-%d", mIdx, j%4),
+				}
+				<-start
+				if _, err := r.Route(ctx, spec.podList); err != nil {
+					errCh <- fmt.Errorf("model=%s req=%s: %w", spec.name, reqID, err)
+					return
+				}
+				r.DoneRequestCount(ctx, reqID, spec.name, 0)
+			}(mIdx, j, spec)
+		}
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+
+	// Verify all trackers drained cleanly after all requests completed.
+	allPods := append(append(append([]*v1.Pod{}, sharedPods...), disjointC...), disjointD...)
+	for _, cnt := range tracker.GetPrefillRequestCountsForPods(allPods) {
+		assert.Equal(t, int32(0), cnt)
+	}
+	for _, pod := range allPods {
+		key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		assert.Equal(t, float64(0), pending.GetPendingDecodeCount(key))
+		assert.Equal(t, float64(0), tokenLoad.GetDecodeLoad(key))
+	}
+	r.countersMu.RLock()
+	totalSelections := int64(0)
+	for _, cnt := range r.selectionCounts {
+		totalSelections += cnt
+	}
+	r.countersMu.RUnlock()
+	// Each Route increments selectionCounts for both prefill and decode pods.
+	assert.Equal(t, int64(len(models)*reqsPerModel*2), totalSelections)
 }
