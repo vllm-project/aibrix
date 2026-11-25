@@ -526,12 +526,17 @@ func WatchProgressSupported(gitVersion string) bool {
 
 // KubernetesWatchProgress returns the Pod watch resource version source for
 // the discovery checker when the API server is Kubernetes 1.31 or newer, and
-// nil otherwise, including when /version cannot be read within timeout. It
+// nil otherwise, including when /version cannot be read within timeout or
+// config or provider is nil. It
 // reads /version once and logs the decision with the detected version. Below
 // 1.31 an idle Pod watch was observed not to advance even with the
 // reachability check, so the age would rise on a healthy replica.
 func KubernetesWatchProgress(config *rest.Config, provider *discovery.KubernetesProvider,
 	timeout time.Duration) func() string {
+	if config == nil || provider == nil {
+		klog.InfoS("Discovery watch progress age not exported: no API server config or Kubernetes provider")
+		return nil
+	}
 	versionConfig := rest.CopyConfig(config)
 	versionConfig.Timeout = timeout
 	gitVersion := ""

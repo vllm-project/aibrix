@@ -393,6 +393,12 @@ func TestDiscoveryCheckerRegistersWatchProgressOnlyWithASource(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(checker.watchProgressSupported))
 }
 
+func TestKubernetesWatchProgressWithoutConfigOrProvider(t *testing.T) {
+	config := &rest.Config{Host: versionServer(t, "v1.31.0").URL}
+	assert.Nil(t, KubernetesWatchProgress(nil, discovery.NewKubernetesProvider(config), time.Second))
+	assert.Nil(t, KubernetesWatchProgress(config, nil, time.Second))
+}
+
 func TestWatchProgressSupported(t *testing.T) {
 	for gitVersion, want := range map[string]bool{
 		"v1.31.0":            true,

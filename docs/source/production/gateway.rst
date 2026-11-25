@@ -306,6 +306,11 @@ keep the threshold a multiple of it rather than tightening it. Below 1.31 the
 age is not exported, so this alert never fires there; check the supported gauge
 to tell that apart from a healthy watch.
 
+Before you turn the alert on in production, watch the gauge for a while on your
+own API server version, with the reachability check on and Pods quiet, and
+confirm that its peaks stay near one bookmark period (about 60 to 70 seconds).
+The numbers above come from test API servers, not from production clusters.
+
 Alert on the unreachable gauge. One replica reporting it while others do not
 has lost its own connection; every replica at once points at the API server:
 
