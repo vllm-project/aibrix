@@ -81,8 +81,9 @@ go test ./test/e2e/installation -run '^TestKustomizeGatewayReferences$' -count=1
 go test ./pkg/controller/modelrouter -run '^TestModelRouter(GatewayNamespaceLifecycle|RejectsInvalidGatewayName)$' -count=1
 ```
 
-The render test requires `kubectl` and applies the rendered route JSON patches,
-including Envoy's protobuf conversion between operations.
+The render test skips explicitly when `kubectl` is unavailable in `PATH`.
+When available, it applies the rendered route JSON patches, including Envoy's
+protobuf conversion between operations.
 It checks filter references against rendered extension policies and compares
 the default pinning filters with the existing Envoy Gateway xDS golden. These
 checks do not replace a live Kubernetes/Envoy deployment test.

@@ -39,6 +39,9 @@ import (
 // It also applies the rendered JSON patches to check the filter map keys, which
 // ordinary Kubernetes name-reference transformation cannot update.
 func TestKustomizeGatewayReferences(t *testing.T) {
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		t.Skip("kubectl not found in PATH, skipping Kustomize render test")
+	}
 	for _, tt := range []struct{ name, namespace, prefix, suffix string }{
 		{"default", "aibrix-system", "aibrix-", ""},
 		{"namespace", "custom-gateway", "aibrix-", ""},
