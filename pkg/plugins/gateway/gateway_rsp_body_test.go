@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -2366,10 +2367,10 @@ func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
 
 	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
 	publicJobID := gjson.GetBytes(body, "id").String()
-	assert.True(t, strings.HasPrefix(publicJobID, asyncJobPublicIDPrefix), "client must never see the backend id: %s", publicJobID)
+	assert.True(t, strings.HasPrefix(publicJobID, "aibrixjob-"), "client must never see the backend id: %s", publicJobID)
 	assert.Equal(t, "queued", gjson.GetBytes(body, "status").String())
 
-	record, err := listTestAsyncJobs(context.Background(), registry, asyncJobOwnerShared, asyncJobTypeVideo)
+	record, err := listTestAsyncJobs(context.Background(), registry, asyncjob.AsyncJobOwnerShared, asyncjob.AsyncJobTypeVideo)
 	require.NoError(t, err)
 	require.Len(t, record, 1)
 	assert.Equal(t, publicJobID, record[0].PublicJobID)
@@ -2381,7 +2382,7 @@ func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
 // a status poll with its own id, which the client has never seen and cannot use.
 func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
-	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
 		readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-status", "")
@@ -2408,7 +2409,7 @@ func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
 // response that must never be buffered: the video file itself.
 func TestHandleResponseBody_VideoContentStaysStreaming(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
-	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
 		readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-content", "")

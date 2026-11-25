@@ -33,6 +33,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -248,14 +249,14 @@ func TestHandleResponseHeaders_VideoDeleteRemovesRecord(t *testing.T) {
 	for _, status := range []string{"200", "204", "404"} {
 		t.Run("backend "+status, func(t *testing.T) {
 			s, _, registry := newTestVideoJobServer(t)
-			record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+			record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
 				readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 			resp, _, _ := s.HandleResponseHeaders(context.Background(), videoDeleteRoutingContext(t, record.PublicJobID),
 				"req-del", "wan2.1-vace-1.3b", newVideoResponseHeadersRequest(status))
 
 			assert.Nil(t, resp.GetImmediateResponse())
-			assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+			assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 		})
 	}
 }
@@ -265,7 +266,7 @@ func TestHandleResponseHeaders_VideoDeleteRemovesRecord(t *testing.T) {
 // here would strand it with no way for the client to address it again.
 func TestHandleResponseHeaders_VideoDeleteKeepsRecordOnBackendFailure(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
-	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
 		readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	resp, isErr, code := s.HandleResponseHeaders(context.Background(), videoDeleteRoutingContext(t, record.PublicJobID),
@@ -274,7 +275,7 @@ func TestHandleResponseHeaders_VideoDeleteKeepsRecordOnBackendFailure(t *testing
 	assert.True(t, isErr)
 	assert.Equal(t, 500, code)
 	assert.Nil(t, resp.GetImmediateResponse())
-	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncjob.AsyncJobOwnerShared))
 }
 
 // TestHandleResponseHeaders_VideoDeleteCleanupFailureReturns503 tells the truth
@@ -282,9 +283,9 @@ func TestHandleResponseHeaders_VideoDeleteKeepsRecordOnBackendFailure(t *testing
 // so the caller must retry the DELETE to finish the cleanup.
 func TestHandleResponseHeaders_VideoDeleteCleanupFailureReturns503(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
-	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
 		readyPod("pod-a", "ns-a", "10.0.0.5"))
-	registry.store = &failingAsyncJobStore{asyncJobStore: registry.store, deleteErr: errAsyncJobStoreUnavailable}
+	s.asyncJobs = &failingAsyncJobRegistry{AsyncJobRegistry: registry, deleteErr: asyncjob.ErrAsyncJobStoreUnavailable}
 
 	resp, _, _ := s.HandleResponseHeaders(context.Background(), videoDeleteRoutingContext(t, record.PublicJobID),
 		"req-del", "wan2.1-vace-1.3b", newVideoResponseHeadersRequest("204"))

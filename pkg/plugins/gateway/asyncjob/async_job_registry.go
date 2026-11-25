@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package asyncjob
 
 import (
 	"context"
@@ -50,8 +50,8 @@ import (
 // that accepted the job. It is deliberately not a job-state authority - it does
 // not track status, store results, or poll the backend.
 const (
-	// asyncJobTypeVideo is the job type of the vLLM-Omni Videos API.
-	asyncJobTypeVideo = "video"
+	// AsyncJobTypeVideo is the job type of the vLLM-Omni Videos API.
+	AsyncJobTypeVideo = "video"
 
 	// asyncJobTargetKindPod is the only routing target kind accepted in v1.
 	// The field exists so a future kind (a service, a shard group) can be added
@@ -62,10 +62,10 @@ const (
 	// when the backend does not report an expiry of its own.
 	defaultAsyncJobTTL = 7 * 24 * time.Hour
 
-	// asyncJobOwnerShared is the scope of requests that carry no user identity.
+	// AsyncJobOwnerShared is the scope of requests that carry no user identity.
 	// The gateway's static bearer token names no principal, so those requests
 	// share one scope rather than being attributed to the token.
-	asyncJobOwnerShared = "scope:shared"
+	AsyncJobOwnerShared = "scope:shared"
 
 	// asyncJobOwnerUserScopePrefix scopes a job to the request user identity.
 	asyncJobOwnerUserScopePrefix = "scope:user:"
@@ -81,7 +81,7 @@ const (
 	// Async-job catalog pagination follows the OpenAI Videos API. Keeping the
 	// page bounded is also important for ext_proc: a single owner must not turn
 	// GET /v1/videos into an unbounded Redis read or response body.
-	defaultAsyncJobListLimit = 20
+	DefaultAsyncJobListLimit = 20
 	maxAsyncJobListLimit     = 100
 	asyncJobListScanBatch    = 64
 	asyncJobListMaxScan      = 512
@@ -94,22 +94,22 @@ const (
 )
 
 var (
-	// errAsyncJobNotFound covers both "no such job" and "not yours": the two are
+	// ErrAsyncJobNotFound covers both "no such job" and "not yours": the two are
 	// deliberately indistinguishable so a public id cannot be probed for
 	// existence across owner scopes.
-	errAsyncJobNotFound = errors.New("async job not found")
+	ErrAsyncJobNotFound = errors.New("async job not found")
 
-	// errAsyncJobTargetUnavailable means the pinned pod still exists but cannot
+	// ErrAsyncJobTargetUnavailable means the pinned pod still exists but cannot
 	// take the request right now. The record is kept so the client can retry.
-	errAsyncJobTargetUnavailable = errors.New("async job routing target is temporarily unavailable")
+	ErrAsyncJobTargetUnavailable = errors.New("async job routing target is temporarily unavailable")
 
-	// errAsyncJobStoreUnavailable means the store kept failing transiently until
+	// ErrAsyncJobStoreUnavailable means the store kept failing transiently until
 	// the retry budget ran out. Retryable from the client's point of view.
-	errAsyncJobStoreUnavailable = errors.New("async job store is temporarily unavailable")
+	ErrAsyncJobStoreUnavailable = errors.New("async job store is temporarily unavailable")
 
-	// errAsyncJobInvalidRecord covers validation and serialization failures,
+	// ErrAsyncJobInvalidRecord covers validation and serialization failures,
 	// which no amount of retrying will fix.
-	errAsyncJobInvalidRecord = errors.New("invalid async job record")
+	ErrAsyncJobInvalidRecord = errors.New("invalid async job record")
 
 	// transientRedisServerErrorPrefixes are the server replies worth retrying:
 	// the node is coming up, the slot is moving, or a failover just changed the
@@ -137,7 +137,7 @@ func (e asyncJobInvalidRecordError) Error() string {
 }
 
 func (e asyncJobInvalidRecordError) Unwrap() error {
-	return errAsyncJobInvalidRecord
+	return ErrAsyncJobInvalidRecord
 }
 
 func newAsyncJobInvalidRecordError(format string, args ...any) error {
@@ -231,7 +231,8 @@ type AsyncJobListPage struct {
 	HasMore bool
 }
 
-func normalizeAsyncJobListOptions(options AsyncJobListOptions) (AsyncJobListOptions, error) {
+// NormalizeAsyncJobListOptions validates a page request and applies the default sort order.
+func NormalizeAsyncJobListOptions(options AsyncJobListOptions) (AsyncJobListOptions, error) {
 	if options.Limit < 1 || options.Limit > maxAsyncJobListLimit {
 		return AsyncJobListOptions{}, newAsyncJobInvalidRecordError("list limit must be between 1 and %d", maxAsyncJobListLimit)
 	}
@@ -274,13 +275,14 @@ type podResolver interface {
 
 // asyncJobOwnerFromUser derives the owner scope from the request user identity.
 func asyncJobOwnerFromUser(user utils.User) string {
-	return asyncJobOwnerFromUserName(user.Name)
+	return AsyncJobOwnerFromUserName(user.Name)
 }
 
-func asyncJobOwnerFromUserName(userName string) string {
+// AsyncJobOwnerFromUserName scopes jobs to a user identity, or the shared anonymous scope.
+func AsyncJobOwnerFromUserName(userName string) string {
 	name := strings.TrimSpace(userName)
 	if name == "" {
-		return asyncJobOwnerShared
+		return AsyncJobOwnerShared
 	}
 	return asyncJobOwnerUserScopePrefix + name
 }
@@ -457,7 +459,7 @@ func (r *asyncJobRegistryCore) get(ctx context.Context, owner, publicJobID strin
 
 	pod, err := r.resolvePin(record)
 	if err != nil {
-		if errors.Is(err, errAsyncJobNotFound) {
+		if errors.Is(err, ErrAsyncJobNotFound) {
 			// The record is garbage, but only once the store agrees. Answering
 			// "gone" while it is still durable would tell the client to stop
 			// asking, and the next request would pin the same dead pod again, so
@@ -466,7 +468,7 @@ func (r *asyncJobRegistryCore) get(ctx context.Context, owner, publicJobID strin
 				klog.ErrorS(delErr, "failed to delete unroutable async job record",
 					"public_job_id", publicJobID, "job_type", record.JobType)
 				return record, nil, fmt.Errorf("%w: could not drop the unroutable record of %s: %v",
-					errAsyncJobStoreUnavailable, publicJobID, delErr)
+					ErrAsyncJobStoreUnavailable, publicJobID, delErr)
 			}
 		}
 		// The record itself is still returned: the caller needs its model to
@@ -483,7 +485,7 @@ func (r *asyncJobRegistryCore) get(ctx context.Context, owner, publicJobID strin
 // support fall back to the legacy list implementation; production never takes
 // that path.
 func (r *asyncJobRegistryCore) list(ctx context.Context, owner, jobType string, options AsyncJobListOptions) (AsyncJobListPage, error) {
-	options, err := normalizeAsyncJobListOptions(options)
+	options, err := NormalizeAsyncJobListOptions(options)
 	if err != nil {
 		return AsyncJobListPage{}, err
 	}
@@ -509,25 +511,25 @@ func (r *asyncJobRegistryCore) delete(ctx context.Context, owner, publicJobID st
 // ownership check first.
 func (r *asyncJobRegistryCore) resolvePin(record AsyncJobRecord) (*v1.Pod, error) {
 	if record.RoutingTarget.Kind != asyncJobTargetKindPod {
-		return nil, fmt.Errorf("%w: unroutable target kind %q", errAsyncJobNotFound, record.RoutingTarget.Kind)
+		return nil, fmt.Errorf("%w: unroutable target kind %q", ErrAsyncJobNotFound, record.RoutingTarget.Kind)
 	}
 
 	target := record.RoutingTarget.Pod
 	pod, err := r.pods.GetPod(target.Name, target.Namespace)
 	if err != nil || pod == nil {
-		return nil, fmt.Errorf("%w: pod %s/%s is gone", errAsyncJobNotFound, target.Namespace, target.Name)
+		return nil, fmt.Errorf("%w: pod %s/%s is gone", ErrAsyncJobNotFound, target.Namespace, target.Name)
 	}
 	if string(pod.UID) != target.UID {
-		return nil, fmt.Errorf("%w: pod %s/%s was replaced", errAsyncJobNotFound, target.Namespace, target.Name)
+		return nil, fmt.Errorf("%w: pod %s/%s was replaced", ErrAsyncJobNotFound, target.Namespace, target.Name)
 	}
 	if utils.IsPodTerminating(pod) {
-		return nil, fmt.Errorf("%w: pod %s/%s is terminating", errAsyncJobNotFound, target.Namespace, target.Name)
+		return nil, fmt.Errorf("%w: pod %s/%s is terminating", ErrAsyncJobNotFound, target.Namespace, target.Name)
 	}
 	if !utils.IsPodReady(pod) {
-		return nil, fmt.Errorf("%w: pod %s/%s is not ready", errAsyncJobTargetUnavailable, target.Namespace, target.Name)
+		return nil, fmt.Errorf("%w: pod %s/%s is not ready", ErrAsyncJobTargetUnavailable, target.Namespace, target.Name)
 	}
 	if pod.Status.PodIP == "" {
-		return nil, fmt.Errorf("%w: pod %s/%s has no address", errAsyncJobTargetUnavailable, target.Namespace, target.Name)
+		return nil, fmt.Errorf("%w: pod %s/%s has no address", ErrAsyncJobTargetUnavailable, target.Namespace, target.Name)
 	}
 	return pod, nil
 }
@@ -568,14 +570,14 @@ func (s *inMemoryAsyncJobStore) get(_ context.Context, owner, publicJobID string
 	record, ok := s.records[inMemoryAsyncJobKey(owner, publicJobID)]
 	s.mu.RUnlock()
 	if !ok {
-		return AsyncJobRecord{}, fmt.Errorf("%w: %s", errAsyncJobNotFound, publicJobID)
+		return AsyncJobRecord{}, fmt.Errorf("%w: %s", ErrAsyncJobNotFound, publicJobID)
 	}
 	if record.expired(now) {
 		// Evict on read to prevent unbounded memory growth
 		s.mu.Lock()
 		delete(s.records, inMemoryAsyncJobKey(owner, publicJobID))
 		s.mu.Unlock()
-		return AsyncJobRecord{}, fmt.Errorf("%w: %s", errAsyncJobNotFound, publicJobID)
+		return AsyncJobRecord{}, fmt.Errorf("%w: %s", ErrAsyncJobNotFound, publicJobID)
 	}
 	return record, nil
 }
@@ -848,11 +850,11 @@ func newRedisAsyncJobStore(client redis.Cmdable) *redisAsyncJobStore {
 	}
 }
 
-// newAsyncJobRegistryForClient picks the registry a Server should use. Without
+// NewAsyncJobRegistryForClient picks the registry a Server should use. Without
 // Redis (tests and standalone local development), records live in this process
 // only. Production gateways use the Redis implementation so every replica sees
 // the same records.
-func newAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJobRegistry {
+func NewAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJobRegistry {
 	if client == nil {
 		return newMemoryAsyncJobRegistry(pods)
 	}
@@ -874,18 +876,6 @@ func asyncJobStoreClient(client *redis.Client) *redis.Client {
 	options.MaxRetries = -1
 	options.ContextTimeoutEnabled = true
 	return redis.NewClient(&options)
-}
-
-// asyncJobRegistry returns the Server's registry, building it on first use. The
-// lazy path exists for Servers assembled as struct literals (tests, and any
-// caller that does not go through NewServerWithOptions).
-func (s *Server) asyncJobRegistry() AsyncJobRegistry {
-	s.asyncJobsOnce.Do(func() {
-		if s.asyncJobs == nil {
-			s.asyncJobs = newAsyncJobRegistryForClient(s.redisClient, s.cache)
-		}
-	})
-	return s.asyncJobs
 }
 
 func (s *redisAsyncJobStore) put(ctx context.Context, record AsyncJobRecord) error {
@@ -914,13 +904,13 @@ func (s *redisAsyncJobStore) put(ctx context.Context, record AsyncJobRecord) err
 
 func (s *redisAsyncJobStore) get(ctx context.Context, owner, publicJobID string) (AsyncJobRecord, error) {
 	if !isValidPublicJobID(publicJobID) {
-		return AsyncJobRecord{}, fmt.Errorf("%w: %s", errAsyncJobNotFound, publicJobID)
+		return AsyncJobRecord{}, fmt.Errorf("%w: %s", ErrAsyncJobNotFound, publicJobID)
 	}
 	var record AsyncJobRecord
 	err := retryAsyncJobStoreOp(ctx, s.retry, "get", func(ctx context.Context) error {
 		payload, err := s.client.Get(ctx, asyncJobRecordKey(owner, publicJobID)).Bytes()
 		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %s", errAsyncJobNotFound, publicJobID)
+			return fmt.Errorf("%w: %s", ErrAsyncJobNotFound, publicJobID)
 		}
 		if err != nil {
 			return err
@@ -938,7 +928,7 @@ func (s *redisAsyncJobStore) get(ctx context.Context, owner, publicJobID string)
 	// Redis expires the key on its own; the logical check covers the window
 	// between the expiry passing and the eviction landing.
 	if record.expired(s.now()) {
-		return AsyncJobRecord{}, fmt.Errorf("%w: %s", errAsyncJobNotFound, publicJobID)
+		return AsyncJobRecord{}, fmt.Errorf("%w: %s", ErrAsyncJobNotFound, publicJobID)
 	}
 	return record, nil
 }
@@ -980,9 +970,9 @@ func (s *redisAsyncJobStore) listPage(ctx context.Context, owner, jobType string
 	scanned, _ := raw[2].(int64)
 	switch status {
 	case 1:
-		return AsyncJobListPage{}, fmt.Errorf("%w: list cursor", errAsyncJobNotFound)
+		return AsyncJobListPage{}, fmt.Errorf("%w: list cursor", ErrAsyncJobNotFound)
 	case 2:
-		return AsyncJobListPage{}, fmt.Errorf("%w: list scan exhausted after %d candidates", errAsyncJobStoreUnavailable, scanned)
+		return AsyncJobListPage{}, fmt.Errorf("%w: list scan exhausted after %d candidates", ErrAsyncJobStoreUnavailable, scanned)
 	case 0:
 	default:
 		return AsyncJobListPage{}, newAsyncJobInvalidRecordError("unknown list page status %d", status)
@@ -1012,7 +1002,7 @@ func (s *redisAsyncJobStore) listPage(ctx context.Context, owner, jobType string
 
 func (s *redisAsyncJobStore) delete(ctx context.Context, owner, publicJobID string) error {
 	if !isValidPublicJobID(publicJobID) {
-		return fmt.Errorf("%w: %s", errAsyncJobNotFound, publicJobID)
+		return fmt.Errorf("%w: %s", ErrAsyncJobNotFound, publicJobID)
 	}
 	keys := []string{
 		asyncJobRecordKey(owner, publicJobID),
@@ -1058,7 +1048,7 @@ func paginateAsyncJobRecords(records []AsyncJobRecord, options AsyncJobListOptio
 			}
 		}
 		if start < 0 {
-			return AsyncJobListPage{}, fmt.Errorf("%w: list cursor", errAsyncJobNotFound)
+			return AsyncJobListPage{}, fmt.Errorf("%w: list cursor", ErrAsyncJobNotFound)
 		}
 	}
 	if start >= len(records) {
@@ -1115,7 +1105,7 @@ func retryAsyncJobStoreOp(ctx context.Context, policy asyncJobRetryPolicy, op st
 		}
 		// A miss and a rejected record are answers, not failures: they stand even
 		// when the budget happens to have run out at the same moment.
-		if errors.Is(lastErr, errAsyncJobNotFound) || errors.Is(lastErr, errAsyncJobInvalidRecord) {
+		if errors.Is(lastErr, ErrAsyncJobNotFound) || errors.Is(lastErr, ErrAsyncJobInvalidRecord) {
 			return lastErr
 		}
 		// Out of time. Whether the store said so or the deadline fired mid-call,
@@ -1135,13 +1125,13 @@ func retryAsyncJobStoreOp(ctx context.Context, policy asyncJobRetryPolicy, op st
 		}
 		select {
 		case <-opCtx.Done():
-			return fmt.Errorf("%w: %s: %v", errAsyncJobStoreUnavailable, op, lastErr)
+			return fmt.Errorf("%w: %s: %v", ErrAsyncJobStoreUnavailable, op, lastErr)
 		case <-time.After(backoff):
 		}
 	}
 	klog.V(4).InfoS("async job store operation exhausted its retry budget",
 		"op", op, "elapsed", time.Since(started), "error", lastErr)
-	return fmt.Errorf("%w: %s: %v", errAsyncJobStoreUnavailable, op, lastErr)
+	return fmt.Errorf("%w: %s: %v", ErrAsyncJobStoreUnavailable, op, lastErr)
 }
 
 // asyncJobRetryBackoff grows exponentially with jitter so that a Redis failover
@@ -1161,8 +1151,8 @@ func isTransientRedisError(err error) bool {
 	// A nil reply is an answer, not a failure, and the registry's own errors are
 	// decisions that will not change on a second try.
 	if errors.Is(err, redis.Nil) ||
-		errors.Is(err, errAsyncJobNotFound) ||
-		errors.Is(err, errAsyncJobInvalidRecord) {
+		errors.Is(err, ErrAsyncJobNotFound) ||
+		errors.Is(err, ErrAsyncJobInvalidRecord) {
 		return false
 	}
 	// The caller gave up or ran out of time; retrying cannot help it.
