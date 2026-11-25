@@ -39,6 +39,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"go.opentelemetry.io/otel/trace"
@@ -48,6 +49,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
 )
 
 func Test_ValidateRoutingStrategy(t *testing.T) {
@@ -93,13 +95,13 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 func Test_buildEnvoyProxyHeaders(t *testing.T) {
 	headers := []*configPb.HeaderValueOption{}
 
-	headers = buildEnvoyProxyHeaders(headers, "key1", "value1", "key2")
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "key1", "value1", "key2")
 	assert.Equal(t, 0, len(headers))
 
-	headers = buildEnvoyProxyHeaders(headers, "key1", "value1", "key2", "value2")
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "key1", "value1", "key2", "value2")
 	assert.Equal(t, 2, len(headers))
 
-	headers = buildEnvoyProxyHeaders(headers, "key3", "value3")
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "key3", "value3")
 	assert.Equal(t, 3, len(headers))
 }
 
@@ -711,7 +713,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			model: "/models/mock",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
@@ -739,7 +741,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			model: "get-failed",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 				http.On("Get", mock.Anything, "get-failed-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("boom"))
 			},
 			wantErr:     true,
@@ -750,7 +752,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			model: "no-conditions",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
 						RouteStatus: gatewayv1.RouteStatus{
@@ -763,14 +765,14 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 				http.On("Get", mock.Anything, "no-conditions-router", mock.Anything).Return(route, nil)
 			},
 			wantErr:     true,
-			errContains: "does not have valid status",
+			errContains: "httproute: gateway-test/no-conditions-router, does not have valid status",
 		},
 		{
 			name:  "resolved refs not resolved",
 			model: "refs-not-resolved",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
 						RouteStatus: gatewayv1.RouteStatus{
@@ -791,14 +793,14 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 				http.On("Get", mock.Anything, "refs-not-resolved-router", mock.Anything).Return(route, nil)
 			},
 			wantErr:     true,
-			errContains: "object references are not resolved",
+			errContains: "httproute: gateway-test/refs-not-resolved-router, route's object references are not resolved",
 		},
 		{
 			name:  "invalid route status",
 			model: "invalid-model",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
@@ -815,7 +817,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 				http.On("Get", mock.Anything, "invalid-model-router", mock.Anything).Return(route, nil)
 			},
 			wantErr:     true,
-			errContains: "route is not accepted",
+			errContains: "httproute: gateway-test/invalid-model-router, route is not accepted",
 		},
 	}
 
@@ -829,7 +831,8 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 
 			// Create test server with mock client
 			s := &Server{
-				gatewayClient: mockGW,
+				gatewayClient:    mockGW,
+				gatewayNamespace: "gateway-test",
 			}
 
 			// Run test
@@ -851,6 +854,62 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPRouteStatus_ParentReadiness(t *testing.T) {
+	const model = "model"
+	parent := func(conditions ...metav1.Condition) gatewayv1.RouteParentStatus {
+		return gatewayv1.RouteParentStatus{Conditions: conditions}
+	}
+	accepted := metav1.Condition{
+		Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue, Reason: "ControllerAccepted",
+	}
+	resolved := metav1.Condition{
+		Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionTrue, Reason: "ReferencesVerified",
+	}
+	pending := metav1.Condition{Type: resolved.Type, Status: metav1.ConditionUnknown, Reason: "Pending"}
+	notFound := metav1.Condition{Type: resolved.Type, Status: metav1.ConditionFalse, Reason: "BackendNotFound"}
+	programmed := metav1.Condition{Type: "Programmed", Status: metav1.ConditionTrue, Reason: "Programmed"}
+
+	for _, tc := range []struct {
+		name    string
+		parents []gatewayv1.RouteParentStatus
+		wantErr string
+	}{
+		{name: "no parents", wantErr: "no parent reports"},
+		{
+			name:    "unrelated condition",
+			parents: []gatewayv1.RouteParentStatus{parent(programmed)},
+			wantErr: "no parent reports",
+		}, {
+			name:    "conditions on different parents",
+			parents: []gatewayv1.RouteParentStatus{parent(accepted), parent(resolved)},
+			wantErr: "no parent reports",
+		}, {
+			name:    "unknown condition",
+			parents: []gatewayv1.RouteParentStatus{parent(accepted, pending)},
+			wantErr: "Pending",
+		}, {
+			name: "one ready parent",
+			parents: []gatewayv1.RouteParentStatus{
+				parent(accepted, notFound), parent(), parent(accepted, resolved), parent(),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "aibrix-system", Name: utils.ModelRouterName(model)},
+			}
+			route.Status.Parents = tc.parents
+			s := &Server{gatewayClient: gatewayfake.NewSimpleClientset(route)}
+			err := s.validateHTTPRouteStatus(context.Background(), model)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestValidateHTTPRouteStatus_StandaloneModeSkipsValidation(t *testing.T) {
 	s := &Server{gatewayClient: nil}
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "any-model"))
@@ -868,9 +927,11 @@ func TestValidateHTTPRouteStatus_CachesResult(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:   string(gatewayv1.RouteConditionAccepted),
 						Reason: string(gatewayv1.RouteReasonAccepted),
+						Status: metav1.ConditionTrue,
 					}, {
 						Type:   string(gatewayv1.RouteConditionResolvedRefs),
 						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+						Status: metav1.ConditionTrue,
 					}},
 				}},
 			},
@@ -883,6 +944,7 @@ func TestValidateHTTPRouteStatus_CachesResult(t *testing.T) {
 
 	s := &Server{
 		gatewayClient:     mockGW,
+		gatewayNamespace:  "aibrix-system",
 		httprouteCacheTTL: 30 * time.Second,
 	}
 
@@ -906,9 +968,11 @@ func TestValidateHTTPRouteStatus_CacheExpiry(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:   string(gatewayv1.RouteConditionAccepted),
 						Reason: string(gatewayv1.RouteReasonAccepted),
+						Status: metav1.ConditionTrue,
 					}, {
 						Type:   string(gatewayv1.RouteConditionResolvedRefs),
 						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+						Status: metav1.ConditionTrue,
 					}},
 				}},
 			},
@@ -921,6 +985,7 @@ func TestValidateHTTPRouteStatus_CacheExpiry(t *testing.T) {
 
 	s := &Server{
 		gatewayClient:     mockGW,
+		gatewayNamespace:  "aibrix-system",
 		httprouteCacheTTL: 1 * time.Millisecond,
 	}
 
@@ -954,9 +1019,11 @@ func TestValidateHTTPRouteStatus_ContextErrorNotCached(t *testing.T) {
 							Conditions: []metav1.Condition{{
 								Type:   string(gatewayv1.RouteConditionAccepted),
 								Reason: string(gatewayv1.RouteReasonAccepted),
+								Status: metav1.ConditionTrue,
 							}, {
 								Type:   string(gatewayv1.RouteConditionResolvedRefs),
 								Reason: string(gatewayv1.RouteReasonResolvedRefs),
+								Status: metav1.ConditionTrue,
 							}},
 						}},
 					},
@@ -967,6 +1034,7 @@ func TestValidateHTTPRouteStatus_ContextErrorNotCached(t *testing.T) {
 
 			s := &Server{
 				gatewayClient:     mockGW,
+				gatewayNamespace:  "aibrix-system",
 				httprouteCacheTTL: 30 * time.Second,
 			}
 
@@ -997,9 +1065,11 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:   string(gatewayv1.RouteConditionAccepted),
 						Reason: string(gatewayv1.RouteReasonAccepted),
+						Status: metav1.ConditionTrue,
 					}, {
 						Type:   string(gatewayv1.RouteConditionResolvedRefs),
 						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+						Status: metav1.ConditionTrue,
 					}},
 				}},
 			},
@@ -1010,6 +1080,7 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 
 	s := &Server{
 		gatewayClient:     mockGW,
+		gatewayNamespace:  "aibrix-system",
 		httprouteCacheTTL: 30 * time.Second,
 		httprouteErrorTTL: time.Millisecond,
 	}
@@ -1023,34 +1094,46 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 	mockHTTP.AssertExpectations(t)
 }
 
+func TestValidateHTTPRouteStatus_EmptyParentsRecover(t *testing.T) {
+	checkHTTPRouteErrorExpiry(t, &gatewayv1.HTTPRoute{})
+}
+
 func TestValidateHTTPRouteStatus_UnresolvedRouteErrorExpires(t *testing.T) {
+	invalidRoute := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
+			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionFalse, Reason: "BackendNotFound",
+			}}}},
+		}},
+	}
+	checkHTTPRouteErrorExpiry(t, invalidRoute)
+}
+
+func checkHTTPRouteErrorExpiry(t *testing.T, invalidRoute *gatewayv1.HTTPRoute) {
+	t.Helper()
 	mockGW := &MockGatewayClient{}
 	mockGWV1 := &MockGatewayV1Client{}
 	mockHTTP := &MockHTTPRouteClient{}
 	mockGW.On("GatewayV1").Return(mockGWV1).Twice()
 	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
 
-	invalidRoute := &gatewayv1.HTTPRoute{
-		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
-			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
-				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: "BackendNotFound",
-			}}}},
-		}},
-	}
 	validRoute := &gatewayv1.HTTPRoute{
 		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
 			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
-				Type: string(gatewayv1.RouteConditionAccepted), Reason: string(gatewayv1.RouteReasonAccepted),
+				Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue, Reason: string(gatewayv1.RouteReasonAccepted),
 			}, {
-				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: string(gatewayv1.RouteReasonResolvedRefs),
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionTrue, Reason: string(gatewayv1.RouteReasonResolvedRefs),
 			}}}},
 		}},
 	}
 	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(invalidRoute, nil).Once()
 	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(validRoute, nil).Once()
 
-	s := &Server{gatewayClient: mockGW, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
+	s := &Server{gatewayClient: mockGW, gatewayNamespace: "aibrix-system", httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
 	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
+	entry, ok := s.httprouteCache.Load("unresolved-route")
+	require.True(t, ok, "pending status should use the error cache")
+	require.Error(t, entry.(httpRouteCacheEntry).err)
 	time.Sleep(5 * time.Millisecond)
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
 
@@ -1082,7 +1165,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 		mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
 		mockHTTP.On("Get", mock.Anything, "m-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("httproute boom"))
 
-		s := &Server{gatewayClient: mockGW}
+		s := &Server{gatewayClient: mockGW, gatewayNamespace: "aibrix-system"}
 		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 401, "m", "rid", "Incorrect API key provided")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
@@ -1090,7 +1173,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 			var parsed map[string]any
 			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
 			errObj := parsed["error"].(map[string]any)
-			assert.Equal(t, ErrorTypeAuthentication, errObj["type"])
+			assert.Equal(t, errresp.ErrorTypeAuthentication, errObj["type"])
 			assert.Equal(t, ErrorCodeInvalidAPIKey, errObj["code"])
 			assert.Contains(t, errObj["message"].(string), "Incorrect API key provided")
 			assert.Contains(t, errObj["message"].(string), "httproute boom")
@@ -1104,7 +1187,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 
 	t.Run("explicit routing skips httproute on error path", func(t *testing.T) {
 		mockGW := &MockGatewayClient{}
-		s := &Server{gatewayClient: mockGW}
+		s := &Server{gatewayClient: mockGW, gatewayNamespace: "aibrix-system"}
 		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
 		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 404, "m", "rid", `{"detail":"Not Found"}`)
 		ir := out.GetImmediateResponse()
@@ -1126,7 +1209,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 			var parsed map[string]any
 			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
 			errObj := parsed["error"].(map[string]any)
-			assert.Equal(t, ErrorTypeOverloaded, errObj["type"])
+			assert.Equal(t, errresp.ErrorTypeOverloaded, errObj["type"])
 			assert.Equal(t, ErrorCodeServiceUnavailable, errObj["code"])
 		}
 	})
@@ -1176,7 +1259,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
 			errObj := parsed["error"].(map[string]any)
 			assert.Equal(t, "plain text failure", errObj["message"])
-			assert.Equal(t, ErrorTypeInvalidRequest, errObj["type"])
+			assert.Equal(t, errresp.ErrorTypeInvalidRequest, errObj["type"])
 		}
 	})
 

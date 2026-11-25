@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 )
 
 // ModelListGate serves a 503 while the gateway cache is initially syncing,
@@ -75,7 +77,7 @@ func (g *ModelListGate) handleListModels(w http.ResponseWriter, r *http.Request)
 func writeModelListUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = io.WriteString(w, generateErrorMessageWithHTTPCode(
+	_, _ = io.WriteString(w, errresp.GenerateErrorMessageWithHTTPCode(
 		"model discovery is unavailable", http.StatusServiceUnavailable,
 		ErrorCodeServiceUnavailable, ""))
 }

@@ -51,6 +51,9 @@ type PodInfo struct {
 
 	// Models list from the internal registry
 	Models []string
+
+	// Ready is the pod's Ready condition
+	Ready bool
 }
 
 // SyncIndexProvider provides access to sync indexer functionality.

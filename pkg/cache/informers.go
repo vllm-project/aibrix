@@ -133,10 +133,24 @@ func (c *Store) addPod(obj interface{}) {
 		return
 	}
 
+	// Lifecycle listeners are told after c.mu is released: this defer is registered
+	// before the Lock below, so it runs after the deferred Unlock. A listener call
+	// made under the lock would block every other pod/model event behind the
+	// listener, and would deadlock if the listener called back into the Cache.
+	var listeners []PodLifecycleListener
+	defer func() {
+		for _, l := range listeners {
+			l.OnPodFlakyReAdd(pod)
+		}
+	}()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	metaPod := c.addPodLocked(pod)
+	metaPod, flakyReAdd := c.addPodLocked(pod, c.reconcileModelClaimMetrics(nil, pod, modelClaims))
+	if flakyReAdd {
+		listeners = c.podLifecycleListenersLocked()
+	}
 	if ok {
 		c.addPodAndModelMappingLocked(metaPod, modelName)
 	}
@@ -179,6 +193,15 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 		return // No model information to track in either old or new pod
 	}
 
+	// See the matching defer in addPod: it runs after the Unlock below, on every
+	// return path, so listeners never run under c.mu.
+	var listeners []PodLifecycleListener
+	defer func() {
+		for _, l := range listeners {
+			l.OnPodFlakyReAdd(newPod)
+		}
+	}()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -196,11 +219,12 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 			c.dropModelIfEmptyLocked(modelName)
 		}
 	}()
+	var oldMetaPod *Pod
 	if oldOk || existed {
-		odlMetaPod := c.deletePodLocked(oldPod.Name, oldPod.Namespace)
-		if odlMetaPod != nil {
-			for _, modelName := range odlMetaPod.Models.Array() {
-				if c.removePodModelMappingLocked(odlMetaPod.Name, odlMetaPod.Namespace, modelName, 1) {
+		oldMetaPod = c.deletePodLocked(oldPod.Name, oldPod.Namespace)
+		if oldMetaPod != nil {
+			for _, modelName := range oldMetaPod.Models.Array() {
+				if c.removePodModelMappingLocked(oldMetaPod.Name, oldMetaPod.Namespace, modelName, 1) {
 					emptiedModels = append(emptiedModels, modelName)
 				}
 			}
@@ -212,6 +236,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldNodeType := oldPod.Labels[nodeType]
 	newNodeType := newPod.Labels[nodeType]
 	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
+		c.reconcileModelClaimMetrics(oldMetaPod, nil, nil)
 		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
 		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
@@ -220,7 +245,10 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 	// Add new mappings if present
 	if newHasModelInfo && !newIsWorker {
-		metaPod := c.addPodLocked(newPod)
+		metaPod, flakyReAdd := c.addPodLocked(newPod, c.reconcileModelClaimMetrics(oldMetaPod, newPod, newModelClaims))
+		if flakyReAdd {
+			listeners = c.podLifecycleListenersLocked()
+		}
 		if newOk {
 			c.addPodAndModelMappingLocked(metaPod, newModelName)
 		}
@@ -232,6 +260,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 			}
 		}
 	} else {
+		c.reconcileModelClaimMetrics(oldMetaPod, nil, nil)
 		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
 		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 	}
@@ -289,6 +318,7 @@ func (c *Store) deletePod(obj interface{}) {
 
 	// delete base model and associated lora models on this pod
 	metaPod := c.deletePodLocked(name, namespace)
+	c.reconcileModelClaimMetrics(metaPod, nil, nil)
 	if metaPod != nil {
 		for _, modelName := range metaPod.Models.Array() {
 			c.deletePodAndModelMappingLocked(name, namespace, modelName, 1)
@@ -396,8 +426,11 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 	c.debugInfo()
 }
 
-// addPodLocked adds/resumes pod into the cache.
-func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
+// addPodLocked adds/resumes pod into the cache. flakyReAdd reports whether this was
+// a genuine flaky re-add (see flakyReAddMinObservedGap) worth notifying
+// PodLifecycleListeners about; callers fire that notification themselves, after
+// releasing c.mu -- see addPod/updatePod.
+func (c *Store) addPodLocked(pod *v1.Pod, claimMetrics map[string]*modelClaimMetricsTarget) (metaPod *Pod, flakyReAdd bool) {
 	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	if c.bufferPod == nil {
 		c.bufferPod = &Pod{
@@ -407,6 +440,8 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	} else {
 		c.bufferPod.Pod = pod
 	}
+
+	c.bufferPod.claimMetrics = claimMetrics
 
 	// A pod key that was deleted moments ago (a transient health-check flap on a
 	// busy pod, or the delete+re-add updatePod does for every in-place K8s pod
@@ -432,17 +467,21 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 
 	resumed := false
 	if snap, ok := c.recentlyDeletedPods.LoadAndDelete(key); ok {
-		if time.Since(snap.deletedAt) < recentlyDeletedPodGracePeriod &&
+		gap := time.Since(snap.deletedAt)
+		if gap < recentlyDeletedPodGracePeriod &&
 			snap.podIP != "" && snap.podIP == pod.Status.PodIP {
 			c.bufferPod.runningRequests = atomic.LoadInt32(&snap.runningRequests)
 			c.bufferPod.completedRequests = atomic.LoadInt64(&snap.completedRequests)
 			c.bufferPod.completedOutputTokens = atomic.LoadInt64(&snap.completedOutputTokens)
+			c.bufferPod.completedOutputBusyNanos = atomic.LoadInt64(&snap.completedOutputBusyNanos)
+			c.bufferPod.completedOutputRequests = atomic.LoadInt64(&snap.completedOutputRequests)
 			c.bufferPod.pendingLoadUtilization.Store(snap.pendingLoadUtilization.Load())
 			c.bufferPod.statsGeneration = snap.statsGeneration
 			// A same-IP resume means the pod never stopped serving, so its ramp clock
 			// (see readySince in pod.go) continues too.
 			c.bufferPod.readySince.Store(snap.readySince.Load())
 			resumed = true
+			flakyReAdd = gap >= flakyReAddMinObservedGap
 		}
 	}
 	if !resumed {
@@ -464,19 +503,23 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	metaPod, loaded := c.metaPods.LoadOrStore(key, c.bufferPod)
 	if !loaded {
 		c.bufferPod = nil
+		metaPod.gatewayMetricLabelValues()
 	} else {
 		// An entry already existed, so this buffer wasn't consumed and will
 		// be reused for an unrelated pod on some future call -- clear any
 		// counters just seeded onto it so they don't leak into that pod.
 		// lastPodReadySince is not rolled back: it reflects a genuine add attempt either way.
+		c.bufferPod.claimMetrics = nil
 		c.bufferPod.runningRequests = 0
 		c.bufferPod.completedRequests = 0
 		c.bufferPod.completedOutputTokens = 0
+		c.bufferPod.completedOutputBusyNanos = 0
+		c.bufferPod.completedOutputRequests = 0
 		c.bufferPod.pendingLoadUtilization.Store(0)
 		c.bufferPod.statsGeneration = 0
 		c.bufferPod.readySince.Store(0)
 	}
-	return metaPod
+	return metaPod, flakyReAdd
 }
 
 // storeIfGreater raises *addr to val if val is larger. A plain Store could let an earlier
@@ -551,11 +594,33 @@ type deletedPodSnapshot struct {
 	pendingLoadUtilization atomic_ext.Float64
 	readySince             atomic.Int64 // see Pod.readySince
 	deletedAt              time.Time
+
+	completedOutputBusyNanos int64 // atomic; see Pod.completedOutputBusyNanos
+	completedOutputRequests  int64 // atomic; see Pod.completedOutputRequests
 }
 
 // recentlyDeletedPodGracePeriod bounds how long a deletedPodSnapshot survives
 // waiting for a matching re-add before it's dropped as a genuine deletion.
 const recentlyDeletedPodGracePeriod = 60 * time.Second
+
+// flakyReAddMinObservedGap is the minimum time a pod key must have actually been
+// absent from metaPods before its reappearance is treated as a genuine flaky
+// re-add worth notifying PodLifecycleListeners about (see addPodLocked). The pod
+// informer's UpdateFunc handler (updatePod) performs its own delete-then-add pair
+// for every in-place K8s pod update -- creating and consuming a deletedPodSnapshot
+// within a single synchronous call, microseconds apart -- so without this floor
+// every routine status update on a live, healthy pod would be misreported as a
+// flap. A genuine flap (e.g. a watch gap or a service-discovery blip) necessarily
+// spans a separate informer callback invocation, comfortably above this threshold.
+const flakyReAddMinObservedGap = 250 * time.Millisecond
+
+// podLifecycleListenersLocked returns a copy of the registered listeners. Caller
+// must hold c.mu: RegisterPodLifecycleListener appends under it, and the copy is
+// iterated after the lock is released, where reading the slice directly would
+// race with a concurrent registration.
+func (c *Store) podLifecycleListenersLocked() []PodLifecycleListener {
+	return append([]PodLifecycleListener(nil), c.podLifecycleListeners...)
+}
 
 func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 	key := utils.GeneratePodKey(podNamespace, podName)
@@ -578,6 +643,8 @@ func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 			deletedAt:         time.Now(),
 		}
 		snap.completedOutputTokens = atomic.LoadInt64(&metaPod.completedOutputTokens)
+		snap.completedOutputBusyNanos = atomic.LoadInt64(&metaPod.completedOutputBusyNanos)
+		snap.completedOutputRequests = atomic.LoadInt64(&metaPod.completedOutputRequests)
 		snap.pendingLoadUtilization.Store(metaPod.pendingLoadUtilization.Load())
 		snap.readySince.Store(metaPod.readySince.Load())
 		c.recentlyDeletedPods.Store(key, snap)

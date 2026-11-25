@@ -178,8 +178,13 @@ return newVal
 // currently-live gateways (see readPodRunningRequests) -- unlike a single shared
 // integer INCR/DECR'd by every gateway, a dead gateway's field can be identified and
 // excluded independently of whatever other gateways keep doing to the same key.
+// runningRequestsKeyForPodKey returns the Redis key for podKey's running-requests hash.
+func runningRequestsKeyForPodKey(podKey string) string {
+	return runningRequestsKeyPrefix + ":" + podKey
+}
+
 func runningRequestsKey(namespace, name string) string {
-	return runningRequestsKeyPrefix + ":" + utils.GeneratePodKey(namespace, name)
+	return runningRequestsKeyForPodKey(utils.GeneratePodKey(namespace, name))
 }
 
 // incrPodRunningRequests applies this gateway's +1 to pod (namespace, name)'s
@@ -771,21 +776,28 @@ func (c *Store) prunableGatewaysCutoffMillis() string {
 // here. Callers must re-check candidates against a much longer window before
 // deleting anything -- see flushPendingRunningRequestsPrunes.
 func sumLiveFields(fields map[string]string, live map[string]struct{}) (total int64, excluded []string) {
+	total, _, excluded = sumLiveFieldsAndOther(fields, live)
+	return total, excluded
+}
+
+// sumLiveFieldsAndOther returns the saturated live count and saturated count from
+// other live gateways in one pass.
+func sumLiveFieldsAndOther(fields map[string]string, live map[string]struct{}) (total, otherPositive int64, excluded []string) {
 	for gatewayID, valStr := range fields {
 		if _, ok := live[gatewayID]; !ok {
 			excluded = append(excluded, gatewayID)
 			continue
 		}
 		n, err := strconv.ParseInt(valStr, 10, 64)
-		if err != nil {
+		if err != nil || n <= 0 {
 			continue
 		}
-		if n < 0 {
-			n = 0
+		total = addSaturatedInt64(total, n)
+		if gatewayID != runningRequestsGatewayInstanceID {
+			otherPositive = addSaturatedInt64(otherPositive, n)
 		}
-		total += n
 	}
-	return total, excluded
+	return total, otherPositive, excluded
 }
 
 // overlaySelfRunningRequests replaces this gateway's own field in fields (creating it

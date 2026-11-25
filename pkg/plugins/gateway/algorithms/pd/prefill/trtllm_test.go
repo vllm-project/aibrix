@@ -98,8 +98,8 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			// Even an unrelated rid must never trigger SGLang's abort endpoint.
 			ctx.SetPDRequestID("not-a-trt-abort-id")
 			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-			exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
-			exec.tokenLoad.AcquirePrefill(ctx.RequestID, podKey, 100)
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
+			exec.tokenLoad.AcquirePrefill(ctx.TrackerKey(), podKey, 100)
 			require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 			if class == pd.PrefillFailureCanceled {
 				select {
@@ -125,8 +125,10 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			// Every class is terminal under reset-after-headers, bad_response
 			// included, so none of them may look like a prefill success.
 			assert.True(t, ctx.PrefillSucceededAt().IsZero())
-			active, _ := exec.tokenLoad.GetLoad(podKey)
-			assert.Zero(t, active)
+			require.Eventually(t, func() bool {
+				active, _ := exec.tokenLoad.GetLoad(podKey)
+				return active == 0
+			}, 5*time.Second, 100*time.Millisecond)
 			if class == pd.PrefillFailureCanceled || class == pd.PrefillFailureTimeout {
 				select {
 				case <-disconnected:
@@ -158,7 +160,7 @@ func TestTRTAsyncFailureAfterContextReuse(t *testing.T) {
 	ctx.Engine = pd.EngineTRTLLM
 	pod := failFastPod(t, "ctx", strings.TrimPrefix(srv.URL, "http://"))
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
+	exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
 	require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 	select {
 	case <-started:

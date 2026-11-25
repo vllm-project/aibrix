@@ -23,7 +23,7 @@ Media URLs are plain strings rather than pydantic ``AnyUrl``: the proxy also
 accepts tos://, s3://, gs://, hf://, file:// and ``data:`` URIs, and
 ``AnyUrl`` would reject or silently normalise them.  URL content is
 rewritten to a local ``file://`` path by the proxy before forwarding when
-the engine can read local files (see ``proxy/engine_spec.py``).
+the engine can read local files (see ``proxy/runtime/engine_spec.py``).
 
 Reference: vLLM tag ``v0.33.0rc1``, SGLang tag ``v0.5.22``,
 openai-python tag ``v3.41.0``.

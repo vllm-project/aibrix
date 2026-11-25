@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -335,10 +336,11 @@ func suppressKlogForBenchmark(b *testing.B) {
 }
 
 // BenchmarkFilterPrefillDecodePods times one full PD selection for a request:
-// policy Prepare (outside selectMu) plus everything the router does while it
-// holds selectMu (imbalance checks, prefill and decode scoring, final pairing,
-// tracker registration). With least_request the Prepare step is trivial, so
-// that sub-benchmark is effectively the cost of the selectMu critical section.
+// policy Prepare (outside the model's selection lock) plus everything the
+// router does while it holds the stripe lock (imbalance checks, prefill and
+// decode scoring, final pairing, tracker registration). With least_request the
+// Prepare step is trivial, so that sub-benchmark is effectively the cost of
+// the selection critical section.
 // 4 rolesets x 2 replicas = 8 prefill + 8 decode pods, all equally loaded so
 // no imbalance fast path fires and every pod is scored.
 func BenchmarkFilterPrefillDecodePods(b *testing.B) {
@@ -447,4 +449,80 @@ func BenchmarkFilterPrefillDecodePods(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkFilterPrefillDecodePods_ParallelMultiModel measures concurrent PD
+// selection throughput across multiple independent models sharing one pdRouter.
+func BenchmarkFilterPrefillDecodePods_ParallelMultiModel(b *testing.B) {
+	suppressKlogForBenchmark(b)
+
+	const (
+		modelCount   = 8
+		rolesetCount = 8
+		replicaCount = 4
+	)
+
+	modelNames := make([]string, modelCount)
+	modelPods := make([][]*v1.Pod, modelCount)
+	allPods := make([]*v1.Pod, 0, modelCount*rolesetCount*replicaCount*2)
+	podMetrics := make(map[string]map[string]metrics.MetricValue, modelCount*rolesetCount*replicaCount)
+
+	for m := 0; m < modelCount; m++ {
+		modelNames[m] = fmt.Sprintf("benchmark-model-%d", m)
+		prefills := benchmarkPDPods(VLLMEngine, "prefill", rolesetCount, replicaCount)
+		decodes := benchmarkPDPods(VLLMEngine, "decode", rolesetCount, replicaCount)
+		for _, p := range prefills {
+			p.Name = fmt.Sprintf("m%d-%s", m, p.Name)
+		}
+		for _, p := range decodes {
+			p.Name = fmt.Sprintf("m%d-%s", m, p.Name)
+			podMetrics[p.Name] = map[string]metrics.MetricValue{
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 2},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 512},
+				metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
+			}
+		}
+		ready := append(append([]*v1.Pod{}, prefills...), decodes...)
+		modelPods[m] = ready
+		allPods = append(allPods, ready...)
+	}
+
+	c := cache.NewWithPodsMetricsForTest(allPods, modelNames[0], podMetrics)
+	tracker := pd.NewPrefillRequestTracker()
+	pending := pd.NewPendingDecodeTracker()
+	router := &pdRouter{
+		cache:                 c,
+		prefillPolicy:         pd.NewLeastRequestPrefillPolicy(),
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pending,
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+		selectionCounts:       map[string]int64{},
+	}
+
+	var workerSeq atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		w := workerSeq.Add(1) - 1
+		m := int(w % modelCount)
+		model := modelNames[m]
+		ready := modelPods[m]
+		var iter uint64
+		for pb.Next() {
+			iter++
+			reqID := fmt.Sprintf("bench-mm-%d-%d", w, iter)
+			ctx := types.NewRoutingContext(context.Background(), RouterPD, model, "hello", reqID, "bench-user")
+			ctx.Engine = VLLMEngine
+			prefillPod, decodePod, err := router.filterPrefillDecodePods(ctx, ready)
+			if err != nil {
+				b.Fatalf("filterPrefillDecodePods: %v", err)
+			}
+			if prefillPod == nil || decodePod == nil {
+				b.Fatal("filterPrefillDecodePods returned a nil pod")
+			}
+			tracker.RemovePrefillRequest(reqID)
+			pending.RemovePendingDecode(reqID)
+			ctx.Delete()
+		}
+	})
 }

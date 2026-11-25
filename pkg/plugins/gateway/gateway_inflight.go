@@ -23,16 +23,20 @@ import (
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"go.opentelemetry.io/otel/attribute"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// errReplicaInflightExceeded is returned by selectTargetPod when every routable
-// replica is already at its config profile's requestsInflight cap.
-var errReplicaInflightExceeded = errors.New("all replicas have reached inflight limit")
+// errReplicaInflightExceeded is returned by selectTargetPod when every pod it considered is
+// already at its config profile's requestsInflight cap. The considered set is the candidate set
+// when the candidate stage narrowed it, and the ready set otherwise.
+var errReplicaInflightExceeded = errors.New("all considered replicas have reached inflight limit")
 
 func replicaInflightLimit(routingCtx *types.RoutingContext) int64 {
 	if routingCtx == nil || routingCtx.ConfigProfile == nil {
@@ -73,7 +77,7 @@ func (s *Server) enforceReplicaInflight(ctx context.Context, model string, routi
 	if !s.admitReplicaInflight(routingCtx, pod, limit) {
 		klog.InfoS("replica_inflight_exceeded", "requestID", routingCtx.RequestID, "model", model,
 			"targetPod", pod.Name, "limit", limit, "reason", "replica_at_capacity")
-		return replicaInflightExceededResponse(model, limit)
+		return withRoutingResponseHeaders(replicaInflightExceededResponse(model, limit), routingCtx, routingCtx.RequestID)
 	}
 	return nil
 }
@@ -135,9 +139,9 @@ func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router 
 }
 
 func replicaInflightExceededResponse(model string, limit int64) *extProcPb.ProcessingResponse {
-	return buildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
+	return errresp.BuildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
 		fmt.Sprintf("model: %v has exceeded replica inflight limit: %v", model, limit),
-		ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
+		errresp.ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
 		HeaderErrorReplicaInflightExceeded, "true")
 }
 
@@ -173,4 +177,37 @@ func (s *Server) filterSaturatedReplicaInflight(routeCtx *types.RoutingContext, 
 		}
 	}
 	return kept
+}
+
+// narrowToInflightCapacity drops the pods already at the per-replica cap and reports
+// errReplicaInflightExceeded when none is left. scope names the set being filtered
+// (inflight.InflightScopeFleet or inflight.InflightScopeCandidates).
+//
+// For non-exclusive strategies selectTargetPod runs it on the candidate set, so the read it
+// performs is the bounded one; it is the first reader of the per-decision snapshot, so whatever
+// the candidate stage kept is what the rest of the decision reuses. Filtering before
+// SelectCandidates reads every ready pod and leaves the stage nothing to save (#3463).
+func (s *Server) narrowToInflightCapacity(routeCtx *types.RoutingContext, pods []*v1.Pod, scope string) ([]*v1.Pod, error) {
+	limit := replicaInflightLimit(routeCtx)
+	if limit <= 0 {
+		return pods, nil
+	}
+	kept := s.filterSaturatedReplicaInflight(routeCtx, pods, limit)
+	if len(kept) > 0 {
+		return kept, nil
+	}
+	// Every pod considered is at the cap. A full-fleet fallback would read every ready
+	// pod at the load where Redis is hottest, and a second K-pod sample would miss this
+	// decision's snapshot, so keep the existing 429 (#3463). The span records how many
+	// pods were considered, and the counter records which set that was, so a sampled-set
+	// rejection can be told from a fleet-wide one after the fact: ready_pods, set at the
+	// top of selectTargetPod, is the fleet.
+	inflight.RecordInflightRejection(routeCtx.Model, scope)
+	if routeCtx.Span != nil {
+		routeCtx.Span.SetAttributes(
+			attribute.Int("inflight_cap", int(limit)),
+			attribute.Int("inflight_considered_pods", len(pods)),
+		)
+	}
+	return nil, errReplicaInflightExceeded
 }

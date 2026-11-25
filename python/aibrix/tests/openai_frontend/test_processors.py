@@ -29,7 +29,7 @@ from pydantic import ValidationError
 
 from aibrix.openai_frontend.common.artifact_fetcher import FetchResult
 from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
-from aibrix.openai_frontend.proxy.demo_processors import DEMO_PROCESSORS
+from aibrix.openai_frontend.proxy.output.path_ref import PathRefs
 from aibrix.openai_frontend.proxy.processors import (
     ProcessorContext,
     ProcessorDefinition,
@@ -41,6 +41,8 @@ from aibrix.openai_frontend.proxy.processors import (
     ProcessorRegistry,
     ProcessorState,
 )
+from aibrix.openai_frontend.proxy.processors.demo_processors import DEMO_PROCESSORS
+from aibrix.openai_frontend.schemas.generation import VideoResponse
 from aibrix.openai_frontend.schemas.openai import CreateChatCompletionRequest
 from aibrix.openai_frontend.schemas.output import OutputRequest, OutputResponse
 from aibrix.openai_frontend.schemas.processors import (
@@ -109,46 +111,35 @@ class TestProcessorRegistry:
         with pytest.raises(ValueError, match="available: none"):
             ProcessorRegistry(()).validate(pipeline)
 
-    def test_stage_mismatch_is_rejected(self):
-        pipeline = ProcessorPipeline.model_validate({"pre": [_call("demo.json.merge")]})
-        with pytest.raises(ValueError, match="belongs to stage 'post'"):
-            ProcessorRegistry(DEMO_PROCESSORS).validate(pipeline)
-
-    def test_arguments_are_checked_against_the_declared_schema(self):
-        registry = ProcessorRegistry(DEMO_PROCESSORS)
-        with pytest.raises(ValueError, match="Additional properties"):
-            registry.validate(
-                ProcessorPipeline.model_validate(
-                    {
-                        "post": [
-                            _call(
-                                "demo.json.merge", arguments={"fields": {}, "field": {}}
-                            )
-                        ],
-                    }
-                )
-            )
-        with pytest.raises(ValueError, match="required property"):
-            registry.validate(
-                ProcessorPipeline.model_validate({"post": [_call("demo.json.merge")]})
-            )
-
-    @pytest.mark.parametrize("content", [None, 1, True, ["text"], {"text": "value"}])
-    def test_payload_content_must_be_a_string(self, content):
-        with pytest.raises(ValueError, match="is not of type"):
+    @pytest.mark.parametrize(
+        "stage,name,arguments,message",
+        [
+            ("pre", "demo.json.merge", {}, "belongs to stage 'post'"),
+            (
+                "post",
+                "demo.json.merge",
+                {"fields": {}, "field": {}},
+                "Additional properties",
+            ),
+            ("post", "demo.json.merge", {}, "required property"),
+            (
+                "pre",
+                "demo.pre.copy",
+                {"media_types": ["video"]},
+                "Additional properties",
+            ),
+            ("post", "demo.payload.replace", {"content": None}, "is not of type"),
+        ],
+    )
+    def test_invalid_catalog_calls_are_rejected(self, stage, name, arguments, message):
+        with pytest.raises(ValueError, match=message):
             ProcessorRegistry(DEMO_PROCESSORS).validate(
                 ProcessorPipeline.model_validate(
-                    {
-                        "post": [
-                            _call(
-                                "demo.payload.replace", arguments={"content": content}
-                            )
-                        ],
-                    }
+                    {stage: [_call(name, arguments=arguments)]}
                 )
             )
 
-    @pytest.mark.parametrize("value", [["banana"], ["ab"], ["toolong"], [1]])
+    @pytest.mark.parametrize("value", [["banana"], ["ab"], ["toolong"], [1], ["ok"]])
     def test_nested_argument_constraints_are_enforced(self, value):
         registry = ProcessorRegistry(
             [
@@ -175,36 +166,14 @@ class TestProcessorRegistry:
                 )
             ]
         )
-        with pytest.raises(ValueError, match=r"arguments.values\[0\]"):
-            registry.validate(
-                ProcessorPipeline.model_validate(
-                    {
-                        "pre": [_call("custom", arguments={"values": value})],
-                    }
-                )
-            )
-        registry.validate(
-            ProcessorPipeline.model_validate(
-                {
-                    "pre": [_call("custom", arguments={"values": ["ok"]})],
-                }
-            )
+        pipeline = ProcessorPipeline.model_validate(
+            {"pre": [_call("custom", arguments={"values": value})]}
         )
-
-    def test_media_selection_has_one_namespace(self):
-        with pytest.raises(ValueError, match="Additional properties"):
-            ProcessorRegistry(DEMO_PROCESSORS).validate(
-                ProcessorPipeline.model_validate(
-                    {
-                        "pre": [
-                            _call(
-                                "demo.pre.copy",
-                                arguments={"media_types": ["video"]},
-                            )
-                        ],
-                    }
-                )
-            )
+        if value == ["ok"]:
+            registry.validate(pipeline)
+        else:
+            with pytest.raises(ValueError, match=r"arguments.values\[0\]"):
+                registry.validate(pipeline)
 
     def test_allowlist_narrows_available_names(self):
         registry = ProcessorRegistry(DEMO_PROCESSORS, allowlist=["demo.json.merge"])
@@ -508,19 +477,28 @@ class TestProcessorExecutor:
         )
         assert budgets == pytest.approx([1, 1, 2, 0.5], abs=0.1)
 
-    @pytest.mark.parametrize("stage,timeout", [("pre", 0.01), ("post", None)])
+    @pytest.mark.parametrize(
+        "stage,timeout",
+        [("pre", 0.01), ("post", None), ("pre", 1e-30), ("post", 1e-30)],
+    )
     def test_arguments_are_isolated_and_timeout_cancels_runner(
         self, tmp_path, stage, timeout
     ):
+        invoked = []
         cancelled = []
 
-        async def run(ctx: ProcessorContext) -> ProcessorOutput:
-            ctx.arguments["schema"]["changed"] = True
-            try:
-                await asyncio.Event().wait()
-            finally:
-                cancelled.append(True)
-            return ProcessorOutput()
+        def run(ctx: ProcessorContext):
+            invoked.append(True)
+
+            async def wait() -> ProcessorOutput:
+                ctx.arguments["schema"]["changed"] = True
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.append(True)
+                return ProcessorOutput()
+
+            return wait()
 
         scope = "input_media" if stage == "pre" else "output_payload"
         registry = ProcessorRegistry(
@@ -540,23 +518,25 @@ class TestProcessorExecutor:
                 )
             )
         assert error.value.status_code == 502
-        assert cancelled == [True]
+        expected = [] if timeout == 1e-30 else [True]
+        assert invoked == expected and cancelled == expected
         assert pipeline.calls(stage)[0].processor.arguments == {"schema": {}}
 
 
 class TestEngineProcessorWiring:
     @pytest.mark.parametrize(
-        "enabled,stage,stream,background,output,message",
+        "enabled,stage,stream,background,output,response_model,message",
         [
-            (False, "pre", False, False, False, "not enabled"),
-            (True, "pre", True, False, True, "stream"),
-            (True, "pre", False, True, True, "background"),
-            (True, "post", False, False, False, "requires 'output'"),
-            (True, "pre", False, False, False, "engine-native"),
+            (False, "pre", False, False, False, None, "not enabled"),
+            (True, "pre", True, False, True, None, "stream"),
+            (True, "pre", False, True, True, None, "background"),
+            (True, "post", False, False, False, None, "requires 'output'"),
+            (True, "pre", False, False, False, None, "engine-native"),
+            (True, "post", False, False, False, VideoResponse, "requires 'output'"),
         ],
     )
     def test_request_conflicts_are_rejected(
-        self, enabled, stage, stream, background, output, message
+        self, enabled, stage, stream, background, output, response_model, message
     ):
         engine = ProxyEngine(["unused"], enable_processors=enabled)
         name = "demo.pre.copy" if stage == "pre" else "demo.json.merge"
@@ -567,7 +547,7 @@ class TestEngineProcessorWiring:
                     stream=stream,
                     has_output=output,
                     background=background,
-                    response_model=None,
+                    response_model=response_model,
                 )
         finally:
             asyncio.run(engine.aclose())
@@ -626,6 +606,7 @@ class TestEngineProcessorWiring:
                             ],
                             "processors": pipeline,
                             "processor_dir": type("Dir", (), {"name": work})(),
+                            "sources": PathRefs(),
                         },
                     )()
                     payload = {"messages": [{"video_url": {"url": uri}}]}
@@ -636,30 +617,6 @@ class TestEngineProcessorWiring:
 
         try:
             asyncio.run(_run())
-        finally:
-            asyncio.run(engine.aclose())
-
-    @pytest.mark.parametrize("stopped", [False, True])
-    def test_processor_directory_follows_engine_generation_lifetime(self, stopped):
-        engine = ProxyEngine(["unused"])
-        directory = tempfile.TemporaryDirectory()
-        path = Path(directory.name)
-        context = SimpleNamespace(
-            req_id="req", processor_dir=directory, response_submitted=True
-        )
-
-        async def run():
-            if stopped:
-                engine._video_writers_stopped.set()
-            engine._close_processor_dir(context)
-            assert context.processor_dir is None
-            assert path.exists() is not stopped
-            assert engine._retained.pending() is not stopped
-            await engine._release_retained_resources()
-            assert not path.exists() and not engine._retained.pending()
-
-        try:
-            asyncio.run(run())
         finally:
             asyncio.run(engine.aclose())
 

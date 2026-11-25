@@ -1,0 +1,82 @@
+# Run on authorized worker nodes that already have a Dragonfly peer.
+# See README.md for node labels, socket access, and serving from the local path.
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelWarmup
+metadata:
+  name: dragonfly-model-download
+  namespace: default
+spec:
+  mode: Once
+  targets:
+  - nodeSelector:
+      matchLabels:
+        resource-pool.aibrix.ai/name: latency-pool
+        samples.aibrix.ai/dragonfly: "true"
+  custom:
+    volumes:
+    - name: model-cache
+      hostPath:
+        path: /var/lib/aibrix/models
+        type: DirectoryOrCreate
+    - name: dragonfly-socket
+      hostPath:
+        path: /var/run/dragonfly
+        type: Directory
+    containers:
+    - name: download
+      image: dragonflyoss/client:v1.5.14
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-ec"]
+      args:
+      - |
+        umask 022
+        repo=hf-internal-testing/tiny-random-LlamaForCausalLM
+        revision=9fb191250dd56d0ba7ec9785a025ed29c03d5998
+        destination="/models/tiny-random-llama-$revision"
+
+        verify_snapshot() (
+          cd "$1"
+          sha256sum -c <<'CHECKSUMS'
+        5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382  config.json
+        571666454de749a224e3739e09821239165ebfed71213632951805ccf25e90bb  generation_config.json
+        9cf973f7249a063159ed9c5e7eb05e5d15289b7c5571ae4e1d7315b2189b5831  tokenizer.json
+        1847d0a066bd2bd9fb9cb01a2141e7f3befb0a915689878903c3a4dad0f761f9  tokenizer_config.json
+        4859e5dbde90e059988a0a2136d8df3f2773d4d2fc4c4543690028f0b2166e7f  special_tokens_map.json
+        49c20f32c6c597480fcaec5df2f86c645eabea765cbea1e67886dbae45e5c992  model.safetensors
+        CHECKSUMS
+        )
+
+        if [ -d "$destination" ]; then
+          verify_snapshot "$destination"
+          exit 0
+        fi
+        if [ ! -S /var/run/dragonfly/dfdaemon.sock ]; then
+          echo "Dragonfly peer socket is unavailable" >&2
+          exit 1
+        fi
+
+        staging=$(mktemp -d /models/.dragonfly-model.XXXXXX)
+        trap 'rm -rf -- "$staging"' EXIT
+        for file in config.json generation_config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors; do
+          dfget --transfer-from-dfdaemon --scheduling-policy always --timeout 2m \
+            --hf-revision "$revision" -O "$staging/$file" "hf://$repo/$file"
+        done
+
+        verify_snapshot "$staging"
+        chmod 0755 "$staging"
+        if ! mv -T "$staging" "$destination"; then
+          # Another warmup may have prepared this revision on the same node.
+          verify_snapshot "$destination"
+        fi
+        printf 'Prepared model at %s\n' "$destination"
+      volumeMounts:
+      - name: model-cache
+        mountPath: /models
+      - name: dragonfly-socket
+        mountPath: /var/run/dragonfly
+        readOnly: true
+  policies:
+    parallelism: 6
+    jobTimeoutSeconds: 900
+    retryLimit: 0
+    ttlSecondsAfterFinished: 3600

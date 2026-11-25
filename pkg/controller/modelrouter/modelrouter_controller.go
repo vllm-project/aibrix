@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
@@ -53,9 +54,6 @@ const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
 	modelPortIdentifier   = constants.ModelLabelPort
-	// TODO (varun): parameterize it or dynamically resolve it
-	aibrixEnvoyGateway          = "aibrix-eg"
-	aibrixEnvoyGatewayNamespace = "aibrix-system"
 
 	defaultModelServingPort = 8000
 
@@ -117,7 +115,11 @@ var modelPaths = []string{
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 
 func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
-	klog.InfoS("Starting modelrouter controller")
+	if runtimeConfig.GatewayName != "" {
+		if problems := validation.IsDNS1123Subdomain(runtimeConfig.GatewayName); len(problems) != 0 {
+			return fmt.Errorf("invalid AIBRIX_GATEWAY_NAME %q: %s", runtimeConfig.GatewayName, strings.Join(problems, "; "))
+		}
+	}
 	cacher := mgr.GetCache()
 
 	deploymentInformer, err := cacher.GetInformer(context.TODO(), &appsv1.Deployment{})
@@ -144,6 +146,8 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		cacheReader:    cacher,
 		resyncInterval: defaultResyncInterval,
 	}
+
+	klog.InfoS("Starting modelrouter controller", "gatewayNamespace", modelRouter.gatewayNamespace(), "gatewayName", modelRouter.gatewayName())
 
 	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromDeployment,
@@ -209,6 +213,22 @@ type ModelRouter struct {
 	// routeMu serializes route deletion with the resync's create step, so the
 	// resync cannot recreate a route for a workload that was just deleted.
 	routeMu sync.Mutex
+}
+
+// gatewayNamespace preserves the default for directly constructed routers too.
+func (m *ModelRouter) gatewayNamespace() string {
+	if m.RuntimeConfig.GatewayNamespace == "" {
+		return config.DefaultGatewayNamespace
+	}
+	return m.RuntimeConfig.GatewayNamespace
+}
+
+// gatewayName preserves the default for directly constructed routers too.
+func (m *ModelRouter) gatewayName() gatewayv1.ObjectName {
+	if m.RuntimeConfig.GatewayName == "" {
+		return config.DefaultGatewayName
+	}
+	return gatewayv1.ObjectName(m.RuntimeConfig.GatewayName)
 }
 
 func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
@@ -344,27 +364,27 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		klog.Warningf("failed to parse model port: %v", err)
 		klog.Infof("please ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
 	}
-	httpRoute := buildHTTPRoute(namespace, modelName, labels, annotations)
+	httpRoute := m.buildHTTPRoute(namespace, modelName, labels, annotations)
 
 	err := m.Create(context.Background(), httpRoute)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, namespace)
+			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, httpRoute.Namespace)
 		} else {
-			klog.ErrorS(err, "Failed to create httproute", "namespace", namespace, "name", httpRoute.Name)
+			klog.ErrorS(err, "Failed to create httproute", "namespace", httpRoute.Namespace, "name", httpRoute.Name)
 			return
 		}
 	} else {
 		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
 	}
 
-	if aibrixEnvoyGatewayNamespace != namespace {
+	if m.gatewayNamespace() != namespace {
 		m.createReferenceGrant(namespace)
 	}
 }
 
 // buildHTTPRoute returns the HTTPRoute a model workload should have.
-func buildHTTPRoute(namespace, modelName string, labels map[string]string, annotations map[string]string) *gatewayv1.HTTPRoute {
+func (m *ModelRouter) buildHTTPRoute(namespace, modelName string, labels map[string]string, annotations map[string]string) *gatewayv1.HTTPRoute {
 	serviceName := modelName
 	if annotatedServiceName := annotations[constants.ModelAnnoServiceName]; annotatedServiceName != "" {
 		serviceName = annotatedServiceName
@@ -397,7 +417,7 @@ func buildHTTPRoute(namespace, modelName string, labels map[string]string, annot
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        utils.ModelRouterName(modelName),
-			Namespace:   aibrixEnvoyGatewayNamespace,
+			Namespace:   m.gatewayNamespace(),
 			Labels:      consoleRouteLabels(labels),
 			Annotations: consoleRouteAnnotations(annotations),
 		},
@@ -405,8 +425,8 @@ func buildHTTPRoute(namespace, modelName string, labels map[string]string, annot
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
 					{
-						Name:      aibrixEnvoyGateway,
-						Namespace: ptr.To(gatewayv1.Namespace(aibrixEnvoyGatewayNamespace)),
+						Name:      m.gatewayName(),
+						Namespace: ptr.To(gatewayv1.Namespace(m.gatewayNamespace())),
 					},
 				},
 			},
@@ -437,7 +457,7 @@ func buildHTTPRoute(namespace, modelName string, labels map[string]string, annot
 }
 
 func (m *ModelRouter) createReferenceGrant(namespace string) {
-	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
+	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", m.gatewayNamespace(), namespace)
 	referenceGrant := gatewayv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      referenceGrantName,
@@ -460,7 +480,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 				{
 					Group:     gatewayv1.GroupName,
 					Kind:      "HTTPRoute",
-					Namespace: aibrixEnvoyGatewayNamespace,
+					Namespace: gatewayv1beta1.Namespace(m.gatewayNamespace()),
 				},
 			},
 			To: []gatewayv1beta1.ReferenceGrantTo{
@@ -501,7 +521,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      utils.ModelRouterName(modelName),
-			Namespace: aibrixEnvoyGatewayNamespace,
+			Namespace: m.gatewayNamespace(),
 		},
 	}
 
@@ -513,7 +533,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 		klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
 	}
 
-	if aibrixEnvoyGatewayNamespace != namespace {
+	if m.gatewayNamespace() != namespace {
 		if err := m.deleteReferenceGrant(ctx, namespace, hasAnyModel); err != nil {
 			klog.ErrorS(err, "Failed to delete ReferenceGrant after checking remaining workloads",
 				"namespace", namespace)
@@ -526,7 +546,7 @@ func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string
 		return nil
 	}
 
-	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
+	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", m.gatewayNamespace(), namespace)
 	referenceGrant := gatewayv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      referenceGrantName,
@@ -753,10 +773,10 @@ func (m *ModelRouter) ensureHTTPRouteForWorkload(ctx context.Context, workload c
 	}
 
 	var route gatewayv1.HTTPRoute
-	key := client.ObjectKey{Namespace: aibrixEnvoyGatewayNamespace, Name: utils.ModelRouterName(modelName)}
+	key := client.ObjectKey{Namespace: m.gatewayNamespace(), Name: utils.ModelRouterName(modelName)}
 	err = m.Get(ctx, key, &route)
 	if err == nil {
-		m.updateHTTPRouteIfStale(ctx, &route, buildHTTPRoute(current.GetNamespace(), modelName, current.GetLabels(), current.GetAnnotations()))
+		m.updateHTTPRouteIfStale(ctx, &route, m.buildHTTPRoute(current.GetNamespace(), modelName, current.GetLabels(), current.GetAnnotations()))
 		return true
 	}
 	if !apierrors.IsNotFound(err) {

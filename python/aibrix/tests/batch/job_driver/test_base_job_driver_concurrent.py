@@ -39,6 +39,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.worker import SingleJobRunner
 from aibrix.context.infra import InfrastructureContext
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 
 def _make_job(total: int) -> BatchJob:
@@ -362,7 +363,7 @@ async def test_execute_request_raises_after_consecutive_failed_active_buckets(
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert first_result == (0, None)
+    assert first_result == (0, None, None)
 
     with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
         await driver._execute_request(
@@ -414,8 +415,8 @@ async def test_execute_request_counts_only_once_per_failed_bucket(
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert first_result == (0, None)
-    assert second_result == (0, None)
+    assert first_result == (0, None, None)
+    assert second_result == (0, None, None)
 
     with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
         await driver._execute_request(
@@ -473,9 +474,9 @@ async def test_execute_request_success_resets_failed_active_bucket_streak(
         {"_request_index": 2, "custom_id": "req-2", "body": {"i": 2}},
     )
 
-    assert first_result == (0, None)
-    assert second_result == (1, False)
-    assert third_result == (2, None)
+    assert first_result == (0, None, None)
+    assert second_result == (1, False, None)
+    assert third_result == (2, None, None)
 
 
 @pytest.mark.asyncio
@@ -626,7 +627,7 @@ async def test_execute_request_sends_client_request_timeout(monkeypatch):
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert result == (0, False)
+    assert result == (0, False, None)
     assert timeouts == [5.0]
 
 
@@ -702,6 +703,104 @@ async def test_execute_worker_reconciles_storage_done_requests(monkeypatch):
 
     assert read_starts == [1]
     assert result.status.request_counts.completed == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_worker_emits_usage_metrics_in_concurrent_path(monkeypatch):
+    job = _make_job(total=1)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+    requests = [{"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}}]
+    metric_calls: list[tuple[str, float, tuple[str, ...]]] = []
+    base_tags = (
+        job.spec.endpoint,
+        str(job.spec.completion_window),
+        job.job_id,
+        "none",
+    )
+
+    class _OneShotEngine:
+        async def run(self, request_iter, on_result, **_kwargs):
+            request = await anext(request_iter.__aiter__())
+            await on_result(
+                request,
+                {
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 7,
+                        "prompt_tokens_details": {"cached_tokens": 5},
+                        "completion_tokens_details": {"reasoning_tokens": 3},
+                    }
+                },
+                None,
+            )
+
+        async def capacity(self) -> CapacitySignal:
+            return CapacitySignal(count=1)
+
+    async def read_job_next_request(_job, _start_index=0):
+        for request in requests:
+            yield dict(request)
+
+    async def write_job_output_data(_job, _request_index, _output_data):
+        return None
+
+    async def is_request_done(_job, _request_index):
+        return False
+
+    def _record_counter(name, value, *tags):
+        metric_calls.append((name, value, tuple(tag.value for tag in tags)))
+
+    from aibrix.batch.job_driver import base as base_module
+
+    driver._engine = _OneShotEngine()
+    monkeypatch.setattr(
+        base_module.storage, "read_job_next_request", read_job_next_request
+    )
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
+    monkeypatch.setattr(base_module.storage, "is_request_done", is_request_done)
+    monkeypatch.setattr(Emitter, "counter", _record_counter)
+
+    await driver.execute_worker(job.job_id)
+
+    usage_metric_calls = [
+        call
+        for call in metric_calls
+        if call[0]
+        in {
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_CACHED_TOKENS,
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS,
+        }
+    ]
+
+    assert usage_metric_calls == [
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            11,
+            (*base_tags, "input_token"),
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            7,
+            (*base_tags, "output_token"),
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_CACHED_TOKENS,
+            5,
+            base_tags,
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS,
+            3,
+            base_tags,
+        ),
+    ]
 
 
 @pytest.mark.asyncio

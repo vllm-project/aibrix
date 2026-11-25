@@ -64,7 +64,8 @@ func TestPDRouter_DecodeTokenLoadSpreadsByPromptCost(t *testing.T) {
 	readyPods := append([]*v1.Pod{burstPod("prefill-0", "prefill", "127.0.0.1")}, decodePods...)
 	r, tokenLoad := newDecodeTokenLoadTestRouter(t)
 
-	_, longDecode, err := r.filterPrefillDecodePods(tokenLoadRequest(t, "long", longBytes), readyPods)
+	longReq := tokenLoadRequest(t, "long", longBytes)
+	_, longDecode, err := r.filterPrefillDecodePods(longReq, readyPods)
 	require.NoError(t, err)
 
 	// The decode scores are the ledger itself: the pod holding the long prompt
@@ -77,8 +78,11 @@ func TestPDRouter_DecodeTokenLoadSpreadsByPromptCost(t *testing.T) {
 	assert.NotEqual(t, longDecode.Name, pick.Pod.Name)
 	assert.Equal(t, float64(0), pick.Score)
 
+	shortReqs := map[string]*types.RoutingContext{}
 	for _, id := range []string{"short-0", "short-1"} {
-		_, decode, err := r.filterPrefillDecodePods(tokenLoadRequest(t, id, shortBytes), readyPods)
+		req := tokenLoadRequest(t, id, shortBytes)
+		shortReqs[id] = req
+		_, decode, err := r.filterPrefillDecodePods(req, readyPods)
 		require.NoError(t, err)
 		assert.NotEqualf(t, longDecode.Name, decode.Name, "%s must avoid the decode pod holding the long prompt", id)
 	}
@@ -90,12 +94,13 @@ func TestPDRouter_DecodeTokenLoadSpreadsByPromptCost(t *testing.T) {
 	}
 	assert.Equal(t, float64(2*shortBytes/4), tokenLoad.GetDecodeLoad(burstPodKey(other)))
 
-	// Completion releases each request's decode charge.
-	r.DoneRequestCount(nil, "long", "token-load-model", 0)
-	r.DoneRequestTrace(nil, "short-0", "token-load-model", 0, 0, 0)
+	// Completion releases each request's decode charge. Completion carries the request's routing
+	// context (as the gateway does), so the release matches the charge's TrackerKey.
+	r.DoneRequestCount(longReq, longReq.RequestID, "token-load-model", 0)
+	r.DoneRequestTrace(shortReqs["short-0"], shortReqs["short-0"].RequestID, "token-load-model", 0, 0, 0)
 	assert.Equal(t, float64(0), tokenLoad.GetDecodeLoad(burstPodKey(longDecode.Name)))
 	assert.Equal(t, float64(shortBytes/4), tokenLoad.GetDecodeLoad(burstPodKey(other)), "short-1 has not completed yet")
-	r.DoneRequestCount(nil, "short-1", "token-load-model", 0)
+	r.DoneRequestCount(shortReqs["short-1"], shortReqs["short-1"].RequestID, "token-load-model", 0)
 	assert.Equal(t, float64(0), tokenLoad.GetDecodeLoad(burstPodKey(other)))
 }
 
@@ -132,10 +137,11 @@ func TestPDRouter_DecodeTokenLoadReleasedAfterRoute(t *testing.T) {
 	decodeKey := utils.GeneratePodKey(decodePod.Namespace, decodePod.Name)
 
 	r, tokenLoad := newDecodeTokenLoadTestRouter(t)
-	_, err := r.Route(tokenLoadRequest(t, "ok", 4000), podList)
+	okReq := tokenLoadRequest(t, "ok", 4000)
+	_, err := r.Route(okReq, podList)
 	require.NoError(t, err)
 	assert.Equal(t, float64(1000), tokenLoad.GetDecodeLoad(decodeKey), "the decode pod holds the KV until the request completes")
-	r.DoneRequestCount(nil, "ok", "token-load-model", 0)
+	r.DoneRequestCount(okReq, okReq.RequestID, "token-load-model", 0)
 	assert.Equal(t, float64(0), tokenLoad.GetDecodeLoad(decodeKey))
 
 	failing, failingLoad := newTokenLoadTestRouter(t, &http.Client{Transport: failingTransport{}})
@@ -295,4 +301,52 @@ func TestPDRouter_DecodeTokenLoadCountsGeneratedOutput(t *testing.T) {
 
 	assert.Equal(t, newer.Name, route(t, true), "the older request's generated output must count")
 	assert.Equal(t, older.Name, route(t, false), "without growth, the smaller prompt charge wins")
+}
+
+// TestPDRouter_SharedTraceIDKeepsLoadAccountingIndependent is the regression test for #3586: two
+// concurrent requests that share one client trace id (so routingCtx.RequestID is identical, as a
+// retrying or fan-out client produces) must be tracked independently. Each gets its own charge,
+// and completing each releases only its own, so both decode pods' counters return to zero. Keyed
+// by RequestID the two would collide: the second charge would evict the first (AcquireDecode
+// swaps on a repeated key), leaving one pod's counter permanently wrong.
+func TestPDRouter_SharedTraceIDKeepsLoadAccountingIndependent(t *testing.T) {
+	decodePods := []*v1.Pod{
+		burstPod("decode-0", "decode", "127.0.0.100"),
+		burstPod("decode-1", "decode", "127.0.0.101"),
+	}
+	readyPods := append([]*v1.Pod{burstPod("prefill-0", "prefill", "127.0.0.1")}, decodePods...)
+	r, tokenLoad := newDecodeTokenLoadTestRouter(t)
+
+	// One 32-hex trace id, reused by both requests (what GetTraceID yields from a shared traceparent).
+	const sharedTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+	reqA := tokenLoadRequest(t, sharedTrace, 4000) // 1000 tokens
+	_, decodeA, err := r.filterPrefillDecodePods(reqA, readyPods)
+	require.NoError(t, err)
+
+	reqB := tokenLoadRequest(t, sharedTrace, 4000) // same trace id
+	_, decodeB, err := r.filterPrefillDecodePods(reqB, readyPods)
+	require.NoError(t, err)
+
+	// Same client trace id, but distinct internal tracker keys.
+	require.Equal(t, sharedTrace, reqA.RequestID)
+	require.Equal(t, sharedTrace, reqB.RequestID)
+	require.NotEqual(t, reqA.TrackerKey(), reqB.TrackerKey())
+
+	// Both charges are held independently: token-load spreads them to different decode pods,
+	// each holding its own 1000 tokens (keyed by RequestID, the second would have evicted the first).
+	require.NotEqual(t, decodeA.Name, decodeB.Name, "token-load should spread the two across pods")
+	assert.Equal(t, float64(1000), tokenLoad.GetDecodeLoad(burstPodKey(decodeA.Name)))
+	assert.Equal(t, float64(1000), tokenLoad.GetDecodeLoad(burstPodKey(decodeB.Name)))
+
+	// Completing one request releases only its own charge.
+	r.DoneRequestCount(reqA, reqA.RequestID, "token-load-model", 0)
+	assert.Equal(t, float64(0), tokenLoad.GetDecodeLoad(burstPodKey(decodeA.Name)))
+	assert.Equal(t, float64(1000), tokenLoad.GetDecodeLoad(burstPodKey(decodeB.Name)),
+		"the other request sharing the trace id must be unaffected")
+
+	// Completing the second returns both pods' counters to zero.
+	r.DoneRequestCount(reqB, reqB.RequestID, "token-load-model", 0)
+	assert.Equal(t, float64(0), tokenLoad.GetDecodeLoad(burstPodKey(decodeA.Name)))
+	assert.Equal(t, float64(0), tokenLoad.GetDecodeLoad(burstPodKey(decodeB.Name)))
 }

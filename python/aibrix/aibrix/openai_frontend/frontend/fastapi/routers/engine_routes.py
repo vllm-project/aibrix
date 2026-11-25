@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import Response
 
-from aibrix.openai_frontend.proxy.engine_spec import ForwardKind
+from aibrix.openai_frontend.proxy.runtime.engine_spec import ForwardKind
 
 _TYPED_PATHS = {
     "/v1/models",

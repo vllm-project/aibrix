@@ -496,8 +496,11 @@ msgid "Enable prefix cache metrics for visibility"
 msgstr "启用 prefix cache 指标以便观察"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:338
-msgid "Monitor ZMQ connection status in logs"
-msgstr "在日志中监控 ZMQ 连接状态"
+msgid ""
+"Watch the gateway's ``aibrix_kvcache_zmq_*`` metrics, labeled by "
+"``pod_key``, such as ``aibrix_kvcache_zmq_connection_status`` and "
+"``aibrix_kvcache_zmq_replay_failures_total``"
+msgstr "关注网关的 ``aibrix_kvcache_zmq_*`` 指标（以 ``pod_key`` 为标签），例如 ``aibrix_kvcache_zmq_connection_status`` 和 ``aibrix_kvcache_zmq_replay_failures_total``"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:339
 msgid "Track prefix cache hit rates in Grafana"

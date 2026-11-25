@@ -45,6 +45,11 @@ const (
 	// was served, so the tokens were not charged against the user's limit
 	GatewayTPMIncrementFailuresTotal = "gateway_tpm_increment_failures_total"
 
+	// counter to track non-streamed responses whose body exceeded the per-request
+	// buffer cap: the gateway stops buffering and forwards them without reading usage,
+	// so those requests go uncharged
+	GatewayResponseBufferOverflowTotal = "gateway_response_buffer_overflow_total"
+
 	// counter to track #success & #fail prefill requests
 	GatewayPrefillRequestSuccessTotal = "gateway_prefill_request_success_total"
 	GatewayPrefillRequestFailTotal    = "gateway_prefill_request_fail_total"
@@ -101,6 +106,31 @@ const (
 	GatewayQueuePendingRequests     = "gateway_queue_pending_requests"
 	GatewayQueueOutcomeTotal        = "gateway_queue_outcome_total"
 	GatewayQueueFIFOFallbackTotal   = "gateway_queue_fifo_fallback_total"
+
+	// Pod blacklist (see pkg/plugins/gateway/blacklist). Low-cardinality on purpose: model,
+	// adapter and the gateway pod, plus the reason or verdict, never the pod.
+	//
+	// Exclusions counts each time a pod becomes excluded, by reason: probe_dead,
+	// probe_degraded, load_outlier or flaky_readd. Recoveries counts a pod leaving
+	// exclusion early, by reason: probe_healthy or load_recovered. ProbeTotal counts every
+	// probe the sweep sends, by verdict (healthy, degraded, dead). A burst of dead verdicts
+	// across a whole model is a gateway-side fault, not a fleet of dead pods. ExcludedPods is
+	// how many pods the blacklist currently excludes on this gateway, as of the end of the
+	// last sweep. FallbackTotal counts requests routed with the blacklist ignored, by
+	// reason: all_excluded (every pod was excluded) or over_cap (more than
+	// AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT of them were).
+	GatewayPodBlacklistExclusionsTotal = "gateway_pod_blacklist_exclusions_total"
+	GatewayPodBlacklistRecoveriesTotal = "gateway_pod_blacklist_recoveries_total"
+	GatewayPodBlacklistProbeTotal      = "gateway_pod_blacklist_probe_total"
+	GatewayPodBlacklistExcludedPods    = "gateway_pod_blacklist_excluded_pods"
+	GatewayPodBlacklistFallbackTotal   = "gateway_pod_blacklist_fallback_total"
+	// GatewayPodBlacklistReselectTotal counts requests whose candidate stage re-ran over all
+	// non-blacklisted ready pods because too many or all candidates were excluded while the
+	// fleet as a whole stayed within the cap, by reason (all_excluded or over_cap).
+	GatewayPodBlacklistReselectTotal = "gateway_pod_blacklist_reselect_total"
+	// GatewayPodBlacklistRequestFailuresTotal counts upstream failure statuses the request-failure
+	// source saw, by status and by outcome (counted or ignored while the pod was excluded).
+	GatewayPodBlacklistRequestFailuresTotal = "gateway_pod_blacklist_request_failures_total"
 )
 
 var (
@@ -261,6 +291,21 @@ var (
 			Description: "Current number of in-flight gateway requests per model",
 		},
 
+		// The 1-minute rolling rate at which requests complete on an inference pod,
+		// as this gateway tracks it (see Store.updateRealtimeRunningRequestsDrainRate1m).
+		// The PD-disaggregation decode router scores decode pods on it. Pod-scoped, so
+		// it describes the whole pod even when it serves several models or adapters;
+		// the model label is the pod's model.aibrix.ai/name label, or the annotation
+		// of the same name, empty when neither is set.
+		RealtimeRunningRequestsDrainRate1m: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "1-minute rolling rate of requests completed per second on an inference pod, as tracked by the gateway",
+		},
+
 		GatewayFirstTokenDelayOver1sTotal: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PodRawMetrics,
@@ -318,6 +363,14 @@ var (
 				Raw: Counter,
 			},
 			Description: "Total number of per-user TPM increments that failed after the response was served, so the tokens went uncharged, by reason (cancelled or error)",
+		},
+		GatewayResponseBufferOverflowTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of non-streamed responses that exceeded the per-request buffer cap, so the gateway stopped buffering and forwarded them without reading usage (the request went uncharged)",
 		},
 		PDSelectedPrefillPodTotal: {
 			MetricScope:  PodMetricScope,
@@ -401,6 +454,49 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType:   MetricType{Raw: Counter},
 			Description:  "Requests the gateway SLO queue dispatched FIFO because no profile or SLO information was available",
+		},
+
+		GatewayPodBlacklistExclusionsTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Times the pod blacklist excluded a pod from routing, by reason",
+		},
+		GatewayPodBlacklistRecoveriesTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Times the pod blacklist lifted a pod's exclusion before its deadline, by reason",
+		},
+		GatewayPodBlacklistProbeTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Background health probes the pod blacklist sent, by verdict",
+		},
+		GatewayPodBlacklistExcludedPods: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Gauge},
+			Description:  "Pods the pod blacklist currently excludes from routing on this gateway",
+		},
+		GatewayPodBlacklistFallbackTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests routed with the pod blacklist ignored, because every pod or too many of them were excluded",
+		},
+		GatewayPodBlacklistReselectTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests whose candidate stage re-ran over all non-blacklisted ready pods because too many or all candidates were excluded",
+		},
+		GatewayPodBlacklistRequestFailuresTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Upstream failure statuses (502, 503, 504) the pod blacklist saw in responses, by status and outcome",
 		},
 	}
 )

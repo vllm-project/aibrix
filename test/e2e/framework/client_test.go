@@ -19,11 +19,13 @@ package e2eframework
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -137,4 +139,79 @@ func TestSendPDRequestWithHeadersPreservesFailureInjectionHeaders(t *testing.T) 
 	require.Error(t, err)
 	require.Equal(t, "prefill", <-seen)
 	require.Equal(t, http.StatusInternalServerError, result.StatusCode)
+}
+
+func TestStableAdapterInference(t *testing.T) {
+	const routeError = `{"error":{"code":"service_unavailable","message":"route is pending"}}`
+	const externalError = `{"error":{"code":"external_router_unavailable"}}`
+	const wrongAdapter = `{"model":"a","choices":[{"message":{"content":"ok"}}]}`
+	for _, tc := range []struct {
+		name          string
+		status        int
+		body          string
+		routingHeader bool
+		wantErr       string
+	}{
+		{"gateway route pending", http.StatusServiceUnavailable, routeError, true, ""},
+		{"upstream unavailable", http.StatusServiceUnavailable, routeError, false, "503"},
+		{"other routing error", http.StatusServiceUnavailable, externalError, true, "503"},
+		{"unexpected gateway error", http.StatusInternalServerError, "upstream failed", true, "upstream failed"},
+		{"wrong adapter", http.StatusOK, wrongAdapter, false, `returned model "a"`},
+		{"empty choices", http.StatusOK, `{"model":"b","choices":[]}`, false, "no choices"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			failedProbe := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := calls.Add(1)
+				wantModel := "a"
+				if n%2 == 0 {
+					wantModel = "b"
+				}
+				var req struct{ Model string }
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model != wantModel {
+					t.Errorf("request %d: got model %q, want %q (decode error %v)", n, req.Model, wantModel, err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if n == 4 { // B's second probe interrupts one previously successful round.
+					failedProbe <- r.UserAgent()
+					if tc.routingHeader {
+						w.Header().Set("x-error-routing", "true")
+					}
+					w.Header().Set("request-id", "plugin-id")
+					w.Header().Set("x-request-id", "envoy-id")
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.body)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"model":%q,"choices":[{"message":{"content":"ok"}}]}`, req.Model)
+			}))
+			defer server.Close()
+			check := stableAdapterInferenceCondition(t, NewOpenAIClient(server.URL, "test-key"), "a", "b")
+			ctx := context.Background()
+			ready, err := check(ctx)
+			require.NoError(t, err)
+			require.False(t, ready)
+			ready, err = check(ctx)
+			require.False(t, ready)
+			require.Equal(t, int32(4), calls.Load())
+			probe := <-failedProbe
+			require.True(t, strings.HasPrefix(probe, "aibrix-e2e/"))
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				require.ErrorContains(t, err, probe)
+				if tc.status >= 400 {
+					require.ErrorContains(t, err, "plugin-id")
+					require.ErrorContains(t, err, "envoy-id")
+				}
+				return
+			}
+			require.NoError(t, err)
+			for _, want := range []bool{false, false, true} {
+				ready, err = check(ctx)
+				require.NoError(t, err)
+				require.Equal(t, want, ready)
+			}
+		})
+	}
 }

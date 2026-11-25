@@ -17,6 +17,7 @@ limitations under the License.
 package encode
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -36,12 +37,28 @@ func IsEncoder(pod *v1.Pod) bool {
 }
 
 // SplitEncoders returns the pods that can serve requests and the encoders,
-// keeping the order of pods in each.
+// keeping the order of pods in each. When no pod is an encoder it returns pods
+// itself and a nil encoders, so it costs no allocation; otherwise serving is a
+// fresh slice that does not alias pods. Callers must treat serving as read-only:
+// no in-place writes and no append, since pods may have spare capacity another
+// reader shares.
 func SplitEncoders(pods []*v1.Pod) (serving, encoders []*v1.Pod) {
-	for _, pod := range pods {
+	first := slices.IndexFunc(pods, IsEncoder)
+	if first < 0 {
+		return pods, nil
+	}
+	if first > 0 {
+		serving = make([]*v1.Pod, first, len(pods)-1)
+		copy(serving, pods[:first])
+	}
+	for i := first; i < len(pods); i++ {
+		pod := pods[i]
 		if IsEncoder(pod) {
 			encoders = append(encoders, pod)
 		} else {
+			if serving == nil {
+				serving = make([]*v1.Pod, 0, len(pods)-i)
+			}
 			serving = append(serving, pod)
 		}
 	}
@@ -53,10 +70,11 @@ func SplitEncoders(pods []*v1.Pod) (serving, encoders []*v1.Pod) {
 // the encoders in target's roleset first. target is the prefill pod in PD
 // disaggregation, or the pod serving the whole request in E+PD.
 //
-// The request body is left untouched. vLLM looks the encoder output up by the
-// hash of the item's content, the same hash the encoder stored it under, and
-// encodes the item itself when the output isn't there. So an encode failure
-// costs latency but not correctness, and is only logged.
+// The media items stay on the request. Any ec_transfer_params the client sent
+// are dropped, even with no encoders to run, and the encoders' are set instead.
+// vLLM finds the encoder output by the item's content hash or through those
+// params, and encodes the item itself when the output isn't there. So an encode
+// failure costs latency but not correctness, and is only logged.
 func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target *v1.Pod, timeout time.Duration) {
 	if e == nil || target == nil {
 		return
@@ -70,6 +88,7 @@ func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target
 	}
 	roleset := target.Labels[pd.RoleSetLabel]
 	if roleset == "" {
+		dropTransferParams(ctx)
 		return
 	}
 	var encoders []*v1.Pod
@@ -79,13 +98,28 @@ func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target
 		}
 	}
 	if len(encoders) == 0 {
+		dropTransferParams(ctx)
 		return
 	}
-	if err := e.Execute(ctx, encoders, items, timeout); err != nil {
+	params, err := e.Execute(ctx, encoders, items, timeout)
+	if body, setErr := setTransferParams(ctx.ReqBody, params); setErr != nil {
+		klog.V(2).InfoS("encode_transfer_params_failed", "error", setErr, "request_id", ctx.RequestID)
+	} else {
+		ctx.ReqBody = body
+	}
+	if err != nil {
 		klog.V(2).InfoS("encode_request_failed", "error", err, "request_id", ctx.RequestID,
 			"roleset", roleset, "media_items", len(items))
 		return
 	}
 	klog.V(4).InfoS("encode_request_end", "request_id", ctx.RequestID,
 		"roleset", roleset, "media_items", len(items))
+}
+
+// vLLM reads the producer's address from these params, so they can't come from
+// the client. A body this can't rewrite isn't valid JSON, and vLLM rejects it.
+func dropTransferParams(ctx *types.RoutingContext) {
+	if body, err := setTransferParams(ctx.ReqBody, nil); err == nil {
+		ctx.ReqBody = body
+	}
 }

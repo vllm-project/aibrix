@@ -86,13 +86,14 @@ var (
 // one decode scoring pass. Maxima are enforced to be positive by the PD router
 // (typically floored at 1.0) so that normalisation denominators are never zero.
 type DecodePodInput struct {
-	RunningReqs     float64 // active decode requests on this pod (incl. pending)
-	Throughput      float64 // AvgGenerationThroughputToksPerS for the model
-	FreeGPUPercent  float64 // 100 - KVCacheUsagePerc*100, floored at 0.1
-	MaxRequestCount float64 // max RunningReqs across the candidate decode pods
-	MaxThroughput   float64 // max Throughput across the candidate decode pods
-	MaxFreeGPUUsage float64 // max FreeGPUPercent across the candidate decode pods
-	DecodeTokens    float64 // decode ledger of this pod (token_load): charged prompt tokens plus estimated generated output
+	RunningReqs        float64 // active decode requests on this pod (incl. pending)
+	Throughput         float64 // AvgGenerationThroughputToksPerS for the model
+	ThroughputFallback bool    // true when Throughput came from a fleet default (not measured on pod)
+	FreeGPUPercent     float64 // 100 - KVCacheUsagePerc*100, floored at 0.1
+	MaxRequestCount    float64 // max RunningReqs across the candidate decode pods
+	MaxThroughput      float64 // max Throughput across the candidate decode pods
+	MaxFreeGPUUsage    float64 // max FreeGPUPercent across the candidate decode pods
+	DecodeTokens       float64 // pod decode ledger (token_load): prompt tokens + generated output
 }
 
 // RolesetDecodePick is the winning decode pod for one roleset after comparing
@@ -196,12 +197,16 @@ func (LeastRequestDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext,
 	return in.RunningReqs
 }
 
-// ConductorDecodePolicy scores decode pods by estimated TBT
-// after adding the request, with a GPU-cache pressure penalty.
+// ConductorDecodePolicy scores decode pods by an estimated per-request TBT
+// ranking proxy after adding the request, with a GPU-cache pressure penalty.
 //
-//	estimated_TBT = current_TBT * (1 + 1 / max(running_reqs, 1))
+//	token_gap_ms = 1000 / Throughput (or DefaultDecodeTBTFallbackMs when unmeasured)
+//	estimated_TBT = (max(running_reqs, 1) + 1) * token_gap_ms
 //	if gpu_cache_usage > threshold: estimated_TBT *= penalty
 //
+// Note: this proxy holds aggregate Throughput constant when adding one request
+// (overestimating marginal TBT on large batches only in proportion, preserving rank
+// order); scrape-window mismatch amplification is tracked separately.
 // Lower score is better.
 type ConductorDecodePolicy struct{}
 
@@ -213,14 +218,15 @@ func (ConductorDecodePolicy) Describe() string {
 }
 
 func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
-	currentTBTMs := DefaultDecodeTBTFallbackMs
-	if in.Throughput > 0 {
-		currentTBTMs = 1000.0 / in.Throughput
-	}
-
-	// TBT after adding one request to a decode pod.
+	// Throughput is the aggregate generation throughput across all running requests on the pod.
+	// Per-request TBT scales with batch size: (runningReqs + 1) * (1000 / Throughput).
 	runningReqs := math.Max(in.RunningReqs, 1.0)
-	estimatedTBT := currentTBTMs * (1.0 + 1.0/runningReqs)
+	tokenGapMs := DefaultDecodeTBTFallbackMs
+	if in.Throughput > 0 {
+		tokenGapMs = 1000.0 / in.Throughput
+	}
+	throughputMeasured := in.Throughput > 0 && !in.ThroughputFallback
+	estimatedTBT := (runningReqs + 1.0) * tokenGapMs
 
 	// GPU-cache pressure penalty.
 	gpuCacheUsage := 1.0 - in.FreeGPUPercent/100.0
@@ -231,9 +237,9 @@ func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, po
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
 			"policy", DecodePolicyConductor, "decode_score", estimatedTBT,
-			"current_tbt_ms", currentTBTMs, "running_reqs", in.RunningReqs,
-			"gpu_cache_usage", gpuCacheUsage, "throughput", in.Throughput,
-			"free_gpu_percent", in.FreeGPUPercent)
+			"token_gap_ms", tokenGapMs, "throughput_measured", throughputMeasured,
+			"running_reqs", in.RunningReqs, "gpu_cache_usage", gpuCacheUsage,
+			"throughput", in.Throughput, "free_gpu_percent", in.FreeGPUPercent)
 	}
 
 	return estimatedTBT

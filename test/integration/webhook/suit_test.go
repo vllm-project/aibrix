@@ -33,6 +33,7 @@ import (
 	//+kubebuilder:scaffold:imports
 
 	admissionv1 "k8s.io/api/admission/v1"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -84,7 +85,7 @@ var _ = BeforeSuite(func() {
 		// Note that you must have the required binaries setup under the bin directory to perform
 		// the tests directly. When we run make test it will be setup and used automatically.
 		BinaryAssetsDirectory: filepath.Join("..", "..", "..", "bin", "k8s",
-			fmt.Sprintf("1.30.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
+			fmt.Sprintf("1.31.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
 
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
 			Paths: []string{filepath.Join("..", "..", "..", "config", "webhook")},
@@ -104,6 +105,8 @@ var _ = BeforeSuite(func() {
 	err = autoscalingapi.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = admissionv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = admissionregistrationv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = corev1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
@@ -133,6 +136,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = apiwebhook.SetupModelAdapterWebhook(mgr)
+	Expect(err).NotTo(HaveOccurred())
+	err = apiwebhook.SetupModelClaimWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupModelWarmupWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())

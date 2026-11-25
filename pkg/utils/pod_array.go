@@ -16,19 +16,41 @@ limitations under the License.
 package utils
 
 import (
-	"sort"
+	"slices"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
 )
 
-// PodArray is a simple implementation of types.PodList indexed by deployment names
+// PodArray is a simple implementation of types.PodList indexed by deployment names.
+//
+// Pods may be a snapshot shared with other readers, such as the per-model
+// Registry snapshot that every request reads through All(). Indexing therefore
+// never writes to Pods: the per-deployment lists are built in their own slices.
 type PodArray struct {
 	Pods []*v1.Pod
 
 	deployments      []string
 	podsByDeployment map[string][]*v1.Pod
-	mu               sync.Mutex
+	indexOnce        sync.Once
+	// indexPanic keeps a panic raised while indexing so that every later
+	// ListByIndex or Indexes call re-panics with it, instead of the Once leaving
+	// the index silently empty.
+	indexPanic any
+
+	routable     *PodArray
+	routableOnce sync.Once
+	// routablePanic keeps a panic raised while filtering so that every later
+	// Routable call re-panics with it, matching buildIndex.
+	routablePanic any
+
+	keySet      map[string]struct{}
+	keySetOnce  sync.Once
+	keySetPanic any
+
+	byKey      map[string]*v1.Pod
+	byKeyOnce  sync.Once
+	byKeyPanic any
 }
 
 func (arr *PodArray) Len() int {
@@ -38,6 +60,8 @@ func (arr *PodArray) Len() int {
 	return len(arr.Pods)
 }
 
+// All returns Pods itself, not a copy. Callers must treat it as read-only: it may
+// be a snapshot shared by concurrent requests.
 func (arr *PodArray) All() []*v1.Pod {
 	if arr == nil {
 		return nil
@@ -45,14 +69,16 @@ func (arr *PodArray) All() []*v1.Pod {
 	return arr.Pods
 }
 
+// ListByIndex returns the pods of one deployment. Callers must treat the result
+// as read-only: when all pods are in one deployment it is Pods itself, the same
+// shared snapshot All returns, so an in-place writer such as
+// FilterRoutablePodsInPlace must copy it first.
 func (arr *PodArray) ListByIndex(deploymentName string) []*v1.Pod {
 	if len(arr.Pods) == 0 {
 		return nil
 	}
 
-	if arr.podsByDeployment == nil {
-		arr.initDeployments()
-	}
+	arr.buildIndex()
 
 	return arr.podsByDeployment[deploymentName]
 }
@@ -62,64 +88,198 @@ func (arr *PodArray) Indexes() []string {
 		return nil
 	}
 
-	if arr.podsByDeployment == nil {
-		arr.initDeployments()
-	}
+	arr.buildIndex()
 
 	return arr.deployments
 }
 
-func (arr *PodArray) initDeployments() {
-	arr.mu.Lock()
-	defer arr.mu.Unlock()
+// buildIndex runs initDeployments once and re-raises its panic, if any, on every
+// call, as the index did before it used sync.Once.
+func (arr *PodArray) buildIndex() {
+	arr.indexOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.indexPanic = r
+			}
+		}()
+		arr.initDeployments()
+	})
+	if arr.indexPanic != nil {
+		panic(arr.indexPanic)
+	}
+}
 
-	if arr.podsByDeployment != nil {
+// initDeployments groups the pods by deployment, keeping the first-seen order of
+// the deployments and the original order of the pods within each one. It runs
+// once, through buildIndex, so the index fields are published fully built.
+func (arr *PodArray) initDeployments() {
+	podsByDeployment := make(map[string][]*v1.Pod)
+	var deployments []string
+	for _, pod := range arr.Pods {
+		deploymentName := DeploymentNameFromPod(pod) // Count "" in.
+		if _, ok := podsByDeployment[deploymentName]; !ok {
+			deployments = append(deployments, deploymentName)
+		}
+		podsByDeployment[deploymentName] = append(podsByDeployment[deploymentName], pod)
+	}
+	if len(deployments) == 1 {
+		// Every pod is in the one deployment, so share Pods instead of a copy.
+		podsByDeployment[deployments[0]] = arr.Pods
+	}
+	// Clip each list so that a caller appending to it cannot write into spare
+	// capacity another caller of ListByIndex also sees. Pods itself may have
+	// spare capacity when the caller built it with append.
+	for name, pods := range podsByDeployment {
+		podsByDeployment[name] = slices.Clip(pods)
+	}
+
+	arr.deployments = deployments
+	arr.podsByDeployment = podsByDeployment
+}
+
+// Routable returns a cached *PodArray containing only the pods in arr that pass
+// FilterReadyPod, preserving snapshot order. Callers must treat the returned
+// slice as read-only: when every pod in arr is routable and arr.Pods has no
+// spare capacity, Routable returns arr itself; otherwise it returns a clipped
+// *PodArray whose Pods slice is shared across concurrent callers.
+//
+// Immutability invariant: the cached result is valid only while arr.Pods and
+// the published *v1.Pod objects it references are not mutated in place (the
+// per-model CustomizedRegistry enforces this by publishing a fresh *PodArray
+// on every informer update).
+func (arr *PodArray) Routable() *PodArray {
+	if arr == nil {
+		return nil
+	}
+	if len(arr.Pods) == 0 && cap(arr.Pods) == 0 {
+		return arr
+	}
+	arr.routableOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.routablePanic = r
+			}
+		}()
+		arr.initRoutable()
+	})
+	if arr.routablePanic != nil {
+		panic(arr.routablePanic)
+	}
+	return arr.routable
+}
+
+// initRoutable computes and caches arr's routable subset once, through
+// Routable, so concurrent readers share a fully built, clipped *PodArray.
+func (arr *PodArray) initRoutable() {
+	firstUnready := -1
+	for i, pod := range arr.Pods {
+		if !FilterReadyPod(pod) {
+			firstUnready = i
+			break
+		}
+	}
+	if firstUnready == -1 {
+		if cap(arr.Pods) == len(arr.Pods) {
+			arr.routable = arr
+			return
+		}
+		var clipped []*v1.Pod
+		if len(arr.Pods) > 0 {
+			clipped = slices.Clip(arr.Pods)
+		}
+		r := &PodArray{Pods: clipped}
+		r.routableOnce.Do(func() { r.routable = r })
+		arr.routable = r
 		return
 	}
 
-	// Sort by deploymentName. Pods are keyed by namespace/name: a pod name is only
-	// unique within its namespace.
-	podClasses := make(map[string]int)
-	podIndexes := make(map[string]int, len(arr.Pods))
-	seen := 0
-	for _, pod := range arr.Pods {
-		deploymentName := DeploymentNameFromPod(pod) // Count "" in.
-		idx, ok := podClasses[deploymentName]
-		if !ok {
-			idx = seen
-			podClasses[deploymentName] = seen
-			seen++
-		}
-		podIndexes[GeneratePodKey(pod.Namespace, pod.Name)] = idx
+	var ready []*v1.Pod
+	if firstUnready > 0 {
+		ready = make([]*v1.Pod, firstUnready, len(arr.Pods)-1)
+		copy(ready, arr.Pods[:firstUnready])
 	}
-	// Sort by podClasses
-	sort.Slice(arr.Pods, func(i, j int) bool {
-		return podIndexes[GeneratePodKey(arr.Pods[i].Namespace, arr.Pods[i].Name)] <
-			podIndexes[GeneratePodKey(arr.Pods[j].Namespace, arr.Pods[j].Name)]
+	for i := firstUnready + 1; i < len(arr.Pods); i++ {
+		pod := arr.Pods[i]
+		if !FilterReadyPod(pod) {
+			continue
+		}
+		if ready == nil {
+			ready = make([]*v1.Pod, 0, len(arr.Pods)-i)
+		}
+		ready = append(ready, pod)
+	}
+	r := &PodArray{Pods: slices.Clip(ready)}
+	r.routableOnce.Do(func() { r.routable = r })
+	arr.routable = r
+}
+
+// KeySet returns a cached read-only set of pod keys (GeneratePodKey(Namespace, Name))
+// for all pods in arr, built lazily on first call. Non-prefix-cache callers that
+// never call KeySet pay zero map builds per snapshot generation.
+//
+// Callers must treat the returned map as read-only: it is shared across
+// concurrent requests. Immutability invariant: valid only while arr.Pods and
+// each referenced *v1.Pod's Namespace and Name are not mutated in place
+// (CustomizedRegistry enforces this by publishing a fresh *PodArray on every
+// informer update).
+func (arr *PodArray) KeySet() map[string]struct{} {
+	if arr == nil || len(arr.Pods) == 0 {
+		return nil
+	}
+	arr.keySetOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.keySetPanic = r
+			}
+		}()
+		arr.initKeySet()
 	})
-
-	// Split and map Pods to deployments
-	podsByDeployment := make(map[string][]*v1.Pod, len(podClasses))
-	deployments := make([]string, 0, len(podClasses))
-	offset := 0
-	lastClass := podIndexes[GeneratePodKey(arr.Pods[0].Namespace, arr.Pods[0].Name)]
-	lastDeploymentName := DeploymentNameFromPod(arr.Pods[0])
-	for i, pod := range arr.Pods {
-		podIdx := podIndexes[GeneratePodKey(pod.Namespace, pod.Name)]
-		if podIdx != lastClass {
-			podsByDeployment[lastDeploymentName] = arr.Pods[offset:i]
-			offset = i
-			lastClass = podIdx
-			deployments = append(deployments, lastDeploymentName)
-			lastDeploymentName = DeploymentNameFromPod(pod)
-		}
+	if arr.keySetPanic != nil {
+		panic(arr.keySetPanic)
 	}
-	podsByDeployment[lastDeploymentName] = arr.Pods[offset:]
-	deployments = append(deployments, lastDeploymentName)
+	return arr.keySet
+}
 
-	// Set arr.podsByDeployment at last
-	arr.deployments = deployments
-	arr.podsByDeployment = podsByDeployment
+func (arr *PodArray) initKeySet() {
+	keys := make(map[string]struct{}, len(arr.Pods))
+	for _, pod := range arr.Pods {
+		keys[GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
+	}
+	arr.keySet = keys
+}
+
+// ByKey returns a cached read-only map from pod key (GeneratePodKey(Namespace, Name))
+// to *v1.Pod for all pods in arr, built lazily on first call. Built under its
+// own sync.Once so callers that only need KeySet (such as prefix misses or
+// ScoreAll) do not build this map.
+//
+// Callers must treat the returned map as read-only: it is shared across
+// concurrent requests. Immutability invariant: valid only while arr.Pods and
+// each referenced *v1.Pod's Namespace and Name are not mutated in place.
+func (arr *PodArray) ByKey() map[string]*v1.Pod {
+	if arr == nil || len(arr.Pods) == 0 {
+		return nil
+	}
+	arr.byKeyOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.byKeyPanic = r
+			}
+		}()
+		arr.initByKey()
+	})
+	if arr.byKeyPanic != nil {
+		panic(arr.byKeyPanic)
+	}
+	return arr.byKey
+}
+
+func (arr *PodArray) initByKey() {
+	byKey := make(map[string]*v1.Pod, len(arr.Pods))
+	for _, pod := range arr.Pods {
+		byKey[GeneratePodKey(pod.Namespace, pod.Name)] = pod
+	}
+	arr.byKey = byKey
 }
 
 // ListPortsForPod returns each pod's ports keyed by pod key (namespace/name, see

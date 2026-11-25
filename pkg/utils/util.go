@@ -19,6 +19,7 @@ package utils
 import (
 	crand "crypto/rand"
 	"fmt"
+	"math"
 	"math/big"
 	mrand "math/rand/v2"
 	"os"
@@ -150,11 +151,13 @@ func LoadEnvNonNegativeInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// LoadEnvFloat loads a finite, positive float from an environment variable.
+// It returns defaultValue if the variable is unset, empty or invalid.
 func LoadEnvFloat(key string, defaultValue float64) float64 {
 	valueStr := os.Getenv(key)
 	if valueStr != "" {
 		value, err := strconv.ParseFloat(valueStr, 64)
-		if err != nil || value <= 0 {
+		if err != nil || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 			klog.Warningf("invalid %s: %s, falling back to default: %g", key, valueStr, defaultValue)
 		} else {
 			klog.Infof("set %s: %g", key, value)

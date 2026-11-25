@@ -16,7 +16,6 @@ package kvcache
 
 import (
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -25,19 +24,26 @@ import (
 )
 
 func TestMetricsNotRegisteredByDefault(t *testing.T) {
-	// Reset global state for testing
-	kvCacheMetrics = nil
+	ResetMetricsForTest()
+	t.Cleanup(ResetMetricsForTest)
 
-	// Create a new registry to check metrics
+	// The empty default registry shows only what this test body registers:
+	// a client created without InitializeMetrics must not register anything.
 	registry := prometheus.NewRegistry()
+	defaultRegisterer, defaultGatherer := prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	prometheus.DefaultRegisterer, prometheus.DefaultGatherer = registry, registry
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer, prometheus.DefaultGatherer = defaultRegisterer, defaultGatherer
+	})
 
-	// Gather all metrics
-	metricFamilies, err := registry.Gather()
+	client := NewZMQClientMetrics("default/sync-off-pod")
+	client.IncrementConnectionCount()
+	client.UpdateLastSequenceID(1)
+
+	metricFamilies, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		t.Fatalf("Failed to gather metrics: %v", err)
 	}
-
-	// Check that no KV cache metrics are registered
 	for _, mf := range metricFamilies {
 		if contains(mf.GetName(), "aibrix_kvcache_zmq") {
 			t.Errorf("Found KV cache metric %s when none should be registered", mf.GetName())
@@ -46,9 +52,8 @@ func TestMetricsNotRegisteredByDefault(t *testing.T) {
 }
 
 func TestMetricsRegisteredWhenInitialized(t *testing.T) {
-	// Reset global state for testing
-	kvCacheMetrics = nil
-	kvCacheMetricsOnce = sync.Once{}
+	ResetMetricsForTest()
+	t.Cleanup(ResetMetricsForTest)
 
 	// Initialize metrics
 	err := InitializeMetrics()
@@ -88,9 +93,8 @@ func TestMetricsRegisteredWhenInitialized(t *testing.T) {
 }
 
 func TestMetricsNoOpWhenNotInitialized(t *testing.T) {
-	// Reset global state for testing
-	kvCacheMetrics = nil
-	kvCacheMetricsOnce = sync.Once{}
+	ResetMetricsForTest()
+	t.Cleanup(ResetMetricsForTest)
 
 	// Create a client without initializing metrics
 	client := NewZMQClientMetrics("test-pod")
@@ -114,9 +118,8 @@ func TestMetricsNoOpWhenNotInitialized(t *testing.T) {
 }
 
 func TestMetricsDelete(t *testing.T) {
-	// Reset global state for testing
-	kvCacheMetrics = nil
-	kvCacheMetricsOnce = sync.Once{}
+	ResetMetricsForTest()
+	t.Cleanup(ResetMetricsForTest)
 
 	// Initialize metrics
 	err := InitializeMetrics()
@@ -138,9 +141,8 @@ func TestMetricsDelete(t *testing.T) {
 }
 
 func TestConcurrentMetricsAccess(t *testing.T) {
-	// Reset global state for testing
-	kvCacheMetrics = nil
-	kvCacheMetricsOnce = sync.Once{}
+	ResetMetricsForTest()
+	t.Cleanup(ResetMetricsForTest)
 
 	// Initialize metrics
 	err := InitializeMetrics()

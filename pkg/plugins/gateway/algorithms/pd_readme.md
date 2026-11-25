@@ -282,7 +282,7 @@ decode_score = running_reqs_with_pending
 
 ### `token_load`
 
-Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
+Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under the model's selection lock (`selectStripes`) together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
 
 ```
 decode_score = decode_tokens + generated_tokens
@@ -325,12 +325,12 @@ When the selected prefill pod's roleset has `role-name: encode` pods and a vLLM 
 
 ```
 Gateway ──POST /v1/chat/completions {messages:[{role:user, content:[item i]}]}──► Encode Pod   (one per item, in parallel)
-         ◄── 200 ──────────────────────────────────────────────────────────────── Encode Pod   (output stored by the EC connector)
+         ◄── 200 {ec_transfer_params?} ────────────────────────────────────────── Encode Pod   (output stored by the EC connector)
 
-Gateway ──prefill as below, request body unchanged──────────────────────────────► Prefill Pod  (finds the output by the item's hash)
+Gateway ──prefill as below, plus the encoders' ec_transfer_params──────────────► Prefill Pod  (finds the output by the item's hash, or pulls it)
 ```
 
-Items are spread round-robin over the roleset's encode pods. The body is not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Connectors that need transfer handles passed through the request (vLLM's `*_embeds` rewrite in `disagg_epd_proxy.py`) are not supported.
+Items are spread round-robin over the roleset's encode pods. The media items are not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. Any `ec_transfer_params` the client sent are dropped. When the encode responses carry them (`ECCPUConnector` with NIXL), they are merged and set on the prefill body, so the prefill pod can pull the output from the encoder. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Rewriting items to `*_embeds` (the default of vLLM's `disagg_epd_proxy.py`) and connectors that need the consumer picked before encoding (`ECMooncakeConnector`) are not supported.
 
 When bucketing routes the request to a combined pod instead, `Route` runs the same stage on the combined pod's roleset. For E+PD rolesets, where encode pods sit in front of pods that serve the whole request, the gateway runs it outside the PD router: with any other routing strategy, `selectTargetPod` drops encode pods from the candidates and encodes on the chosen pod's roleset before returning it.
 
@@ -679,7 +679,7 @@ Enabled by `AIBRIX_BUCKET_SERVE=true`, which requires `AIBRIX_PROMPT_LENGTH_BUCK
 Plain bucketing keeps every roleset whose range covers the request as a candidate, and the scoring decides among them. Adaptive bucket serving narrows that choice. The gateway keeps a per-model picture of the prompt lengths it routes, charges every roleset the traffic only it can serve, and splits each range that several rolesets still need into one band per roleset, drawing each band against one replica-proportional share so a roleset carrying several overlaps does not draw a fresh share from each. The cut points sit at quantiles of the observed traffic. The picture is an EWMA with a 30s half-life, a model's plan is recomputed at most once every 5s, and one plan holds at most 16 affinity bands. A shared range needs a meaningful share of the model's traffic before it is split at all, and a range that cannot afford one band per needing roleset splits into as many bands as the budget left allows; an interval that is not split keeps every covering roleset a candidate.
 
 ```
-bucketServeBand()   (before selectMu, one call per request)
+bucketServeBand()   (before the model's selection lock, one call per request)
     ├─ observe promptLength for the model
     ├─ groups: one per eligible roleset, with the range its profile declares and its prefill replica count
     ├─ plan: shared ranges split at mode quantiles in replica proportion, light ones kept whole
@@ -830,7 +830,7 @@ NewPDRouter()
   │     load_balancing  → pd.LoadBalancingDecodePolicy
   │     (other)         → log warning, same as load_balancing
   ├─ create HTTP client with connection pool
-  │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
+  │     MaxIdleConns=1024, MaxIdleConnsPerHost=128, IdleConnTimeout=90s
   ├─ TRT handler from AIBRIX_TRT_SCHEDULE_STYLE (immutable, router-scoped)
   │     owns a lazily populated /server_info cache for generation_first
   ├─ NewPrefillRequestTracker()

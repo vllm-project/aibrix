@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,4 +77,12 @@ func TestLeastRequestSelection_SameNamedPodsInTwoNamespaces(t *testing.T) {
 	require.True(t, imbalanced)
 	require.Len(t, leastPods, 1)
 	assert.Equal(t, "team-a", leastPods[0].Namespace)
+}
+
+func TestLeastRequestSelection_MaxCountIsSelectable(t *testing.T) {
+	pod := sameNamedPod("team-a", "10.0.0.1")
+	counts := map[string]int{"team-a/worker-0": math.MaxInt}
+
+	selected := routeutil.SelectTargetPodWithLeastRequestCountFromCounts(counts, []*v1.Pod{pod})
+	require.Same(t, pod, selected)
 }

@@ -20,11 +20,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -40,6 +43,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -308,7 +313,7 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
-				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				// errresp.BuildErrorResponse returns x-error-routing: true (no Content-Type in headers)
 				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
 				assert.GreaterOrEqual(t, len(headers), 1)
 				foundErrorRouting := false
@@ -356,7 +361,7 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
-				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				// errresp.BuildErrorResponse returns x-error-routing: true (no Content-Type in headers)
 				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
 				assert.GreaterOrEqual(t, len(headers), 1)
 				foundErrorRouting := false
@@ -700,8 +705,9 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Create server with mock cache
 			server := &Server{
-				cache:         mockCache,
-				gatewayClient: mockGW,
+				cache:            mockCache,
+				gatewayClient:    mockGW,
+				gatewayNamespace: "aibrix-system",
 			}
 
 			// Create request for the test case
@@ -1066,9 +1072,9 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 
 	// enforceModelRPS atomically pre-charges (+1); routing then fails so the deferred
-	// compensation refunds (-1).
-	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(1)).Return(int64(1), nil).Once()
-	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), nil).Once()
+	// compensation refunds (-1). Both hit the counter of the resolved profile.
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT:rps-limited", int64(1)).Return(int64(1), nil).Once()
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT:rps-limited", int64(-1)).Return(int64(0), nil).Once()
 	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
 
 	server := &Server{
@@ -1099,6 +1105,113 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockCache.AssertExpectations(t)
 	mockRouter.AssertExpectations(t)
 	mockModelRL.AssertExpectations(t)
+}
+
+// TestHandleRequestBody_ModelRPSCountedPerProfile checks that each config profile's
+// requestsPerSecond counts only the requests that resolved to that profile.
+func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
+	// The two-profile example from docs/source/production/model-deployment.rst,
+	// without routingStrategy so that no router is needed.
+	twoProfiles := `{"defaultProfile":"default","profiles":{` +
+		`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`
+	newServer := func(t *testing.T, profileJSON string) (*Server, *miniredis.Miniredis) {
+		podList := &utils.PodArray{Pods: []*v1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "pod-a",
+				Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}}}
+		mockCache := &MockCache{Cache: cache.NewForTest()}
+		mockCache.On("HasModel", "test-model").Return(true)
+		mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+		mockCache.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(1))
+		// miniredis does not advance its clock by itself, so every request lands in
+		// the same 1 s window.
+		mr := miniredis.RunT(t)
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = client.Close() })
+		return &Server{
+			cache:               mockCache,
+			modelRateLimiter:    ratelimiter.NewRedisAccountRateLimiter("aibrix_model", client, time.Second),
+			requestCountTracker: map[string]int{},
+		}, mr
+	}
+	// send sends one request with the config-profile header set to profile.
+	send := func(s *Server, profile, requestID string) *extProcPb.ProcessingResponse {
+		routingCtx := types.NewRoutingContext(context.Background(), "", "", "", requestID, "")
+		routingCtx.ReqPath = PathChatCompletions
+		routingCtx.ReqConfigProfile = profile
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+					EndOfStream: true,
+				},
+			},
+		}
+		resp, _, _, _ := s.HandleRequestBody(context.Background(), routingCtx, requestID, req, utils.User{})
+		return resp
+	}
+	// admitted sends n requests with the config-profile header set to profile and
+	// returns how many were admitted.
+	admitted := func(s *Server, profile string, n int) int {
+		ok := 0
+		for i := 0; i < n; i++ {
+			if send(s, profile, fmt.Sprintf("%s-%d", profile, i)).GetImmediateResponse() == nil {
+				ok++
+			}
+		}
+		return ok
+	}
+	// refusedProfile sends one request that must be refused and returns the
+	// x-aibrix-config-profile header of the response, or "" if it has none.
+	refusedProfile := func(t *testing.T, s *Server, profile string) string {
+		refused := send(s, profile, profile+"-refused").GetImmediateResponse()
+		require.NotNil(t, refused)
+		for _, h := range refused.GetHeaders().GetSetHeaders() {
+			if h.GetHeader().GetKey() == HeaderAIBrixConfigProfile {
+				return string(h.GetHeader().GetRawValue())
+			}
+		}
+		return ""
+	}
+
+	t.Run("default traffic does not use up batch's limit", func(t *testing.T) {
+		s, _ := newServer(t, twoProfiles)
+		assert.Equal(t, 20, admitted(s, "default", 20))
+		assert.Equal(t, 20, admitted(s, "batch", 20))
+		assert.Equal(t, "", refusedProfile(t, s, "batch"))
+	})
+	t.Run("batch traffic does not use up default's limit", func(t *testing.T) {
+		s, _ := newServer(t, twoProfiles)
+		assert.Equal(t, 20, admitted(s, "batch", 20))
+		assert.Equal(t, 100, admitted(s, "default", 100))
+		assert.Equal(t, 0, admitted(s, "default", 1))
+	})
+	t.Run("unknown profile header counts against the default profile", func(t *testing.T) {
+		s, mr := newServer(t, twoProfiles)
+		assert.Equal(t, 100, admitted(s, "no-such-profile", 100))
+		assert.Equal(t, 0, admitted(s, "default", 1))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
+	})
+	t.Run("authoritative policy counts a profile header against the default profile", func(t *testing.T) {
+		s, mr := newServer(t, `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{`+
+			`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`)
+		assert.Equal(t, 100, admitted(s, "batch", 100))
+		assert.Equal(t, "", refusedProfile(t, s, "batch"))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
+	})
+	t.Run("auto counts against the profile it selects", func(t *testing.T) {
+		s, mr := newServer(t, `{"defaultProfile":"default","profiles":{"default":{"requestsPerSecond":100},`+
+			`"batch":{"requestsPerSecond":20,"routingConfig":{"promptTokensGte":1}}}}`)
+		assert.Equal(t, 20, admitted(s, "auto", 20))
+		assert.Equal(t, "batch", refusedProfile(t, s, "auto"))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:batch:1000:counter"}, mr.Keys())
+	})
 }
 
 // TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a
@@ -1838,7 +1951,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			ingressEngine: EngineTRTLLM,
 			wantReject:    true,
 			wantErrCode:   ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType:   ErrorTypeInvalidRequest,
+			wantErrType:   errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:    "routing strategy 'pd' is not supported for endpoint '/v1/responses' with engine 'trtllm'",
 		},
 		{
@@ -1848,7 +1961,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			headerValue: "pd",
 			wantReject:  true,
 			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
+			wantErrType: errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/messages'",
 		},
 		{
@@ -1858,7 +1971,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			headerValue: "pd",
 			wantReject:  true,
 			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
+			wantErrType: errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
 		},
 		{
@@ -1876,7 +1989,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			profileJSON:   `{"defaultProfile":"default","profiles":{"pd-profile":{"routingStrategy":"pd"},"default":{"routingStrategy":"test-router"}}}`,
 			wantReject:    true,
 			wantErrCode:   ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType:   ErrorTypeInvalidRequest,
+			wantErrType:   errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:    "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
 		},
 		{
@@ -1887,7 +2000,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			profileJSON: `{"lockedRoutingStrategy":"pd","defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
 			wantReject:  true,
 			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
+			wantErrType: errresp.ErrorTypeInvalidRequest,
 			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/rerank'",
 		},
 		{
@@ -2051,4 +2164,19 @@ func TestHandleRequestBody_PDRoutingTimeEndsAtPrefillStart(t *testing.T) {
 			assert.Contains(t, logs(), `routing_time_taken="`+want.String()+`"`)
 		})
 	}
+}
+
+type modelWakeCall struct {
+	pod     *v1.Pod
+	model   string
+	binding utils.ModelClaimBinding
+}
+
+type recordingModelWakeRequester struct {
+	calls []modelWakeCall
+}
+
+func (r *recordingModelWakeRequester) RequestWake(pod *v1.Pod, binding utils.ModelClaimBinding) bool {
+	r.calls = append(r.calls, modelWakeCall{pod: pod, model: binding.Model, binding: binding})
+	return true
 }
