@@ -266,6 +266,13 @@ func (b *barrierRunningCache) GetPodsRunningRequestsAndDecodeLedger(pods []*v1.P
 	return counts, b.remote, nil
 }
 
+func (b *barrierRunningCache) GetPodsDecodeLedger(_ []*v1.Pod) (map[string]cache.RemoteDecodeLoad, error) {
+	if err := b.waitBarrier(); err != nil {
+		return nil, err
+	}
+	return b.remote, nil
+}
+
 // TestPDRouter_ConcurrentRedisReadsDoNotSerializeOnSelectMu verifies that
 // concurrent filterPrefillDecodePods calls execute their cross-gateway Redis
 // reads in parallel before acquiring selectMu, for both default load_balancing
@@ -283,12 +290,14 @@ func TestPDRouter_ConcurrentRedisReadsDoNotSerializeOnSelectMu(t *testing.T) {
 	readyPods := append(append([]*v1.Pod{}, prefillPods...), decodePods...)
 
 	cases := []struct {
-		name         string
-		decodePolicy pd.DecodeScorePolicy
-		sharedLedger bool
+		name             string
+		decodePolicy     pd.DecodeScorePolicy
+		sharedLedger     bool
+		populateSnapshot bool
 	}{
 		{name: "load_balancing", decodePolicy: nil, sharedLedger: false},
 		{name: "token_load_shared_ledger", decodePolicy: pd.TokenLoadDecodePolicy{}, sharedLedger: true},
+		{name: "token_load_shared_ledger_with_snapshot", decodePolicy: pd.TokenLoadDecodePolicy{}, sharedLedger: true, populateSnapshot: true},
 	}
 
 	for _, tc := range cases {
@@ -319,6 +328,17 @@ func TestPDRouter_ConcurrentRedisReadsDoNotSerializeOnSelectMu(t *testing.T) {
 					ctx := types.NewRoutingContext(context.Background(), "pd", "model-a", "hello", reqID, "user")
 					ctx.Engine = "vllm"
 					ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"hello"}],"stream":true}`)
+					if tc.populateSnapshot {
+						ctx.StartRunningRequestsSnapshot()
+						defer ctx.StopRunningRequestsSnapshot()
+						_, _ = ctx.RunningRequests(readyPods, func(pods []*v1.Pod) (map[string]int64, error) {
+							out := make(map[string]int64, len(pods))
+							for _, p := range pods {
+								out[utils.GeneratePodKey(p.Namespace, p.Name)] = 0
+							}
+							return out, nil
+						})
+					}
 					<-start
 					p, d, err := r.filterPrefillDecodePods(ctx, readyPods)
 					errs[i] = err

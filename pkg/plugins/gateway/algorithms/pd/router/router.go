@@ -1960,6 +1960,7 @@ type sharedDecodeLedgerCache interface {
 	SharedDecodeLedgerAvailable() bool
 	PublishDecodeLedger(provider cache.DecodeLedgerProvider) func(podKey string)
 	GetPodsRunningRequestsAndDecodeLedger(pods []*v1.Pod) (map[string]int64, map[string]cache.RemoteDecodeLoad, error)
+	GetPodsDecodeLedger(pods []*v1.Pod) (map[string]cache.RemoteDecodeLoad, error)
 }
 
 // shareDecodeLedger publishes the decode ledger to the other gateway replicas
@@ -1987,13 +1988,25 @@ func (r *pdRouter) shareDecodeLedger() {
 }
 
 // decodeRunningRequests reads the live running-request counts of pods and, when
-// remoteLedger is not nil, the other replicas' decode ledgers in the same round
-// trip. When remoteLedger is not needed, it reads through
-// routingCtx.RunningRequests so one routing decision shares a single Redis read
-// (e.g. reusing the snapshot already populated by narrowToInflightCapacity).
+// remoteLedger is not nil, the other replicas' decode ledgers. When remoteLedger
+// is not needed, it reads through routingCtx.RunningRequests so one routing
+// decision shares a single Redis read (e.g. reusing the snapshot already
+// populated by narrowToInflightCapacity). When remoteLedger is needed and the
+// decision snapshot already covers pods, it reuses those cached counts and
+// reads only the decode ledger via GetPodsDecodeLedger; otherwise it reads both
+// in one round trip via GetPodsRunningRequestsAndDecodeLedger.
 func (r *pdRouter) decodeRunningRequests(routingCtx *types.RoutingContext, pods []*v1.Pod, remoteLedger *map[string]cache.RemoteDecodeLoad) (map[string]int64, error) {
 	if remoteLedger == nil || r.sharedDecodeLedger == nil {
 		return routingCtx.RunningRequests(pods, r.cache.GetPodsRunningRequests)
+	}
+	if counts, ok := routingCtx.CachedRunningRequests(pods); ok {
+		ledger, err := r.sharedDecodeLedger.GetPodsDecodeLedger(pods)
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to read shared decode ledger with cached running requests", "pod_count", len(pods))
+			return counts, nil
+		}
+		*remoteLedger = ledger
+		return counts, nil
 	}
 	counts, ledger, err := r.sharedDecodeLedger.GetPodsRunningRequestsAndDecodeLedger(pods)
 	*remoteLedger = ledger

@@ -226,34 +226,67 @@ func TestSelectTargetPod_PDReadsRunningRequestsOnce(t *testing.T) {
 		})
 	}
 
-	// Pin today's token_load + requestsInflight baseline: narrowToInflightCapacity
-	// performs one fleet read and sharedDecodeLedger reads running counts + decode
-	// ledger in a second pipeline (now outside the selection lock). A follow-up ledger-only
-	// cache read (#3588) can drop this from 2 to 1.
-	t.Run("pd/token_load/inflight=1000", func(t *testing.T) {
-		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, "pd-m", "hello world", "req-pd-token-load-inflight", "user")
-		t.Cleanup(ctx.Delete)
-		ctx.ReqPath = "/v1/chat/completions"
-		ctx.ReqBody = []byte(`{"model":"pd-m","messages":[{"role":"user","content":"hello world"}],"stream":true}`)
-		raw := json.RawMessage(`{"decodeScorePolicy":"token_load"}`)
-		ctx.ConfigProfile = &types.ResolvedConfigProfile{
-			RequestsInflight: 1000,
-			RoutingConfig:    raw,
-			Routing:          configprofiles.ParseRoutingConfig(raw),
-		}
+	// Under token_load + requestsInflight, narrowToInflightCapacity populates the
+	// decision-level running-requests snapshot (100 aibrix:rrq:* HGETALLs) and
+	// PD's decodeRunningRequests reuses those cached counts, issuing only a
+	// ledger-only read (50 aibrix:dtl:* HGETALLs, 0 duplicate aibrix:rrq:* reads).
+	// ZRANGEBYSCORE stays at 2 (one for inflight, one for the ledger read to filter
+	// live gateways), keeping gateway_inflight.go and pkg/types decoupled from
+	// PD/Redis internals.
+	for _, inflight := range []int64{0, 1000} {
+		t.Run(fmt.Sprintf("pd/token_load/inflight=%d", inflight), func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, "pd-m", "hello world", fmt.Sprintf("req-pd-token-load-%d", inflight), "user")
+			t.Cleanup(ctx.Delete)
+			ctx.ReqPath = "/v1/chat/completions"
+			ctx.ReqBody = []byte(`{"model":"pd-m","messages":[{"role":"user","content":"hello world"}],"stream":true}`)
+			raw := json.RawMessage(`{"decodeScorePolicy":"token_load"}`)
+			ctx.ConfigProfile = &types.ResolvedConfigProfile{
+				RequestsInflight: inflight,
+				RoutingConfig:    raw,
+				Routing:          configprofiles.ParseRoutingConfig(raw),
+			}
 
-		readsBefore := reads.count.Load()
-		addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
-		require.NoError(t, err)
-		require.NotEmpty(t, addr)
-		assert.EqualValues(t, 2, reads.count.Load()-readsBefore, "token_load + requestsInflight currently performs inflight + shared-ledger reads")
-	})
+			before := mr.CommandCount()
+			readsBefore := reads.count.Load()
+			rrqBefore := reads.rrqHGetAlls.Load()
+			dtlBefore := reads.ledgerHGetAlls.Load()
+
+			addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+			require.NoError(t, err)
+			require.NotEmpty(t, addr)
+
+			sent := mr.CommandCount() - before
+			zrangeSent := reads.count.Load() - readsBefore
+			rrqSent := reads.rrqHGetAlls.Load() - rrqBefore
+			dtlSent := reads.ledgerHGetAlls.Load() - dtlBefore
+			t.Logf("pd token_load inflight=%d: %d Redis commands, %d ZRANGEBYSCORE, %d rrq HGETALLs, %d dtl HGETALLs over %dP+%dD pods",
+				inflight, sent, zrangeSent, rrqSent, dtlSent, half, half)
+
+			if inflight == 0 {
+				// Without a snapshot, token_load reads running counts and decode ledgers together in one round trip.
+				assert.EqualValues(t, 1, zrangeSent, "token_load without inflight must use one combined Redis pipeline")
+				assert.EqualValues(t, half, rrqSent, "token_load without inflight reads rrq only for decode pods")
+				assert.EqualValues(t, half, dtlSent, "token_load without inflight reads dtl only for decode pods")
+			} else {
+				// With inflight enabled, narrowToInflightCapacity reads rrq once for all 100 pods;
+				// PD reuses that snapshot and reads only the 50 decode-ledger hashes (no duplicate rrq HGETALLs).
+				assert.EqualValues(t, 2, zrangeSent, "token_load + requestsInflight sends inflight + ledger-only pipelines")
+				assert.EqualValues(t, half*2, rrqSent, "token_load + requestsInflight must not re-read aibrix:rrq:* for decode pods")
+				assert.EqualValues(t, half, dtlSent, "token_load + requestsInflight reads aibrix:dtl:* only for decode pods")
+				assert.GreaterOrEqual(t, sent, half*3+2)
+				assert.Less(t, sent, half*3+30)
+			}
+		})
+	}
 }
 
-// fleetReadCounter counts ZRANGEBYSCORE commands on connections opened by the
-// copied dialer, including those owned by the store's derived Redis clients.
+// fleetReadCounter counts ZRANGEBYSCORE and per-prefix HGETALL commands on
+// connections opened by the copied dialer, including those owned by the store's
+// derived Redis clients.
 type fleetReadCounter struct {
-	count atomic.Int64
+	count          atomic.Int64
+	rrqHGetAlls    atomic.Int64
+	ledgerHGetAlls atomic.Int64
 }
 
 func (c *fleetReadCounter) dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -284,8 +317,19 @@ func (c *fleetReadConn) Write(p []byte) (int, error) {
 		}
 		consumed := len(c.pending) - input.Len() - reader.Buffered()
 		c.pending = c.pending[consumed:]
-		if len(command) > 0 && strings.EqualFold(command[0], "zrangebyscore") {
+		if len(command) == 0 {
+			continue
+		}
+		switch {
+		case strings.EqualFold(command[0], "zrangebyscore"):
 			c.reads.count.Add(1)
+		case strings.EqualFold(command[0], "hgetall") && len(command) > 1:
+			switch {
+			case strings.HasPrefix(command[1], "aibrix:rrq:"):
+				c.reads.rrqHGetAlls.Add(1)
+			case strings.HasPrefix(command[1], "aibrix:dtl:"):
+				c.reads.ledgerHGetAlls.Add(1)
+			}
 		}
 	}
 	return n, err

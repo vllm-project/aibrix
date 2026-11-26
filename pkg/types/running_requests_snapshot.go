@@ -96,3 +96,30 @@ func (r *RoutingContext) RunningRequests(pods []*v1.Pod, read func(pods []*v1.Po
 	}
 	return s.counts, nil
 }
+
+// CachedRunningRequests returns the running-request counts from an active,
+// populated decision snapshot when it covers every non-nil pod in pods, without
+// invoking any reader. Callers that need extra per-pod state (such as the
+// shared decode ledger) can check this first to reuse the snapshot's counts and
+// read only the extra state.
+//
+// The result must not be modified, and can hold pods besides the ones asked
+// for, so look pods up by key rather than ranging over it.
+func (r *RoutingContext) CachedRunningRequests(pods []*v1.Pod) (map[string]int64, bool) {
+	if r == nil {
+		return nil, false
+	}
+	s := r.runningRequests.Load()
+	if s == nil || s.counts == nil {
+		return nil, false
+	}
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		if _, ok := s.counts[utils.GeneratePodKey(pod.Namespace, pod.Name)]; !ok {
+			return nil, false
+		}
+	}
+	return s.counts, true
+}
