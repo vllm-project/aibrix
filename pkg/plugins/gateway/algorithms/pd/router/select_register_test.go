@@ -266,11 +266,11 @@ func (b *barrierRunningCache) GetPodsRunningRequestsAndDecodeLedger(pods []*v1.P
 	return counts, b.remote, nil
 }
 
-func (b *barrierRunningCache) GetPodsDecodeLedger(_ []*v1.Pod) (map[string]cache.RemoteDecodeLoad, error) {
+func (b *barrierRunningCache) GetPodsDecodeLedger(_ []*v1.Pod) map[string]cache.RemoteDecodeLoad {
 	if err := b.waitBarrier(); err != nil {
-		return nil, err
+		return nil
 	}
-	return b.remote, nil
+	return b.remote
 }
 
 // TestPDRouter_ConcurrentRedisReadsDoNotSerializeOnSelectMu verifies that

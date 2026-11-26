@@ -86,13 +86,8 @@ func (r *RoutingContext) RunningRequests(pods []*v1.Pod, read func(pods []*v1.Po
 		r.runningRequests.CompareAndSwap(s, &runningRequestsSnapshot{counts: counts})
 		return counts, nil
 	}
-	for _, pod := range pods {
-		if pod == nil {
-			continue
-		}
-		if _, ok := s.counts[utils.GeneratePodKey(pod.Namespace, pod.Name)]; !ok {
-			return read(pods)
-		}
+	if !s.covers(pods) {
+		return read(pods)
 	}
 	return s.counts, nil
 }
@@ -110,16 +105,23 @@ func (r *RoutingContext) CachedRunningRequests(pods []*v1.Pod) (map[string]int64
 		return nil, false
 	}
 	s := r.runningRequests.Load()
-	if s == nil || s.counts == nil {
+	if !s.covers(pods) {
 		return nil, false
+	}
+	return s.counts, true
+}
+
+func (s *runningRequestsSnapshot) covers(pods []*v1.Pod) bool {
+	if s == nil || s.counts == nil {
+		return false
 	}
 	for _, pod := range pods {
 		if pod == nil {
 			continue
 		}
 		if _, ok := s.counts[utils.GeneratePodKey(pod.Namespace, pod.Name)]; !ok {
-			return nil, false
+			return false
 		}
 	}
-	return s.counts, true
+	return true
 }

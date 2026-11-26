@@ -142,8 +142,7 @@ func TestDecodeLedger_WithoutRedis(t *testing.T) {
 	assert.Nil(t, ledger)
 	assert.EqualValues(t, 4, counts[testLedgerPodKey])
 
-	ledgerOnly, err := store.GetPodsDecodeLedger([]*v1.Pod{pod.Pod})
-	require.NoError(t, err)
+	ledgerOnly := store.GetPodsDecodeLedger([]*v1.Pod{pod.Pod})
 	assert.Nil(t, ledgerOnly)
 }
 
@@ -328,14 +327,11 @@ func TestGetPodsDecodeLedger_LedgerOnlyPipelineAndSemantics(t *testing.T) {
 
 	// Empty or all-nil pod slices issue no Redis commands.
 	for _, empty := range [][]*v1.Pod{nil, {}, {nil}} {
-		got, err := store.GetPodsDecodeLedger(empty)
-		require.NoError(t, err)
-		assert.Nil(t, got)
+		assert.Nil(t, store.GetPodsDecodeLedger(empty))
 	}
 	assert.Empty(t, recorder.cmds, "empty/nil pod list must not touch Redis")
 
-	ledger, err := store.GetPodsDecodeLedger([]*v1.Pod{nil, pod.Pod})
-	require.NoError(t, err)
+	ledger := store.GetPodsDecodeLedger([]*v1.Pod{nil, pod.Pod})
 	remote, ok := ledger[testLedgerPodKey]
 	require.True(t, ok)
 	assert.Equal(t, 1000.0, remote.Tokens)
@@ -370,13 +366,11 @@ func TestGetPodsDecodeLedger_LedgerOnlyPipelineAndSemantics(t *testing.T) {
 	assert.Equal(t, 1, dtlHGetAlls)
 	assert.Zero(t, rrqHGetAlls, "GetPodsDecodeLedger must not read aibrix:rrq:* hashes")
 
-	// A Redis failure degrades to nil without error, matching GetPodsRunningRequestsAndDecodeLedger.
+	// A Redis failure degrades to nil, matching GetPodsRunningRequestsAndDecodeLedger.
 	deadClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond})
 	t.Cleanup(func() { _ = deadClient.Close() })
 	deadStore := &Store{redisClient: deadClient}
-	got, err := deadStore.GetPodsDecodeLedger([]*v1.Pod{pod.Pod})
-	require.NoError(t, err)
-	assert.Nil(t, got)
+	assert.Nil(t, deadStore.GetPodsDecodeLedger([]*v1.Pod{pod.Pod}))
 }
 
 // Close stops the writer goroutine and returns only after it has.

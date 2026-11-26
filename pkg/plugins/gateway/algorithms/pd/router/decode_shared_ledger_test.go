@@ -17,7 +17,6 @@ limitations under the License.
 package router
 
 import (
-	"errors"
 	"sync"
 	"testing"
 
@@ -34,7 +33,6 @@ type fakeSharedLedgerCache struct {
 	*cache.Store
 	available bool
 	remote    map[string]cache.RemoteDecodeLoad
-	ledgerErr error
 
 	mu              sync.Mutex
 	provider        cache.DecodeLedgerProvider
@@ -62,15 +60,12 @@ func (f *fakeSharedLedgerCache) GetPodsRunningRequestsAndDecodeLedger(pods []*v1
 	return counts, f.remote, err
 }
 
-func (f *fakeSharedLedgerCache) GetPodsDecodeLedger(_ []*v1.Pod) (map[string]cache.RemoteDecodeLoad, error) {
+func (f *fakeSharedLedgerCache) GetPodsDecodeLedger(_ []*v1.Pod) map[string]cache.RemoteDecodeLoad {
 	f.mu.Lock()
 	f.ledgerOnlyReads++
-	err := f.ledgerErr
+	remote := f.remote
 	f.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return f.remote, nil
+	return remote
 }
 
 func withTokenLoadSharedLedger(t *testing.T, on bool) {
@@ -165,11 +160,11 @@ func TestPDRouter_DecodeTokenLoadReusesSnapshotWithLedgerOnlyRead(t *testing.T) 
 		assert.Equal(t, 1, fake.ledgerOnlyReads, "snapshot hit must call ledger-only GetPodsDecodeLedger")
 	})
 
-	t.Run("snapshot hit preserves cached counts even if ledger-only read errors", func(t *testing.T) {
+	t.Run("snapshot hit preserves cached counts when ledger-only read degrades to nil", func(t *testing.T) {
 		r, _, fake := newRouter(t)
-		fake.ledgerErr = errors.New("redis blip")
+		fake.remote = nil
 
-		ctx := tokenLoadRequest(t, "snap-hit-err", 400)
+		ctx := tokenLoadRequest(t, "snap-hit-nil-ledger", 400)
 		ctx.StartRunningRequestsSnapshot()
 		defer ctx.StopRunningRequestsSnapshot()
 		_, err := ctx.RunningRequests(decodePods, func([]*v1.Pod) (map[string]int64, error) {
@@ -182,7 +177,7 @@ func TestPDRouter_DecodeTokenLoadReusesSnapshotWithLedgerOnlyRead(t *testing.T) 
 
 		var remote map[string]cache.RemoteDecodeLoad
 		counts, err := r.decodeRunningRequests(ctx, decodePods, &remote)
-		require.NoError(t, err, "a failed ledger read must not discard valid cached running counts")
+		require.NoError(t, err)
 		assert.Equal(t, int64(7), counts[burstPodKey(decode0.Name)])
 		assert.Equal(t, int64(11), counts[burstPodKey(decode1.Name)])
 		assert.Nil(t, remote)

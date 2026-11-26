@@ -1960,7 +1960,7 @@ type sharedDecodeLedgerCache interface {
 	SharedDecodeLedgerAvailable() bool
 	PublishDecodeLedger(provider cache.DecodeLedgerProvider) func(podKey string)
 	GetPodsRunningRequestsAndDecodeLedger(pods []*v1.Pod) (map[string]int64, map[string]cache.RemoteDecodeLoad, error)
-	GetPodsDecodeLedger(pods []*v1.Pod) (map[string]cache.RemoteDecodeLoad, error)
+	GetPodsDecodeLedger(pods []*v1.Pod) map[string]cache.RemoteDecodeLoad
 }
 
 // shareDecodeLedger publishes the decode ledger to the other gateway replicas
@@ -2000,12 +2000,7 @@ func (r *pdRouter) decodeRunningRequests(routingCtx *types.RoutingContext, pods 
 		return routingCtx.RunningRequests(pods, r.cache.GetPodsRunningRequests)
 	}
 	if counts, ok := routingCtx.CachedRunningRequests(pods); ok {
-		ledger, err := r.sharedDecodeLedger.GetPodsDecodeLedger(pods)
-		if err != nil {
-			klog.V(4).ErrorS(err, "failed to read shared decode ledger with cached running requests", "pod_count", len(pods))
-			return counts, nil
-		}
-		*remoteLedger = ledger
+		*remoteLedger = r.sharedDecodeLedger.GetPodsDecodeLedger(pods)
 		return counts, nil
 	}
 	counts, ledger, err := r.sharedDecodeLedger.GetPodsRunningRequestsAndDecodeLedger(pods)

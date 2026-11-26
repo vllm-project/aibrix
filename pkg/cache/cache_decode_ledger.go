@@ -293,9 +293,9 @@ func (c *Store) GetPodsRunningRequestsAndDecodeLedger(pods []*v1.Pod) (map[strin
 // ledger is not included: the caller has it in memory. The returned map is nil
 // when Redis is not configured, pods has no non-nil entries, or the read
 // failed, and has no entry for a pod no other live gateway has charged.
-func (c *Store) GetPodsDecodeLedger(pods []*v1.Pod) (map[string]RemoteDecodeLoad, error) {
+func (c *Store) GetPodsDecodeLedger(pods []*v1.Pod) map[string]RemoteDecodeLoad {
 	_, ledger := c.readPodsSharedState(pods, false, true)
-	return ledger, nil
+	return ledger
 }
 
 // sumRemoteDecodeLedger adds up the fields of the live gateways other than this
