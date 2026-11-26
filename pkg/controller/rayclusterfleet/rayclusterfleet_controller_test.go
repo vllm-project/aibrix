@@ -805,7 +805,7 @@ func (f *fleetTestFixture) assertDeadlineScheduling(t *testing.T, tt deadlineSch
 }
 
 func TestDeadlineOperationErrors(t *testing.T) {
-	for _, op := range []string{"get", "list", "cancel", "create", "update", "cleanup", "cleanup notfound", "swallow unhealthy", "swallow scale"} {
+	for _, op := range []string{"get", "list", "cancel", "create", "update", "cleanup", "cleanup notfound", "rolling unhealthy", "rolling scale"} {
 		t.Run(op, func(t *testing.T) {
 			g, f := NewWithT(t), newFleetTestFixture(t, interceptor.Funcs{})
 			ctx, rs := context.Background(), &orchestrationv1alpha1.RayClusterReplicaSet{}
@@ -816,7 +816,7 @@ func TestDeadlineOperationErrors(t *testing.T) {
 			if op == "update" {
 				rs.Spec.Replicas = ptr.To(int32(0))
 			}
-			if strings.HasPrefix(op, "cleanup") || strings.HasPrefix(op, "swallow") {
+			if strings.HasPrefix(op, "cleanup") || strings.HasPrefix(op, "rolling") {
 				old := rs.DeepCopy()
 				old.Name, old.UID, old.ResourceVersion = "old", "old-uid", ""
 				old.Spec.Template.Spec.RayVersion, old.Annotations[util.RevisionAnnotation] = "old", "0"
@@ -826,7 +826,7 @@ func TestDeadlineOperationErrors(t *testing.T) {
 					f.fleet.Status = calculateStatus([]*orchestrationv1alpha1.RayClusterReplicaSet{rs}, rs, f.fleet)
 					f.fleet.Spec.RevisionHistoryLimit = ptr.To(int32(0))
 				}
-				if op == "swallow scale" {
+				if op == "rolling scale" {
 					old.Status.AvailableReplicas = 1
 				}
 				g.Expect(f.reconciler.Create(ctx, old)).To(Succeed())
@@ -834,15 +834,12 @@ func TestDeadlineOperationErrors(t *testing.T) {
 			}
 			f.save(t, rs)
 			injected := error(errors.NewServiceUnavailable("operation failure"))
-			wantErr, want := injected, time.Duration(0)
+			wantErr := injected
 			if op == "cancel" {
 				cancelCtx, cancel := context.WithCancel(ctx)
 				cancel()
 				ctx = cancelCtx
 				wantErr, injected = context.Canceled, context.Canceled
-			}
-			if strings.HasPrefix(op, "swallow") {
-				wantErr, want = nil, 600*time.Second
 			}
 			if op == "cleanup notfound" {
 				wantErr, injected = nil, errors.NewNotFound(orchestrationv1alpha1.GroupVersion.WithResource("rayclusterreplicasets").GroupResource(), "old")
@@ -862,7 +859,7 @@ func TestDeadlineOperationErrors(t *testing.T) {
 				funcs.List = func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error { return fail() }
 			case "create":
 				funcs.Create = func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return fail() }
-			case "update", "swallow unhealthy", "swallow scale":
+			case "update", "rolling unhealthy", "rolling scale":
 				funcs.Update = func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error { return fail() }
 			case "cleanup", "cleanup notfound":
 				funcs.Delete = func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error { return fail() }
@@ -870,7 +867,7 @@ func TestDeadlineOperationErrors(t *testing.T) {
 			f.reconciler.Client = interceptor.NewClient(f.reconciler.Client.(client.WithWatch), funcs)
 			result, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(f.fleet)})
 			g.Expect(err == wantErr).To(BeTrue(), "original operation error")
-			g.Expect(result).To(Equal(reconcile.Result{RequeueAfter: want}))
+			g.Expect(result).To(Equal(reconcile.Result{}))
 			g.Expect(calls).To(BeNumerically(">", 0))
 			if op == "create" {
 				g.Expect(util.GetDeploymentCondition(f.getFleet(t).Status, orchestrationv1alpha1.RayClusterFleetProgressing).Reason).To(Equal(util.FailedRSCreateReason))
