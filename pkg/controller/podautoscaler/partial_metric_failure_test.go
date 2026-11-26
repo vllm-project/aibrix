@@ -407,39 +407,48 @@ func TestHeldPassDoesNotRewriteStatus(t *testing.T) {
 	}
 }
 
-// TestComputeScaleDecisionHoldsScaleDownOnDroppedReadyPods checks the scale-down hold extends to
-// the case where a Ready pod's metric sample was dropped (its scrape timed out). As with a failed
-// source, the hold is opt-in (hold-scale-down-on-metric-failure), holds only a net scale-down, and
-// never blocks a scale-up.
+// TestComputeScaleDecisionHoldsScaleDownOnDroppedReadyPods checks the scale-down hold for a dropped
+// Ready-pod sample (its scrape did not return within the collection deadline). Unlike a failed
+// metric source -- which stays opt-in (hold-scale-down-on-metric-failure) -- a dropped Ready pod is
+// a regression the bounded collection introduces, so it holds a net scale-down *by default*. The
+// hold never blocks a scale-up (googs1025's scenario (a) on #3593), and a dropped-pod scale-down
+// with default settings keeps the replicas (scenario (b)).
 func TestComputeScaleDecisionHoldsScaleDownOnDroppedReadyPods(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
-		hold        bool
+		optIn       bool
 		dropped     int
+		failed      []string
 		recommended int32
 		current     int32
 		wantDesired int32
 		wantHeld    bool
 		wantReason  string
 	}{
-		{name: "hold keeps the replicas when a ready pod sample is dropped", hold: true, dropped: 1,
+		{name: "dropped ready pod holds scale-down by default (no opt-in)", dropped: 1,
 			recommended: 1, current: 4, wantDesired: 4, wantHeld: true,
 			wantReason: "Scale-down held (1 ready pod metric sample(s) missing)"},
-		{name: "best-effort default scales down despite a dropped sample", dropped: 1,
-			recommended: 1, current: 4, wantDesired: 1, wantHeld: false,
-			wantReason: "All metrics below target"},
-		{name: "hold does not apply when no sample was dropped", hold: true, dropped: 0,
-			recommended: 1, current: 4, wantDesired: 1, wantHeld: false,
-			wantReason: "All metrics below target"},
-		{name: "hold still scales up with a dropped sample", hold: true, dropped: 1,
+		{name: "dropped ready pod still holds with the opt-in set", optIn: true, dropped: 1,
+			recommended: 1, current: 4, wantDesired: 4, wantHeld: true,
+			wantReason: "Scale-down held (1 ready pod metric sample(s) missing)"},
+		{name: "a dropped ready pod never blocks a scale-up", dropped: 1,
 			recommended: 8, current: 4, wantDesired: 8, wantHeld: false,
 			wantReason: "kpa above target"},
+		{name: "no dropped pod and no failed metric scales down normally", dropped: 0,
+			recommended: 1, current: 4, wantDesired: 1, wantHeld: false,
+			wantReason: "All metrics below target"},
+		{name: "a failed metric source alone does not hold without the opt-in", failed: []string{"cpu"},
+			recommended: 1, current: 4, wantDesired: 1, wantHeld: false,
+			wantReason: "Available metrics below target (cpu could not be read)"},
+		{name: "a failed metric source holds with the opt-in", optIn: true, failed: []string{"cpu"},
+			recommended: 1, current: 4, wantDesired: 4, wantHeld: true,
+			wantReason: "Scale-down held (cpu could not be read)"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
 			pa.Spec.MinReplicas = ptr.To(int32(1))
 			pa.Annotations = map[string]string{types.ScaleDownCooldownWindowLabel: "0s"}
-			if tt.hold {
+			if tt.optIn {
 				pa.Annotations[types.HoldScaleDownOnMetricFailureLabel] = "true"
 			}
 			h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
@@ -448,6 +457,7 @@ func TestComputeScaleDecisionHoldsScaleDownOnDroppedReadyPods(t *testing.T) {
 				Algorithm:        "kpa",
 				Valid:            true,
 				DroppedReadyPods: tt.dropped,
+				FailedMetrics:    tt.failed,
 			}}
 			scaleObj := buildScaleObject("apps/v1", "Deployment", ns, pa.Spec.ScaleTargetRef.Name)
 

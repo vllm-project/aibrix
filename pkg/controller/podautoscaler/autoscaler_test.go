@@ -655,6 +655,9 @@ type mockMetricFetcher struct {
 	metricsValue float64
 	// metricsValues, when set, gives the value for each target metric instead.
 	metricsValues map[string]float64
+	// perPodValues, when set, gives the value for a specific pod (by name), taking precedence over
+	// metricsValues/metricsValue so a test can have different pods report different load.
+	perPodValues map[string]float64
 	// unscrapable pods fail to report, as a pod that is not serving yet does.
 	unscrapable map[string]bool
 	// failingMetrics fail to fetch for every pod, as a source whose endpoint is down does.
@@ -667,6 +670,9 @@ func (f *mockMetricFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Pod,
 	}
 	if f.failingMetrics[source.TargetMetric] {
 		return 0, fmt.Errorf("metric %s is unavailable", source.TargetMetric)
+	}
+	if v, ok := f.perPodValues[pod.Name]; ok {
+		return v, nil
 	}
 	if v, ok := f.metricsValues[source.TargetMetric]; ok {
 		return v, nil
@@ -1067,4 +1073,36 @@ func TestComputeDesiredReplicasReportsDroppedReadyPods(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.DroppedReadyPods, "the dropped Ready pod is surfaced for the scale-down hold")
+}
+
+// TestComputeDesiredReplicasScalesUpOnCollectedSlowPod is googs1025's scenario (c) on #3593 at the
+// autoscaler level: two Ready pods report 0 and 200 for a per-pod metric with target 50. Under the
+// single collection deadline both samples are collected (the collector test pins that a slow-but-
+// in-budget pod is not dropped), so the per-pod load is their mean (100), twice the target, and the
+// pass scales 2->4. Nothing is dropped, so the scale-up is not held.
+func TestComputeDesiredReplicasScalesUpOnCollectedSlowPod(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA) // POD source: gpu_cache_usage_perc, target 50
+	autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
+		mockMetricFetcher: mockMetricFetcher{perPodValues: map[string]float64{"pod-0": 0, "pod-1": 200}},
+	}, fake.NewClientBuilder().Build())
+
+	pods := make([]corev1.Pod, 2)
+	for i := range pods {
+		pods[i].Name = fmt.Sprintf("pod-%d", i)
+		pods[i].Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	}
+
+	result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+		PodAutoscaler:   pa,
+		ScalingContext:  testScalingContext(t, &pa),
+		CurrentReplicas: 2,
+		ReplicaState:    ReplicaState{ReadyReplicas: 2},
+		Pods:            pods,
+		Timestamp:       time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC),
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int32(4), result.DesiredReplicas, "mean load 100 at target 50 scales 2 to 4")
+	assert.Equal(t, 0, result.DroppedReadyPods, "both pods reported, nothing dropped")
 }

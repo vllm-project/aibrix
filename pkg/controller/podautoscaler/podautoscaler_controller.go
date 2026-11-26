@@ -1435,18 +1435,27 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		metricName = string(pa.Spec.ScalingStrategy)
 	}
 
-	// With hold-scale-down-on-metric-failure, a scale-down the remaining sources
-	// ask for while one fails is held, as Kubernetes HPA does: the failed source
-	// may be the one keeping the replicas up. The same applies when a Ready pod's
-	// sample was dropped (its scrape timed out): the recommendation rests on
-	// partial per-pod data that can under-count load and ask for a spurious
-	// scale-down. Like the HPA, the held recommendation is not recorded for the
-	// cooldown windows, so data the hold does not trust cannot delay a later
-	// scale-up. Bounds still apply below.
+	// A scale-down the remaining sources ask for is held in two cases.
+	//
+	// A dropped Ready pod (its scrape did not return within the collection
+	// deadline) holds the scale-down *by default*: before this collector added
+	// a bounded deadline, that pod's sample was waited for and counted, so a
+	// dropped sample now under-counts load and can ask for a spurious scale-down
+	// that would not have happened. Holding it simply restores the prior
+	// behavior, so it must not depend on an opt-in nobody has set.
+	//
+	// A failed metric *source* is the pre-existing case, governed by the opt-in
+	// hold-scale-down-on-metric-failure (as Kubernetes HPA does): that failure
+	// mode predates this change, so operators keep choosing whether to hold.
+	//
+	// Either way the held recommendation is not recorded for the cooldown
+	// windows, so data the hold does not trust cannot delay a later scale-up,
+	// and a scale-up from the samples we did collect still goes through. Bounds
+	// still apply below.
 	scaleDownHeld := pa.Spec.ScalingStrategy != autoscalingv1alpha1.HPA &&
-		(len(replicaResult.FailedMetrics) > 0 || replicaResult.DroppedReadyPods > 0) &&
 		metricDesiredReplicas < currentReplicas &&
-		scalingContext.GetHoldScaleDownOnMetricFailure()
+		(replicaResult.DroppedReadyPods > 0 ||
+			(len(replicaResult.FailedMetrics) > 0 && scalingContext.GetHoldScaleDownOnMetricFailure()))
 
 	// Apply cooldown window for KPA/APA (not for HPA which is managed by K8s)
 	desiredReplicas := metricDesiredReplicas

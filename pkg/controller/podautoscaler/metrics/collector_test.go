@@ -196,40 +196,62 @@ func readyPodForScrape(name, ip string) corev1.Pod {
 	return pod
 }
 
-// TestCollectFromPodsPerPodDeadlineCutsSlowPod pins the per-pod bound: with an unbounded parent
-// context and a large overall bound, a blocking pod must be cut by the per-pod timeout (not the
-// overall bound), while the reachable pod is still collected. Kills the mutant that replaces the
-// per-pod WithTimeout with WithCancel (the blocker would then run until the 10s overall bound).
-func TestCollectFromPodsPerPodDeadlineCutsSlowPod(t *testing.T) {
-	pods := []corev1.Pod{
-		podForScrape("bh-1", "10.0.0.1"),
-		podForScrape("good-1", "10.0.0.2"),
-	}
-	fetcher := &reachabilityFetcher{unreachable: map[string]bool{"bh-1": true}, value: 7}
-	bounds := collectBounds{perPodTimeout: 50 * time.Millisecond, overallTimeout: 10 * time.Second, maxConcurrency: 16}
+// delayedFetcher returns value[pod] after delay[pod], respecting the context: if the context is
+// done before the delay elapses it returns the context error (the scrape is dropped). It models a
+// pod that answers slowly but correctly, to show a merely-slow pod is collected under the single
+// overall deadline rather than cut by a per-pod bound.
+type delayedFetcher struct {
+	value map[string]float64
+	delay map[string]time.Duration
+}
 
-	start := time.Now()
+func (f *delayedFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Pod, _ autoscalingv1alpha1.MetricSource) (float64, error) {
+	if d := f.delay[pod.Name]; d > 0 {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return f.value[pod.Name], nil
+}
+
+// TestCollectFromPodsCollectsSlowPodWithinDeadline covers the single-deadline design (option 1 on
+// #3593, per googs1025): with no per-pod sub-deadline, a pod that answers slowly but within the
+// overall budget is still collected, not dropped. This is googs1025's scenario (one pod returns 0
+// immediately, the other returns 200 after a delay that is under the budget), scaled down for
+// speed. Both samples are collected, so the per-pod value is their mean and the pass can scale up
+// -- a 3s per-pod cut would instead drop the slow pod and bias the value low.
+func TestCollectFromPodsCollectsSlowPodWithinDeadline(t *testing.T) {
+	pods := []corev1.Pod{
+		readyPodForScrape("fast-0", "10.0.0.1"),   // returns 0 immediately
+		readyPodForScrape("slow-200", "10.0.0.2"), // returns 200 after a delay under the budget
+	}
+	fetcher := &delayedFetcher{
+		value: map[string]float64{"fast-0": 0, "slow-200": 200},
+		delay: map[string]time.Duration{"slow-200": 60 * time.Millisecond},
+	}
+	bounds := collectBounds{overallTimeout: 500 * time.Millisecond, maxConcurrency: 16}
+
 	snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
-	elapsed := time.Since(start)
 
 	require.NoError(t, err)
-	assert.Equal(t, []float64{7}, snapshot.Values, "the reachable pod is collected")
+	assert.ElementsMatch(t, []float64{0, 200}, snapshot.Values, "the slow pod answers within the budget, so both samples are collected")
+	assert.Equal(t, 0, snapshot.DroppedReadyPods, "no Ready pod was dropped")
 	assert.NoError(t, snapshot.Error)
-	// Cut by the 50ms per-pod bound, not the 10s overall bound.
-	assert.Less(t, elapsed, 2*time.Second, "the per-pod deadline must bound the blocking pod")
 }
 
 // TestCollectFromPodsOverallDeadlineCapsCollection pins the overall bound: with an unbounded
-// parent context and a large per-pod bound, the whole call must return within the overall timeout
-// even though every pod blocks. Kills the mutant that replaces the overall WithTimeout with
-// WithCancel (the blockers would then run until the 10s per-pod bound).
+// parent context, the whole call must return within the overall timeout even though every pod
+// blocks. Kills the mutant that replaces the overall WithTimeout with WithCancel (the blockers
+// would then run until the parent context, which here never cancels).
 func TestCollectFromPodsOverallDeadlineCapsCollection(t *testing.T) {
 	pods := []corev1.Pod{
 		podForScrape("bh-1", "10.0.0.1"),
 		podForScrape("bh-2", "10.0.0.2"),
 	}
 	fetcher := &reachabilityFetcher{unreachable: map[string]bool{"bh-1": true, "bh-2": true}}
-	bounds := collectBounds{perPodTimeout: 10 * time.Second, overallTimeout: 50 * time.Millisecond, maxConcurrency: 16}
+	bounds := collectBounds{overallTimeout: 50 * time.Millisecond, maxConcurrency: 16}
 
 	start := time.Now()
 	snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
@@ -257,7 +279,7 @@ func TestCollectFromPodsReadyPodsScrapedUnderUnreachableCrowd(t *testing.T) {
 	}
 	pods = append(pods, readyPodForScrape("good-1", "10.0.2.1"), readyPodForScrape("good-2", "10.0.2.2"))
 	fetcher := &reachabilityFetcher{unreachable: unreachable, value: 7}
-	bounds := collectBounds{perPodTimeout: 40 * time.Millisecond, overallTimeout: 100 * time.Millisecond, maxConcurrency: 2}
+	bounds := collectBounds{overallTimeout: 100 * time.Millisecond, maxConcurrency: 2}
 
 	for run := 0; run < 20; run++ {
 		snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
@@ -272,7 +294,7 @@ func TestCollectFromPodsReadyPodsScrapedUnderUnreachableCrowd(t *testing.T) {
 func TestCollectFromPodsClampsNonPositiveConcurrency(t *testing.T) {
 	pods := []corev1.Pod{podForScrape("good-1", "10.0.0.1"), podForScrape("good-2", "10.0.0.2")}
 	fetcher := &reachabilityFetcher{value: 7}
-	bounds := collectBounds{perPodTimeout: time.Second, overallTimeout: time.Second, maxConcurrency: 0}
+	bounds := collectBounds{overallTimeout: time.Second, maxConcurrency: 0}
 
 	snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
 	require.NoError(t, err)

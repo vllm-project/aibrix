@@ -36,24 +36,18 @@ import (
 // globals) so tests can shrink the deadlines without mutating shared state, keeping them
 // race-free and parallel-safe.
 type collectBounds struct {
-	// perPodTimeout bounds a single pod's metric scrape. Without it, one unreachable pod (a TCP
-	// blackhole, or connection-refused answered through the engine fetcher's retry backoff) can
-	// consume the entire reconcile budget before any healthy pod is scraped.
-	//
-	// Note it sits below the engine fetcher's own 1s/2s/4s retry schedule, so a pod that is slow
-	// because it is overloaded (often the hottest pod) can be dropped here; podsCarryingLoad then
-	// spreads the mean of the faster pods over it, biasing the per-pod value low exactly when load
-	// is high. That is an accepted trade-off for not letting one slow pod stall scaling; the
-	// timed-out pods are logged so the bias is visible.
-	perPodTimeout time.Duration
-	// overallTimeout bounds the whole concurrent collection. It is kept well below the reconcile
-	// deadline (DefaultReconcileTimeoutDuration, 10s) so that even a large batch of slow or
-	// unreachable pods still returns with time to spare to act on the partial metrics.
+	// overallTimeout bounds the whole concurrent collection, and with no per-pod sub-deadline it is
+	// also the only bound on any single scrape. It is kept well below the reconcile deadline
+	// (DefaultReconcileTimeoutDuration, 10s) so that even a large batch of slow or unreachable pods
+	// still returns with time to spare to act on the partial metrics. A pod that answers within the
+	// budget is collected -- so a merely-slow pod (often the hottest one, under load) is not dropped
+	// and does not bias the per-pod value low -- and only a scrape still outstanding when the budget
+	// is spent is cut and recorded as timed out.
 	//
 	// Note this budget is per metric source. A PodAutoscaler with N POD sources collects them
 	// serially (ComputeDesiredReplicas iterates MetricsSources), so in the worst case the budgets
 	// sum to N*overallTimeout and can exceed the reconcile deadline. A shared budget across sources
-	// is tracked as a follow-up; today each source gets the full overallTimeout.
+	// is tracked as a follow-up (#3605); today each source gets the full overallTimeout.
 	overallTimeout time.Duration
 	// maxConcurrency bounds how many pods are scraped in parallel, keeping collection fast without
 	// opening an unbounded number of connections against a large fleet. Values below 1 are clamped
@@ -63,7 +57,6 @@ type collectBounds struct {
 
 // defaultCollectBounds is the production configuration used by CollectMetrics.
 var defaultCollectBounds = collectBounds{
-	perPodTimeout:  3 * time.Second,
 	overallTimeout: 6 * time.Second,
 	maxConcurrency: 16,
 }
@@ -124,26 +117,27 @@ func collectFromPodsSerial(ctx context.Context, spec types.CollectionSpec, fetch
 	}, nil
 }
 
-// scrapeOnePod wraps fetcher.FetchPodMetrics with a per-pod sub-deadline so one slow pod cannot
-// consume the collection budget the others need. Pulled out so the deferred slot release lives at
-// function scope rather than inside a select case.
-func scrapeOnePod(ctx context.Context, sem chan struct{}, fetcher MetricFetcher, pod corev1.Pod, source autoscalingv1alpha1.MetricSource, perPodTimeout time.Duration) (float64, error) {
+// scrapeOnePod scrapes one pod on the shared collection context, which the overall deadline
+// bounds. There is no per-pod sub-deadline: a pod that answers within the budget is collected (so
+// a merely-slow pod is not dropped), and a scrape still outstanding when the budget is spent is cut
+// by the context. Pulled out so the deferred slot release lives at function scope rather than
+// inside a select case.
+func scrapeOnePod(ctx context.Context, sem chan struct{}, fetcher MetricFetcher, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	defer func() { <-sem }()
-	podCtx, cancel := context.WithTimeout(ctx, perPodTimeout)
-	defer cancel()
-	return fetcher.FetchPodMetrics(podCtx, pod, source)
+	return fetcher.FetchPodMetrics(ctx, pod, source)
 }
 
-// collectFromPods handles pod-level metric collection. It scrapes the target's pods
-// concurrently, each under a per-pod sub-deadline, with the whole collection bounded by an
-// overall sub-deadline well below the reconcile budget.
+// collectFromPods handles pod-level metric collection. It scrapes the target's pods concurrently,
+// with the whole collection bounded by a single overall deadline well below the reconcile budget.
+// There is no per-pod sub-deadline, so a pod that answers within the budget is collected rather
+// than cut; only scrapes still outstanding when the budget is spent are dropped.
 //
 // Previously it scraped every pod serially on the shared reconcile context, so a single
 // unreachable pod -- one that eats the engine fetcher's full HTTP timeout plus 1s/2s/4s retry
 // backoff -- could consume the entire 10s reconcile budget before any healthy pod was reached.
 // On total failure with replicas within [min,max] the pass set ScalingActive=False and applied
 // no scaling, i.e. scaling stalled during the very scale-ups/incidents where it matters most.
-// Scraping concurrently under tight sub-deadlines means slow or unreachable pods no longer
+// Scraping concurrently under one overall deadline means slow or unreachable pods no longer
 // starve the healthy ones, and partial results still drive a scale decision. Readiness is left
 // to the caller's ReplicaState accounting, so the "scrape the pods you are given" contract and
 // the downstream load math are unchanged -- readiness only decides scrape ORDER (see below).
@@ -155,9 +149,9 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 		concurrency = 1
 	}
 
-	// Bound the whole collection below the reconcile deadline, then scrape pods concurrently,
-	// each under its own per-pod sub-deadline, so one slow pod cannot consume the budget the
-	// others need.
+	// Bound the whole collection below the reconcile deadline, then scrape pods concurrently on
+	// that shared context. A slow pod that still answers within the budget is collected; only a
+	// scrape still outstanding when the budget is spent is cut.
 	collectCtx, cancel := context.WithTimeout(ctx, bounds.overallTimeout)
 	defer cancel()
 
@@ -204,7 +198,7 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			value, err := scrapeOnePod(collectCtx, sem, fetcher, spec.Pods[i], spec.MetricSource, bounds.perPodTimeout)
+			value, err := scrapeOnePod(collectCtx, sem, fetcher, spec.Pods[i], spec.MetricSource)
 			results[i] = podResult{value: value, err: err}
 		}(idx)
 	}
@@ -238,7 +232,7 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	if len(timedOutPods) > 0 {
 		// Surface the dropped pods: a hot/overloaded pod cut at the per-pod timeout biases the
 		// per-pod value low (see its doc comment), so operators can correlate the two.
-		klog.V(4).InfoS("Pods timed out during metric collection", "pods", timedOutPods, "perPodTimeout", bounds.perPodTimeout)
+		klog.V(4).InfoS("Pods timed out during metric collection", "pods", timedOutPods, "overallTimeout", bounds.overallTimeout)
 	}
 
 	// Determine overall error status (unchanged semantics): only a total failure sets Error,
