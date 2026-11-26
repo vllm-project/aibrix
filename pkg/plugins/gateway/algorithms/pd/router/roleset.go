@@ -91,7 +91,7 @@ func fleetExpectedRoleCounts(byRoleset map[string]*pdRolesetBucket) (maxPrefill,
 }
 
 func isPDRolesetEligible(b *pdRolesetBucket) bool {
-	return roleReplicaCardinality(b.prefills) > 0 && roleReplicaCardinality(b.decodes) > 0
+	return len(b.prefills) > 0 && len(b.decodes) > 0
 }
 
 // eligiblePDRolesets returns rolesets with at least one routable prefill and decode pod.
