@@ -16,10 +16,26 @@ limitations under the License.
 
 package config
 
+import "github.com/vllm-project/aibrix/pkg/utils"
+
+const DefaultGatewayNamespace = "aibrix-system"
+
+// DefaultGatewayName preserves the Gateway used by existing installations.
+const DefaultGatewayName = "aibrix-eg"
+
+// LoadGatewayNamespace resolves the shared home of the Gateway and model HTTPRoutes.
+// Both the controller and gateway plugin capture it at startup. Pod placement and
+// workload discovery must not change which routing objects they create or read.
+func LoadGatewayNamespace() string {
+	return utils.LoadEnv("AIBRIX_GATEWAY_NAMESPACE", DefaultGatewayNamespace)
+}
+
 type RuntimeConfig struct {
 	EnableRuntimeSidecar bool
 	DebugMode            bool
 	ModelAdapterOpt      ModelAdapterOpt
+	GatewayNamespace     string
+	GatewayName          string
 }
 
 // ModelAdapterOpt contains options for model adapter controller.
@@ -34,6 +50,8 @@ func NewRuntimeConfig(enableRuntimeSidecar, debugMode bool, schedulerPolicyName 
 	return RuntimeConfig{
 		EnableRuntimeSidecar: enableRuntimeSidecar,
 		DebugMode:            debugMode,
+		GatewayNamespace:     LoadGatewayNamespace(),
+		GatewayName:          utils.LoadEnv("AIBRIX_GATEWAY_NAME", DefaultGatewayName),
 		ModelAdapterOpt: ModelAdapterOpt{
 			SchedulerPolicyName: schedulerPolicyName,
 		},

@@ -613,7 +613,8 @@ func startDiscoveryChecker(store *Store, config *rest.Config, provider discovery
 	if opts.DiscoveryCheckInterval <= 0 {
 		return nil
 	}
-	if _, ok := provider.(*discovery.KubernetesProvider); !ok || config == nil {
+	kubernetesProvider, ok := provider.(*discovery.KubernetesProvider)
+	if !ok || config == nil {
 		klog.InfoS("Discovery check disabled: discovery does not use the Kubernetes API server", "provider", provider.Type())
 		return nil
 	}
@@ -626,6 +627,8 @@ func startDiscoveryChecker(store *Store, config *rest.Config, provider discovery
 		Interval:             opts.DiscoveryCheckInterval,
 		UnreachableThreshold: opts.DiscoveryUnreachableThreshold,
 		Reachability:         PodListReachability(client),
+		// Read once, before Run, bounded like a reachability check.
+		WatchResourceVersion: KubernetesWatchProgress(config, kubernetesProvider, opts.DiscoveryCheckInterval/2),
 	}
 	if health := store.modelListHealth; health != nil {
 		checkOpts.Consistency = health

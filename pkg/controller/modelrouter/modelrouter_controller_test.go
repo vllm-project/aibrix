@@ -31,6 +31,8 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
+const aibrixEnvoyGatewayNamespace = "aibrix-system"
+
 func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := gatewayv1.AddToScheme(scheme); err != nil {
@@ -102,7 +104,7 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 }
 
 func TestBuildHTTPRouteMatchesImageGenerations(t *testing.T) {
-	route := buildHTTPRoute("default", "demo", nil, nil)
+	route := (&ModelRouter{}).buildHTTPRoute("default", "demo", nil, nil)
 	paths := routeMatchPaths(route)
 	if !slices.Contains(paths, "/v1/images/generations") {
 		t.Errorf("per-model HTTPRoute does not match /v1/images/generations, got %v", paths)

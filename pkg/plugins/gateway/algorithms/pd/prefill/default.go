@@ -100,10 +100,10 @@ func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTrack
 // prefillDone is the single point where a finished prefill call is taken off
 // the router's ledgers: the request-count tracker always, the token-load
 // tracker when one is attached.
-func (e *DefaultExecutor) prefillDone(requestID string) {
-	e.tracker.RemovePrefillRequest(requestID)
+func (e *DefaultExecutor) prefillDone(trackerKey string) {
+	e.tracker.RemovePrefillRequest(trackerKey)
 	if e.tokenLoad != nil {
-		e.tokenLoad.ReleaseTokens(requestID)
+		e.tokenLoad.ReleaseTokens(trackerKey)
 	}
 }
 
@@ -114,7 +114,7 @@ func (e *DefaultExecutor) prefillDone(requestID string) {
 // body size is a poor estimate for requests with media: inline images count as
 // their base64 text, and images given by URL not at all. A response without
 // either field leaves the charge alone.
-func (e *DefaultExecutor) correctDecodeCharge(requestID string, prefillResponse []byte) {
+func (e *DefaultExecutor) correctDecodeCharge(trackerKey string, prefillResponse []byte) {
 	if e.tokenLoad == nil {
 		return
 	}
@@ -122,7 +122,7 @@ func (e *DefaultExecutor) correctDecodeCharge(requestID string, prefillResponse 
 	if promptTokens <= 0 {
 		return
 	}
-	e.tokenLoad.CorrectDecodeCost(requestID, promptTokens)
+	e.tokenLoad.CorrectDecodeCost(trackerKey, promptTokens)
 }
 
 // responsePromptTokens returns the prompt length reported by a prefill
@@ -187,6 +187,10 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		// after headers) comes from the handler, not from its name.
 		policy := engine.AsyncDispatchPolicyFor(handler)
 		requestID := routingCtx.RequestID
+		// trackerKey keys the gateway-internal load trackers (unlike requestID, which stays the
+		// engine/log id). Captured here with the other values because the goroutine below outlives
+		// the pooled routingCtx and must not read it after reuse.
+		trackerKey := routingCtx.TrackerKey()
 		requestTime := routingCtx.RequestTime
 		prefillStartTime := routingCtx.PrefillStartTime
 		prefillPodName := prefillPod.Name
@@ -216,7 +220,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		go func() {
 			incPrefillOutstanding()
 			defer decPrefillOutstanding()
-			defer e.prefillDone(requestID)
+			defer e.prefillDone(trackerKey)
 
 			prefillResponse, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout)
 			if err != nil {
@@ -255,7 +259,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 				// the completion callback or the TTL.
 				if e.tokenLoad != nil && pd.PrefillFailureIsTerminalFor(failure.ClassOrEmpty(), policy.ResetAfterHeaders) &&
 					(policy.ResetAfterHeaders || !leg.DecodeResponded()) {
-					e.tokenLoad.ReleaseDecode(requestID)
+					e.tokenLoad.ReleaseDecode(trackerKey)
 				}
 				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", requestID,
@@ -277,7 +281,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 				return
 			}
 
-			e.correctDecodeCharge(requestID, prefillResponse)
+			e.correctDecodeCharge(trackerKey, prefillResponse)
 
 			// For SGLang the prefill pod only answers once the decode pod has
 			// taken the KV transfer, so from here on the decode pod owes the
@@ -314,7 +318,7 @@ func (e *DefaultExecutor) handleSync(
 ) error {
 	incPrefillOutstanding()
 	defer decPrefillOutstanding()
-	defer e.prefillDone(routingCtx.RequestID)
+	defer e.prefillDone(routingCtx.TrackerKey())
 
 	prefillResponse, err := e.executeHTTP(apiURL, routingCtx, payload, e.effectiveRequestTimeout(routingCtx))
 	if err != nil {
@@ -333,7 +337,7 @@ func (e *DefaultExecutor) handleSync(
 			return fmt.Errorf("failed to update routing context with %s for request %s: %w", errorContext, routingCtx.RequestID, err)
 		}
 	}
-	e.correctDecodeCharge(routingCtx.RequestID, prefillResponse)
+	e.correctDecodeCharge(routingCtx.TrackerKey(), prefillResponse)
 
 	routingCtx.PrefillEndTime = time.Now()
 	fields = append(fields,

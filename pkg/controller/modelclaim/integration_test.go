@@ -48,13 +48,13 @@ import (
 // routing-annotation patch that makes the model routable.
 //
 // Run with: go test -tags integration ./pkg/controller/modelclaim/... -run Integration
-// (requires envtest binaries: `make envtest && bin/setup-envtest use 1.29.0 --bin-dir bin`).
+// (requires envtest binaries: `make envtest && bin/setup-envtest use 1.31.0 --bin-dir bin`).
 func TestModelClaimControllerIntegration(t *testing.T) {
 	testEnv := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
 		BinaryAssetsDirectory: filepath.Join("..", "..", "..", "bin", "k8s",
-			fmt.Sprintf("1.29.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
+			fmt.Sprintf("1.31.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
 	}
 	cfg, err := testEnv.Start()
 	require.NoError(t, err)

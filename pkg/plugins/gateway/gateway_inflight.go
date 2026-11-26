@@ -27,6 +27,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -137,9 +139,9 @@ func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router 
 }
 
 func replicaInflightExceededResponse(model string, limit int64) *extProcPb.ProcessingResponse {
-	return buildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
+	return errresp.BuildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
 		fmt.Sprintf("model: %v has exceeded replica inflight limit: %v", model, limit),
-		ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
+		errresp.ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
 		HeaderErrorReplicaInflightExceeded, "true")
 }
 
@@ -179,7 +181,7 @@ func (s *Server) filterSaturatedReplicaInflight(routeCtx *types.RoutingContext, 
 
 // narrowToInflightCapacity drops the pods already at the per-replica cap and reports
 // errReplicaInflightExceeded when none is left. scope names the set being filtered
-// (inflightScopeFleet or inflightScopeCandidates).
+// (inflight.InflightScopeFleet or inflight.InflightScopeCandidates).
 //
 // For non-exclusive strategies selectTargetPod runs it on the candidate set, so the read it
 // performs is the bounded one; it is the first reader of the per-decision snapshot, so whatever
@@ -200,7 +202,7 @@ func (s *Server) narrowToInflightCapacity(routeCtx *types.RoutingContext, pods [
 	// pods were considered, and the counter records which set that was, so a sampled-set
 	// rejection can be told from a fleet-wide one after the fact: ready_pods, set at the
 	// top of selectTargetPod, is the fleet.
-	recordInflightRejection(routeCtx.Model, scope)
+	inflight.RecordInflightRejection(routeCtx.Model, scope)
 	if routeCtx.Span != nil {
 		routeCtx.Span.SetAttributes(
 			attribute.Int("inflight_cap", int(limit)),

@@ -329,7 +329,7 @@ func TestAsyncPrefillFailureReleasesDecodeCharge(t *testing.T) {
 			if tc.decodeStarted {
 				ctx.MarkDecodeResponded()
 			}
-			exec.tokenLoad.AcquireDecodeWithTTL(ctx.RequestID, decodeKey, 100, 0)
+			exec.tokenLoad.AcquireDecodeWithTTL(ctx.TrackerKey(), decodeKey, 100, 0)
 
 			prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 			require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))

@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -149,7 +150,7 @@ func TestHandleResponseHeaders_ErrorBodyFraming(t *testing.T) {
 			} else {
 				assert.False(t, isError)
 				assert.NotContains(t, mutation.GetRemoveHeaders(), "content-length")
-				assert.NotContains(t, mutation.GetSetHeaders(), contentTypeHeader())
+				assert.NotContains(t, mutation.GetSetHeaders(), errresp.ContentTypeHeader())
 			}
 		})
 	}
