@@ -378,12 +378,16 @@ the asynchronous prefill worker, not that the prefill HTTP request has already
 completed. Prefill success/failure metrics are emitted by the async worker after
 the prefill HTTP request returns.
 
-For SGLang, the async prefill HTTP call retains the client stream's cancellation
-and deadline.
-When the gateway observes a client disconnect, it cancels the pending prefill
-HTTP request rather than waiting for `AIBRIX_PREFILL_REQUEST_TIMEOUT`. That
-timeout (or the model profile override) still bounds calls whose clients remain
-connected. Cancellation closes the prefill connection; stopping engine work and
+For SGLang, the async prefill HTTP call retains the request's ext_proc stream
+cancellation and deadline. The pending prefill HTTP request is cancelled when
+that stream ends, either because the client disconnects or because the response
+finishes normally, rather than waiting for `AIBRIX_PREFILL_REQUEST_TIMEOUT`.
+If decode has already responded, cancellation leaves the late prefill outcome
+unobserved: the gateway logs it at verbosity 4, skips prefill failure handling,
+and emits neither a prefill success nor a failure metric. Deadlines and other
+HTTP failures still follow the failure path. The prefill timeout (or the model
+profile override) still bounds calls whose streams remain active.
+Cancellation closes the prefill connection; stopping engine work and
 releasing KV resources depend on the deployed SGLang version's disconnect
 handling. The gateway does not send a separate prefill `/abort_request`.
 

@@ -47,7 +47,7 @@ func (h *SGLangHandler) Name() string  { return "sglang" }
 func (h *SGLangHandler) IsAsync() bool { return true }
 
 // AsyncDispatch keeps the prefill HTTP connection tied to the client stream,
-// so a disconnected client cancels the pending prefill HTTP call.
+// so a disconnect or normal stream completion cancels the pending prefill call.
 // Prefill failures still use the native decode abort before decode responds.
 func (h *SGLangHandler) AsyncDispatch() AsyncDispatchPolicy {
 	return AsyncDispatchPolicy{KeepClientCancel: true, AbortDecode: true}

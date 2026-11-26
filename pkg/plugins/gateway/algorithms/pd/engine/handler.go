@@ -68,9 +68,9 @@ type EngineHandler interface {
 // KeepClientCancel governs async prefill only; synchronous prefill uses the
 // original request context directly and already retains its cancellation.
 type AsyncDispatchPolicy struct {
-	// KeepClientCancel keeps the client's cancellation and deadline on the
+	// KeepClientCancel keeps the ext_proc stream's cancellation and deadline on the
 	// async prefill call instead of detaching it. SGLang and TRT-LLM
-	// generation-first use it to propagate client disconnects to prefill.
+	// generation-first use it; disconnects and normal completion both cancel it.
 	KeepClientCancel bool
 	// AbortDecode sends the engine's native decode abort (SGLang's
 	// /abort_request) when the prefill leg fails. TRT-LLM has no such endpoint:

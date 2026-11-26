@@ -17,38 +17,87 @@ limitations under the License.
 package prefill
 
 import (
+	"bytes"
 	"context"
+	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
 )
 
-func TestSGLangClientCancelClosesPrefill(t *testing.T) {
+// responseObservedTransport lets the test end the stream after HTTP headers
+// arrived, while the executor is still waiting for the prefill response body.
+type responseObservedTransport struct {
+	http.RoundTripper
+	responseReceived chan struct{}
+}
+
+func (t responseObservedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.RoundTripper.RoundTrip(req)
+	if err == nil {
+		close(t.responseReceived)
+	}
+	return resp, err
+}
+
+func TestSGLangStreamEndClosesPrefill(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		decodeResponded bool
 		recycleContext  bool
+		bodyPending     bool
 	}{
 		{name: "waiting_for_decode"},
-		{name: "decode_responded", decodeResponded: true},
+		{name: "decode_completed_before_prefill_headers", decodeResponded: true},
+		{name: "decode_completed_during_prefill_body", decodeResponded: true, bodyPending: true},
 		{name: "routing_context_reused", recycleContext: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			state := klog.CaptureState()
+			defer state.Restore()
+			flags := flag.NewFlagSet("stream-end", flag.ContinueOnError)
+			klog.InitFlags(flags)
+			require.NoError(t, flags.Set("v", "4"))
+			var logs bytes.Buffer
+			klog.LogToStderr(false)
+			klog.SetOutput(&logs)
+
+			var successes, failures atomic.Int32
+			original := metrics.IncrementCounterMetricFnForTest
+			defer func() { metrics.IncrementCounterMetricFnForTest = original }()
+			metrics.IncrementCounterMetricFnForTest = func(name, _ string, _ float64, _ []string, _ ...string) {
+				switch name {
+				case metrics.GatewayPrefillRequestSuccessTotal:
+					successes.Add(1)
+				case metrics.GatewayPrefillRequestFailTotal:
+					failures.Add(1)
+				}
+			}
+
 			started, disconnected := make(chan struct{}), make(chan struct{})
+			responseReceived := make(chan struct{})
 			release := make(chan struct{})
 			prefillSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				_, _ = io.Copy(io.Discard, req.Body)
+				if tc.bodyPending {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"usage":`)
+					w.(http.Flusher).Flush()
+				}
 				close(started)
 				select {
 				case <-req.Context().Done():
@@ -76,18 +125,30 @@ func TestSGLangClientCancelClosesPrefill(t *testing.T) {
 			pod := failFastPod(t, "prefill-cancel", strings.TrimPrefix(prefillSrv.URL, "http://"))
 			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 			exec := failFastExecutor()
+			if tc.bodyPending {
+				exec.httpClient.Transport = responseObservedTransport{http.DefaultTransport, responseReceived}
+			}
 			exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
 			exec.tokenLoad.AcquirePrefill(ctx.RequestID, podKey, 100)
 			require.NoError(t, exec.Execute(ctx, pod, engine.Resolve(sglangEngine), LogContext{}))
 			select {
 			case <-started:
-			case <-time.After(5 * time.Second):
+			case <-time.After(2 * time.Second):
 				t.Fatal("prefill request did not arrive")
+			}
+			if tc.bodyPending {
+				select {
+				case <-responseReceived:
+				case <-time.After(2 * time.Second):
+					t.Fatal("prefill response headers did not arrive")
+				}
 			}
 
 			leg := ctx.PDLeg()
 			rid := leg.RID()
 			if tc.decodeResponded {
+				// Model a normal ext_proc finish: decode has responded, and
+				// returning from the stream handler cancels its context below.
 				leg.MarkDecodeResponded()
 			}
 			if tc.recycleContext {
@@ -101,14 +162,8 @@ func TestSGLangClientCancelClosesPrefill(t *testing.T) {
 				t.Fatal("client cancellation did not close prefill HTTP request despite its 300s timeout")
 			}
 			select {
-			case <-leg.PrefillFailed():
-			case <-time.After(2 * time.Second):
-				t.Fatal("prefill cancellation was not recorded")
-			}
-			assert.Equal(t, pd.PrefillFailureCanceled, leg.PrefillFailure().Class)
-			select {
 			case <-leg.AbortDone():
-			case <-time.After(5 * time.Second):
+			case <-time.After(2 * time.Second):
 				t.Fatal("decode abort handling did not finish")
 			}
 			if tc.decodeResponded {
@@ -124,6 +179,24 @@ func TestSGLangClientCancelClosesPrefill(t *testing.T) {
 				active, _ := exec.tokenLoad.GetLoad(podKey)
 				return exec.tracker.GetPrefillRequestCountsForPod(podKey) == 0 && active == 0
 			}, 2*time.Second, time.Millisecond)
+			klog.Flush()
+			if tc.decodeResponded {
+				assert.Nil(t, leg.PrefillFailure())
+				select {
+				case <-leg.PrefillFailed():
+					t.Fatal("stream completion must not signal a prefill failure")
+				default:
+				}
+				assert.Zero(t, failures.Load())
+				assert.NotContains(t, logs.String(), "prefill_request_failed")
+				assert.Contains(t, logs.String(), "prefill_request_outcome_unobserved")
+			} else {
+				require.NotNil(t, leg.PrefillFailure())
+				assert.Equal(t, pd.PrefillFailureCanceled, leg.PrefillFailure().Class)
+				assert.EqualValues(t, 1, failures.Load())
+				assert.Contains(t, logs.String(), "prefill_request_failed")
+			}
+			assert.Zero(t, successes.Load(), "an unobserved prefill response is not a success")
 			assert.True(t, leg.PrefillSucceededAt().IsZero())
 			if tc.recycleContext {
 				assert.Nil(t, ctx.PrefillFailure())
