@@ -218,13 +218,18 @@ func (r *RoleSetReconciler) cleanupStaleRoles(ctx context.Context, roleSet *orch
 		stalePodRoles = append(stalePodRoles, role)
 	}
 	if len(stalePods) > 0 {
-		if _, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, roleSet, stalePods, nil, aibrixconst.PodDrainReasonRoleRemoved, time.Now()); err != nil {
-			errs = append(errs, err)
-		} else {
-			podsDeleted = len(stalePods)
+		// Use the reported delete count, not len(stalePods): deletePodsImmediately stops at the
+		// first error, so on a partial failure this still records how many pods actually went away
+		// (the rest requeue via the returned error) and the event below stays accurate.
+		result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, roleSet, stalePods, nil, aibrixconst.PodDrainReasonRoleRemoved, time.Now())
+		podsDeleted = result.Deleted
+		if podsDeleted > 0 {
 			for _, role := range stalePodRoles {
 				removedRoles[role] = struct{}{}
 			}
+		}
+		if err != nil {
+			errs = append(errs, err)
 		}
 	}
 

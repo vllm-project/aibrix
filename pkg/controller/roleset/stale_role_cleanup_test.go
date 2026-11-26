@@ -18,6 +18,7 @@ package roleset
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -225,6 +226,42 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 		case e := <-rec.Events:
 			t.Fatalf("expected no event on a no-op sweep, got: %s", e)
 		default:
+		}
+	})
+
+	t.Run("reports the deleted count and still emits an event on a partial pod-delete failure", func(t *testing.T) {
+		// Two stale pods of a removed role; the second delete fails. deletePodsImmediately stops at
+		// the first error, so one pod is deleted and the sweep returns an error (the RoleSet
+		// requeues). The event must report the one pod that actually went away, not zero (silent)
+		// and not two (over-reported). Failing the 2nd Delete call keeps this order-independent.
+		objs := []client.Object{
+			newOrphanPod("decode-0", ns, "decode", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+			newOrphanPod("decode-1", ns, "decode", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+		}
+		deleteCalls := 0
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deleteCalls++
+					if deleteCalls == 2 {
+						return errors.New("boom")
+					}
+					return c.Delete(ctx, obj, opts...)
+				},
+			}).Build()
+		rec := record.NewFakeRecorder(16)
+		r := &RoleSetReconciler{Client: cli, Scheme: scheme, EventRecorder: rec}
+
+		err := r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill")) // "decode" removed
+		require.Error(t, err, "the failed delete must surface so the RoleSet requeues")
+
+		select {
+		case e := <-rec.Events:
+			assert.Contains(t, e, StaleRoleCleanupEventType)
+			assert.Contains(t, e, "deleted 1 pod(s)")
+			assert.Contains(t, e, "decode")
+		default:
+			t.Fatal("expected a StaleRoleCleanup event for the pod that was deleted")
 		}
 	})
 }
