@@ -542,4 +542,48 @@ func TestSelectTargetPod_PDInflightMultiBucketSuitability(t *testing.T) {
 		assert.EqualValues(t, 2, reads.rrqHGetAlls.Load()-rrqBefore,
 			"inflight filter must query only decode-short and combined-short, skipping decode-long, combined-long, and decode-mismatch")
 	})
+
+	t.Run("same roleset with suitable prefill and unsuitable idle decode still returns 429", func(t *testing.T) {
+		const model = "pd-multibucket-mixed-roleset-429"
+		mr := miniredis.RunT(t)
+		reads := &fleetReadCounter{}
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
+		t.Cleanup(func() { _ = client.Close() })
+		require.NoError(t, client.Ping(context.Background()).Err())
+
+		// Same roleset rs-short holds both a suitable short decode (saturated) and an
+		// unsuitable long decode (idle). Because rs-short is in prefillRolesets, only
+		// the per-decode suitability check excludes the idle long decode.
+		unsuitableDecodeInSameRS := makePDInflightTestPod("decode-short-rs-long-bucket", "rs-short", pd.RoleDecode, host, port, nil)
+		unsuitableDecodeInSameRS.Annotations = map[string]string{constants.ModelAnnoConfig: longBucketAnno}
+		fleet := []*v1.Pod{shortPrefill, shortDecode, unsuitableDecodeInSameRS}
+
+		store := cache.InitWithPods(cache.New(client, nil, nil), fleet, model)
+		t.Cleanup(store.Close)
+		rm := routing.NewRouterManagerWithCache(store)
+		rm.Init()
+		s := &Server{cache: store, routerManager: rm}
+
+		satCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "seed", "req-seed-mixed-rs", "user")
+		t.Cleanup(satCtx.Delete)
+		satCtx.SetTargetPod(shortDecode)
+		store.AddRequestCount(satCtx, satCtx.RequestID, model)
+
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "short prompt", "req-mixed-rs", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"short prompt"}],"stream":true}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1,
+			RoutingConfig:    shortBucketRaw,
+			Routing:          configprofiles.ParseRoutingConfig(shortBucketRaw),
+		}
+
+		rrqBefore := reads.rrqHGetAlls.Load()
+		_, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: fleet}, "")
+		require.ErrorIs(t, err, errReplicaInflightExceeded,
+			"idle unsuitable decode pod in the same roleset must not mask 429 when suitable decode is saturated")
+		assert.EqualValues(t, 1, reads.rrqHGetAlls.Load()-rrqBefore,
+			"inflight filter must query only the 1 suitable decode pod in rs-short")
+	})
 }
