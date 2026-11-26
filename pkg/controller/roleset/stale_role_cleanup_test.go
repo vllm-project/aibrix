@@ -182,4 +182,49 @@ func TestRoleSetReconciler_CleanupStaleRoles(t *testing.T) {
 		assert.NotContains(t, deleted, "decode-term-ps", "an already-terminating podset must not be re-deleted")
 		assert.Contains(t, deleted, "decode-live", "a live stale pod is still deleted")
 	})
+
+	t.Run("records a StaleRoleCleanup event naming the removed role and counts", func(t *testing.T) {
+		// The immediate-delete (nil-spec) drain path and the plain PodSet Delete emit no event of
+		// their own, so the sweep records one on the RoleSet to make the deletion visible.
+		objs := []client.Object{
+			newOrphanPod("decode-0", ns, "decode", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+			newOrphanPodSet("decode-ps", ns, "decode", "test-roleset", testRoleSetUID),
+		}
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+		rec := record.NewFakeRecorder(16)
+		r := &RoleSetReconciler{Client: cli, Scheme: scheme, EventRecorder: rec}
+
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("prefill"))) // "decode" removed
+
+		select {
+		case e := <-rec.Events:
+			assert.Contains(t, e, StaleRoleCleanupEventType)
+			assert.Contains(t, e, "1 pod(s) and 1 podset(s)")
+			assert.Contains(t, e, "decode")
+		default:
+			t.Fatal("expected a StaleRoleCleanup event, got none")
+		}
+		select {
+		case e := <-rec.Events:
+			t.Fatalf("expected exactly one event, got an extra: %s", e)
+		default:
+		}
+	})
+
+	t.Run("records no event when nothing is swept", func(t *testing.T) {
+		objs := []client.Object{
+			newOrphanPod("worker-0", ns, "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+		}
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+		rec := record.NewFakeRecorder(16)
+		r := &RoleSetReconciler{Client: cli, Scheme: scheme, EventRecorder: rec}
+
+		require.NoError(t, r.cleanupStaleRoles(ctx, roleSetWithRoles("worker"))) // nothing removed
+
+		select {
+		case e := <-rec.Events:
+			t.Fatalf("expected no event on a no-op sweep, got: %s", e)
+		default:
+		}
+	})
 }

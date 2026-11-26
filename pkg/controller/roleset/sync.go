@@ -19,6 +19,7 @@ package roleset
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -145,7 +146,9 @@ func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestration
 // so in-flight requests to its pods are cut off (no graceful drain). PodSets are removed with a
 // plain Delete -- the drain path is pods-only -- and their child Pods are reclaimed by
 // owner-reference GC, matching cleanupOrphanPodSets. Objects already being deleted are skipped so
-// the sweep does not re-delete or re-log them every reconcile.
+// the sweep does not re-delete or re-log them every reconcile. When it deletes anything it records
+// a single StaleRoleCleanup event on the RoleSet, since the immediate-delete and plain-Delete
+// paths emit none of their own.
 func (r *RoleSetReconciler) cleanupStaleRoles(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) error {
 	activeRoles := make(map[string]struct{}, len(roleSet.Spec.Roles))
 	for i := range roleSet.Spec.Roles {
@@ -168,6 +171,8 @@ func (r *RoleSetReconciler) cleanupStaleRoles(ctx context.Context, roleSet *orch
 
 	selectorOpt := client.MatchingLabels{constants.RoleSetNameLabelKey: roleSet.Name}
 	var errs []error
+	removedRoles := map[string]struct{}{}
+	podSetsDeleted, podsDeleted := 0, 0
 
 	// PodSets first (Pooled / podGroupSize > 1): deleting a PodSet garbage-collects its child Pods.
 	// The drain path is pods-only, so PodSets use a plain Delete, as cleanupOrphanPodSets does.
@@ -180,11 +185,15 @@ func (r *RoleSetReconciler) cleanupStaleRoles(ctx context.Context, roleSet *orch
 		if !isStale(ps) {
 			continue
 		}
+		role := ps.Labels[constants.RoleNameLabelKey]
 		klog.Infof("[cleanupStaleRoles] deleting podset %s/%s of removed role %q (roleset %s)",
-			ps.Namespace, ps.Name, ps.Labels[constants.RoleNameLabelKey], roleSet.Name)
+			ps.Namespace, ps.Name, role, roleSet.Name)
 		if err := r.Delete(ctx, ps); err != nil && !apierrors.IsNotFound(err) {
 			errs = append(errs, err)
+			continue
 		}
+		podSetsDeleted++
+		removedRoles[role] = struct{}{}
 	}
 
 	// Pods (Pod mode, and the direct Pods of a Replica-mode role): route through the drain path
@@ -196,19 +205,41 @@ func (r *RoleSetReconciler) cleanupStaleRoles(ctx context.Context, roleSet *orch
 		return utilerrors.NewAggregate(errs)
 	}
 	var stalePods []*v1.Pod
+	var stalePodRoles []string
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if !isStale(pod) {
 			continue
 		}
+		role := pod.Labels[constants.RoleNameLabelKey]
 		klog.Infof("[cleanupStaleRoles] deleting pod %s/%s of removed role %q (roleset %s)",
-			pod.Namespace, pod.Name, pod.Labels[constants.RoleNameLabelKey], roleSet.Name)
+			pod.Namespace, pod.Name, role, roleSet.Name)
 		stalePods = append(stalePods, pod)
+		stalePodRoles = append(stalePodRoles, role)
 	}
 	if len(stalePods) > 0 {
 		if _, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, roleSet, stalePods, nil, aibrixconst.PodDrainReasonRoleRemoved, time.Now()); err != nil {
 			errs = append(errs, err)
+		} else {
+			podsDeleted = len(stalePods)
+			for _, role := range stalePodRoles {
+				removedRoles[role] = struct{}{}
+			}
 		}
+	}
+
+	// Record one event on the RoleSet so the removed-role cleanup is visible. The pods take the
+	// immediate-delete drain path (nil spec), which deletes without emitting its own event, and
+	// the PodSet deletes are plain Deletes, so without this the objects would vanish silently.
+	if podsDeleted > 0 || podSetsDeleted > 0 {
+		roles := make([]string, 0, len(removedRoles))
+		for role := range removedRoles {
+			roles = append(roles, role)
+		}
+		sort.Strings(roles)
+		r.EventRecorder.Eventf(roleSet, v1.EventTypeNormal, StaleRoleCleanupEventType,
+			"deleted %d pod(s) and %d podset(s) of removed role(s) %s",
+			podsDeleted, podSetsDeleted, strings.Join(roles, ", "))
 	}
 
 	return utilerrors.NewAggregate(errs)
