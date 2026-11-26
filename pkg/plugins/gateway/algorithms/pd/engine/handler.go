@@ -65,11 +65,12 @@ type EngineHandler interface {
 // "fire-and-forget" half of it had to be told apart by their name at every
 // dispatch site. The mode lives on the handler that already knows it, and the
 // executor and the gateway read it once.
+// KeepClientCancel governs async prefill only; synchronous prefill uses the
+// original request context directly and already retains its cancellation.
 type AsyncDispatchPolicy struct {
-	// KeepClientCancel keeps the client's cancellation and deadline on the
-	// detached prefill call instead of detaching it. TRT-LLM generation-first
-	// needs it: the engine cancels its inference promise when the HTTP client
-	// disconnects, so the gateway must let that disconnect through.
+	// KeepClientCancel keeps the ext_proc stream's cancellation and deadline on the
+	// async prefill call instead of detaching it. SGLang and TRT-LLM
+	// generation-first use it; disconnects and normal completion both cancel it.
 	KeepClientCancel bool
 	// AbortDecode sends the engine's native decode abort (SGLang's
 	// /abort_request) when the prefill leg fails. TRT-LLM has no such endpoint:
@@ -82,8 +83,8 @@ type AsyncDispatchPolicy struct {
 	ResetAfterHeaders bool
 }
 
-// DefaultAsyncDispatchPolicy is the contract of an async engine that does not
-// implement AsyncDispatchHandler: SGLang today.
+// DefaultAsyncDispatchPolicy is the fallback for handlers that do not implement
+// asyncDispatchHandler.
 var DefaultAsyncDispatchPolicy = AsyncDispatchPolicy{AbortDecode: true}
 
 // asyncDispatchHandler is implemented by async engine handlers whose dispatch
