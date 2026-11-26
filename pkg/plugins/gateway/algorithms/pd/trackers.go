@@ -111,9 +111,25 @@ func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
 // active prefill request count for each pod in pods. Pods with no recorded
 // requests are included with a count of 0.
 func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
-	counts := make(map[string]int32)
+	counts := make(map[string]int32, len(pods))
 	for _, pod := range pods {
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		countInterface, exists := t.podRequestCounts.Load(podKey)
+		if !exists {
+			counts[podKey] = 0
+		} else {
+			counts[podKey] = countInterface.(*atomic.Int32).Load()
+		}
+	}
+	return counts
+}
+
+// GetPrefillRequestCountsForKeys returns a map of pod key → active prefill
+// request count for each precomputed pod key in keys. Callers that already
+// computed pod keys avoid repeated GeneratePodKey formatting on hot paths.
+func (t *PrefillRequestTracker) GetPrefillRequestCountsForKeys(keys []string) map[string]int32 {
+	counts := make(map[string]int32, len(keys))
+	for _, podKey := range keys {
 		countInterface, exists := t.podRequestCounts.Load(podKey)
 		if !exists {
 			counts[podKey] = 0
