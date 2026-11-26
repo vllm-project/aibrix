@@ -152,10 +152,11 @@ func TestPrefillFailureMetrics(t *testing.T) {
 				}
 				pod := failFastPod(t, "prefill-failure", strings.TrimPrefix(srv.URL, "http://"))
 				podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-				exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
+				exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
 				err := exec.Execute(ctx, pod, handler, LogContext{})
 				if handler.IsAsync() {
 					require.NoError(t, err)
+					defer waitForDecodeAbort(t, ctx.PDLeg())
 					select {
 					case <-ctx.PDLeg().AbortDone():
 					case <-time.After(2 * time.Second):

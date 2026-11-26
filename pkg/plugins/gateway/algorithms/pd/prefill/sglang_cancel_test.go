@@ -128,9 +128,13 @@ func TestSGLangStreamEndClosesPrefill(t *testing.T) {
 			if tc.bodyPending {
 				exec.httpClient.Transport = responseObservedTransport{http.DefaultTransport, responseReceived}
 			}
-			exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
-			exec.tokenLoad.AcquirePrefill(ctx.RequestID, podKey, 100)
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
+			exec.tokenLoad.AcquirePrefill(ctx.TrackerKey(), podKey, 100)
 			require.NoError(t, exec.Execute(ctx, pod, engine.Resolve(sglangEngine), LogContext{}))
+			defer func(leg *types.PDLegState) {
+				cancel()
+				waitForDecodeAbort(t, leg)
+			}(ctx.PDLeg())
 			select {
 			case <-started:
 			case <-time.After(2 * time.Second):

@@ -183,11 +183,15 @@ func TestTRTAsyncCancelAfterDecodeHeaders(t *testing.T) {
 			pod := failFastPod(t, "trt-ctx", strings.TrimPrefix(srv.URL, "http://"))
 			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 			const decodeKey = "default/trt-decode"
-			exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
-			exec.tokenLoad.AcquirePrefill(ctx.RequestID, podKey, 100)
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
+			exec.tokenLoad.AcquirePrefill(ctx.TrackerKey(), podKey, 100)
 			// No TTL: only failure handling can release this decode charge.
-			exec.tokenLoad.AcquireDecodeWithTTL(ctx.RequestID, decodeKey, 100, 0)
+			exec.tokenLoad.AcquireDecodeWithTTL(ctx.TrackerKey(), decodeKey, 100, 0)
 			require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
+			defer func(leg *types.PDLegState) {
+				cancel()
+				waitForDecodeAbort(t, leg)
+			}(ctx.PDLeg())
 			select {
 			case <-started:
 			case <-time.After(2 * time.Second):
