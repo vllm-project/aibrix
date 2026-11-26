@@ -220,10 +220,12 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 
 			prefillResponse, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout)
 			if err != nil {
-				if errors.Is(err, context.Canceled) && leg.DecodeResponded() {
+				if errors.Is(err, context.Canceled) && leg.DecodeResponded() && !policy.ResetAfterHeaders {
 					// The ext_proc context also ends on a normal response finish.
 					// Decode has answered, so cancellation leaves the late prefill
 					// outcome unobserved, rather than proving success or failure.
+					// ResetAfterHeaders engines can answer before KV arrives and
+					// must retain failure handling, including decode charge release.
 					leg.FinishDecodeAbort()
 					klog.V(4).InfoS("prefill_request_outcome_unobserved",
 						"request_id", requestID,
