@@ -10,7 +10,7 @@ Here we provide the implementation of the Mélange solver and other related scri
 # 1. Install the necessary dependencies
 pip install -r requirements.txt
 
-# See the melange/profiling/profiling-instructions.md for instructions on how to obtain the GPU information needed as the solver's input.
+# See the ../../profiling/README.md for instructions on how to obtain the GPU information needed as the solver's input.
 
 # 2. Execute the solver with your own input configuration
 python -m melange.main -c melange/config/example.json
@@ -34,7 +34,7 @@ The solver requires a json file with the following inputs:
 3. `total_request_rate`: A float value representing the total request rate of the workload.
 4. `slice_factor`: An integer multiplier for the number of slices each bucket is split into.
 
-Please kindly refer to [example.json](config_example.json) for an example of the inputs and check out our paper for more details on our methodology. We have also provided the profiling scripts we used to obtain the GPU information in the [profiling](melange/profiling) directory. See the [profiling instructions](melange/profiling/profiling-instructions.md) for more details on how to use these scripts.
+Please kindly refer to [example.json](config_example.json) for an example of the inputs and check out our paper for more details on our methodology. We have also provided the profiling scripts we used to obtain the GPU information in the [profiling](../../profiling) directory. See the [profiling instructions](../../profiling/README.md) for more details on how to use these scripts.
 
 ### Outputs
 ### Solver Output

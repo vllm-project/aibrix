@@ -87,7 +87,7 @@ The ModelClaim endpoints read and write Kubernetes directly in
 console's Kubernetes identity needs `get`, `list`, `create`, `patch`, and
 `delete` on `modelclaims.model.aibrix.ai`, and `get` and `list` on `pods` and
 `deployments`. See the
-[ModelClaim feature guide](../../docs/source/features/modelclaim.rst) for the
+[ModelClaim feature guide](../../docs/source/features/model-serving/model-claim.rst) for the
 fields a claim declares.
 
 The [Gateway API guide](gateways.md) documents the namespaced
