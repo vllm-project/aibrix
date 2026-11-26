@@ -18,7 +18,9 @@ package cache
 
 import (
 	"fmt"
+	"slices"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -26,11 +28,11 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 const (
@@ -38,12 +40,13 @@ const (
 	adapterLinkAdapter = "lora-a"
 )
 
-// newAdapterLinkTestAdapter returns a ModelAdapter in namespace default. An empty
-// baseModel leaves spec.baseModel unset. getNewModelAdapterWithPods is not used
-// because cache_test.go is excluded from -race builds.
+// newAdapterLinkTestAdapter returns a ModelAdapter in namespace default with a UID
+// derived from its name, so an Add with the same UID is a re-emit, not a recreate.
+// An empty baseModel leaves spec.baseModel unset. getNewModelAdapterWithPods is not
+// used because cache_test.go is excluded from -race builds.
 func newAdapterLinkTestAdapter(name, baseModel string, instances ...string) *modelv1alpha1.ModelAdapter {
 	adapter := &modelv1alpha1.ModelAdapter{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: types.UID("uid-default-" + name)},
 		Status:     modelv1alpha1.ModelAdapterStatus{Instances: instances},
 	}
 	if baseModel != "" {
@@ -165,71 +168,55 @@ func TestAdapterBaseModelIsIndependentOfEventOrder(t *testing.T) {
 	}
 }
 
-// A pod is linked to an adapter that lists it only when the pod serves the
-// adapter's base model, either by its model label or by a routable ModelClaim.
-func TestLinkModelAdaptersMatchesBaseModel(t *testing.T) {
-	claimed := func(port string) func(*v1.Pod) {
-		return func(p *v1.Pod) {
-			delete(p.Labels, constants.ModelLabelName)
-			p.Annotations = map[string]string{
-				constants.ModelClaimPodAnnotationPrefix + "claim": `{"model":"` + adapterLinkBase + `","port":` + port + `}`,
-			}
+// A pod relabelled to another base model keeps the adapter edge while the
+// ModelAdapter's status.instances lists it, and loses it once the ModelAdapter
+// stops listing it. The final state must not depend on which event comes first.
+func TestRelabelledPodAdapterEdgeFollowsStatusInstances(t *testing.T) {
+	relabelled := func(c *Store, p0 *v1.Pod) {
+		c.updatePod(p0, requestTrackerTestPod("p0", "default", "other-model", "10.0.0.1"))
+	}
+	removed := func(c *Store, adapter *modelv1alpha1.ModelAdapter) {
+		updated := adapter.DeepCopy()
+		updated.Status.Instances = nil
+		c.updateModelAdapter(adapter, updated)
+	}
+	run := func(t *testing.T, podFirst bool) (bool, []string) {
+		c := NewForTest()
+		p0 := requestTrackerTestPod("p0", "default", adapterLinkBase, "10.0.0.1")
+		c.addPod(p0)
+		adapter := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0")
+		c.addModelAdapter(adapter)
+		if podFirst {
+			relabelled(c, p0)
+			assert.True(t, c.HasModel(adapterLinkAdapter), "status.instances still lists the pod")
+			removed(c, adapter)
+		} else {
+			removed(c, adapter)
+			relabelled(c, p0)
 		}
+		return c.HasModel(adapterLinkAdapter), podNamesOfModel(t, c, adapterLinkAdapter)
 	}
-	for _, tc := range []struct {
-		name     string
-		specBase string
-		mutate   func(*v1.Pod)
-		want     bool
-	}{
-		{name: "same label", specBase: adapterLinkBase, want: true},
-		{name: "other label", specBase: "other-model", want: false},
-		{name: "padded spec", specBase: " " + adapterLinkBase + " ", want: true},
-		{name: "unset spec matches any listed pod", specBase: "", want: true},
-		{name: "routable claim", specBase: adapterLinkBase, mutate: claimed("8000"), want: true},
-		{name: "claim without a port", specBase: adapterLinkBase, mutate: claimed("0"), want: false},
-		{name: "unset spec on a claim pod", specBase: "", mutate: claimed("8000"), want: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := NewForTest()
-			pod := requestTrackerTestPod("p0", "default", adapterLinkBase, "10.0.0.1")
-			if tc.mutate != nil {
-				tc.mutate(pod)
-			}
-			adapter := newAdapterLinkTestAdapter(adapterLinkAdapter, tc.specBase, "p0")
-			c.addModelAdapter(adapter)
-			c.addPod(pod)
-			assert.Equal(t, tc.want, c.HasModel(adapterLinkAdapter))
-		})
-	}
+
+	podFirstHas, podFirstPods := run(t, true)
+	adapterFirstHas, adapterFirstPods := run(t, false)
+	assert.False(t, podFirstHas)
+	assert.Nil(t, podFirstPods)
+	assert.Equal(t, podFirstHas, adapterFirstHas)
+	assert.Equal(t, podFirstPods, adapterFirstPods)
 }
 
-// A ModelClaim binding for the base model that is not routable (port 0) does not
-// link the pod; the wake patch that gives it a port does.
-func TestUpdatePodLinksAdapterWhenClaimWakes(t *testing.T) {
+// A pod whose model label differs from spec.baseModel is linked when a ModelAdapter
+// lists it in status.instances, both by the adapter event and by a later pod update.
+func TestListedPodWithOtherModelLabelIsLinked(t *testing.T) {
 	c := NewForTest()
+	p0 := requestTrackerTestPod("p0", "default", "other-model", "10.0.0.1")
+	c.addPod(p0)
 	adapter := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0")
 	c.addModelAdapter(adapter)
-	asleep := warmModelClaimPod("p0", "default", map[string]int{adapterLinkBase: 0})
-	c.addPod(asleep)
-	assert.False(t, c.HasModel(adapterLinkAdapter))
-
-	awake := warmModelClaimPod("p0", "default", map[string]int{adapterLinkBase: 9001})
-	c.updatePod(asleep, awake)
 	assert.Equal(t, []string{"p0"}, podNamesOfModel(t, c, adapterLinkAdapter))
-}
 
-// A pod that is relabelled to another base model loses the adapter edge it no
-// longer serves.
-func TestUpdatePodDropsAdapterEdgeOfRelabelledPod(t *testing.T) {
-	c := NewForTest()
-	p0 := requestTrackerTestPod("p0", "default", adapterLinkBase, "10.0.0.1")
-	c.addPod(p0)
-	c.addModelAdapter(newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0"))
-	require.True(t, c.HasModel(adapterLinkAdapter))
-
-	c.updatePod(p0, requestTrackerTestPod("p0", "default", "other-model", "10.0.0.1"))
-	assert.False(t, c.HasModel(adapterLinkAdapter))
+	c.updatePod(p0, touchedAdapterLinkTestPod(p0))
+	assert.Equal(t, []string{"p0"}, podNamesOfModel(t, c, adapterLinkAdapter))
 }
 
 // A pod that becomes a Ray worker loses the adapter edge and is not linked.
@@ -307,11 +294,12 @@ func TestStaleAdapterAddKeepsNewerRecord(t *testing.T) {
 	assert.Equal(t, []string{"p1"}, podNamesOfModel(t, c, adapterLinkAdapter))
 }
 
-// A pod that is deleted and re-added while an adapter still lists it is linked
-// again.
+// A pod that is deleted and re-added under the same name, with a new UID, while an
+// adapter still lists it is linked again.
 func TestAddPodRelinksAdapterAfterDelete(t *testing.T) {
 	c := NewForTest()
 	p0 := requestTrackerTestPod("p0", "default", adapterLinkBase, "10.0.0.1")
+	p0.UID = types.UID("uid-p0-1")
 	c.addPod(p0)
 	adapter := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0")
 	c.addModelAdapter(adapter)
@@ -319,8 +307,121 @@ func TestAddPodRelinksAdapterAfterDelete(t *testing.T) {
 	c.deletePod(p0)
 	require.False(t, c.HasModel(adapterLinkAdapter))
 
-	c.addPod(p0)
+	recreated := requestTrackerTestPod("p0", "default", adapterLinkBase, "10.0.0.1")
+	recreated.UID = types.UID("uid-p0-2")
+	c.addPod(recreated)
 	assert.Equal(t, []string{"p0"}, podNamesOfModel(t, c, adapterLinkAdapter))
+}
+
+// A recreated ModelAdapter (same name, new UID) replaces its record: the old
+// instances lose the edge and the new ones gain it.
+func TestRecreatedAdapterReplacesEdges(t *testing.T) {
+	c := NewForTest()
+	for _, name := range []string{"p0", "p1"} {
+		c.addPod(requestTrackerTestPod(name, "default", adapterLinkBase, "10.0.0.1"))
+	}
+	old := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0")
+	old.UID = types.UID("uid-old")
+	c.addModelAdapter(old)
+	require.Equal(t, []string{"p0"}, podNamesOfModel(t, c, adapterLinkAdapter))
+
+	recreated := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p1")
+	recreated.UID = types.UID("uid-new")
+	c.addModelAdapter(recreated)
+
+	assert.Equal(t, []string{"p1"}, podNamesOfModel(t, c, adapterLinkAdapter))
+	models, err := c.ListModelsByPod("p0", "default")
+	require.NoError(t, err)
+	assert.NotContains(t, models, adapterLinkAdapter)
+}
+
+// An update unlinks the recorded instances, so an old object that disagrees with
+// the record cannot leave a stale edge behind.
+func TestUpdateUnlinksRecordedInstances(t *testing.T) {
+	c := NewForTest()
+	for _, name := range []string{"p0", "p1", "p2"} {
+		c.addPod(requestTrackerTestPod(name, "default", adapterLinkBase, "10.0.0.1"))
+	}
+	adapter := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0", "p1")
+	c.addModelAdapter(adapter)
+
+	outdated := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p1")
+	updated := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p1", "p2")
+	c.updateModelAdapter(outdated, updated)
+
+	assert.Equal(t, []string{"p1", "p2"}, podNamesOfModel(t, c, adapterLinkAdapter))
+	models, err := c.ListModelsByPod("p0", "default")
+	require.NoError(t, err)
+	assert.NotContains(t, models, adapterLinkAdapter)
+}
+
+// A delete unlinks the recorded instances even when the delete object is outdated.
+func TestDeleteUnlinksRecordedInstances(t *testing.T) {
+	c := NewForTest()
+	for _, name := range []string{"p0", "p1"} {
+		c.addPod(requestTrackerTestPod(name, "default", adapterLinkBase, "10.0.0.1"))
+	}
+	c.addModelAdapter(newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0", "p1"))
+
+	c.deleteModelAdapter(newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p1"))
+
+	assert.False(t, c.HasModel(adapterLinkAdapter))
+	for _, name := range []string{"p0", "p1"} {
+		models, err := c.ListModelsByPod(name, "default")
+		require.NoError(t, err)
+		assert.NotContains(t, models, adapterLinkAdapter, name)
+	}
+}
+
+// Pod updates and ModelAdapter updates interleave under -race. Only one goroutine
+// writes the adapter, so its last applied state is known, and the final edges must
+// equal it whatever order the pod updates ran in.
+func TestConcurrentPodAndAdapterUpdatesEndInLastAdapterState(t *testing.T) {
+	const iterations = 200
+	states := [][]string{{"p0", "p1"}, {"p1", "p2"}, {"p2"}, {"p0"}}
+	pods := []string{"p0", "p1", "p2"}
+
+	c := NewForTest()
+	for i, name := range pods {
+		c.addPod(requestTrackerTestPod(name, "default", adapterLinkBase, fmt.Sprintf("10.0.0.%d", i+1)))
+	}
+	adapter := newAdapterLinkTestAdapter(adapterLinkAdapter, adapterLinkBase, "p0", "p1")
+	c.addModelAdapter(adapter)
+
+	var wg sync.WaitGroup
+	wg.Add(1 + len(pods))
+	go func() {
+		defer wg.Done()
+		current := adapter
+		for i := 0; i < iterations; i++ {
+			next := current.DeepCopy()
+			next.Status.Instances = states[i%len(states)]
+			c.updateModelAdapter(current, next)
+			current = next
+		}
+	}()
+	for i, name := range pods {
+		go func() {
+			defer wg.Done()
+			prev := requestTrackerTestPod(name, "default", adapterLinkBase, fmt.Sprintf("10.0.0.%d", i+1))
+			for j := 0; j < iterations; j++ {
+				next := touchedAdapterLinkTestPod(prev)
+				c.updatePod(prev, next)
+				prev = next
+			}
+		}()
+	}
+	wg.Wait()
+
+	want := states[(iterations-1)%len(states)]
+	assert.Equal(t, want, podNamesOfModel(t, c, adapterLinkAdapter))
+	for _, name := range pods {
+		models, err := c.ListModelsByPod(name, "default")
+		require.NoError(t, err)
+		linked := slices.Contains(want, name)
+		assert.Equal(t, linked, slices.Contains(models, adapterLinkAdapter), name)
+	}
+	assertAdapterIndexConsistent(t, c)
 }
 
 // Adapters of the same name in two namespaces link only the pods of their own

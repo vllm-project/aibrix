@@ -30,6 +30,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func TestInitKVEventSync_FailureCleanup(t *testing.T) {
@@ -204,6 +205,7 @@ func testModelAdapter(name, namespace, podName string) *modelv1alpha1.ModelAdapt
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
+			UID:       types.UID("uid-" + namespace + "-" + name),
 		},
 		Status: modelv1alpha1.ModelAdapterStatus{
 			Instances: []string{podName},
