@@ -213,9 +213,11 @@ func TestSelectTargetPod_PDReadsRunningRequestsOnce(t *testing.T) {
 				assert.GreaterOrEqual(t, sent, half+1)
 				assert.Less(t, sent, half+20)
 			} else {
-				// One fleet read of all 100 pods (100 HGETALLs + 1 ZRANGEBYSCORE) plus admission, not a second 50-pod decode read.
-				assert.GreaterOrEqual(t, sent, half*2+1)
-				assert.Less(t, sent, half*2+25)
+				// One read of decode pods only (50 HGETALLs + 1 ZRANGEBYSCORE) plus admission:
+				// prefill pods are excluded from the inflight Redis check (#3619) and pdRouter
+				// reuses the decode snapshot instead of reading decode pods a second time.
+				assert.GreaterOrEqual(t, sent, half+1)
+				assert.Less(t, sent, half+25)
 			}
 
 			// The snapshot ends with selectTargetPod: a subsequent read goes live to Redis.
@@ -226,13 +228,13 @@ func TestSelectTargetPod_PDReadsRunningRequestsOnce(t *testing.T) {
 		})
 	}
 
-	// Under token_load + requestsInflight, narrowToInflightCapacity populates the
-	// decision-level running-requests snapshot (100 aibrix:rrq:* HGETALLs) and
-	// PD's decodeRunningRequests reuses those cached counts, issuing only a
-	// ledger-only read (50 aibrix:dtl:* HGETALLs, 0 duplicate aibrix:rrq:* reads).
-	// ZRANGEBYSCORE stays at 2 (one for inflight, one for the ledger read to filter
-	// live gateways), keeping gateway_inflight.go and pkg/types decoupled from
-	// PD/Redis internals.
+	// Under token_load + requestsInflight, narrowPDToInflightCapacity populates the
+	// decision-level running-requests snapshot for decode pods only (50 aibrix:rrq:*
+	// HGETALLs, skipping prefill pods per #3619), and PD's decodeRunningRequests
+	// reuses those cached counts, issuing only a ledger-only read (50 aibrix:dtl:*
+	// HGETALLs, 0 duplicate aibrix:rrq:* reads). ZRANGEBYSCORE stays at 2 (one for
+	// inflight, one for the ledger read to filter live gateways), keeping
+	// gateway_inflight.go and pkg/types decoupled from PD/Redis internals.
 	for _, inflight := range []int64{0, 1000} {
 		t.Run(fmt.Sprintf("pd/token_load/inflight=%d", inflight), func(t *testing.T) {
 			ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, "pd-m", "hello world", fmt.Sprintf("req-pd-token-load-%d", inflight), "user")
@@ -268,13 +270,13 @@ func TestSelectTargetPod_PDReadsRunningRequestsOnce(t *testing.T) {
 				assert.EqualValues(t, half, rrqSent, "token_load without inflight reads rrq only for decode pods")
 				assert.EqualValues(t, half, dtlSent, "token_load without inflight reads dtl only for decode pods")
 			} else {
-				// With inflight enabled, narrowToInflightCapacity reads rrq once for all 100 pods;
-				// PD reuses that snapshot and reads only the 50 decode-ledger hashes (no duplicate rrq HGETALLs).
+				// With inflight enabled, narrowPDToInflightCapacity reads rrq once for the 50 decode pods only;
+				// PD reuses that snapshot and reads only the 50 decode-ledger hashes (no prefill or duplicate rrq HGETALLs).
 				assert.EqualValues(t, 2, zrangeSent, "token_load + requestsInflight sends inflight + ledger-only pipelines")
-				assert.EqualValues(t, half*2, rrqSent, "token_load + requestsInflight must not re-read aibrix:rrq:* for decode pods")
+				assert.EqualValues(t, half, rrqSent, "token_load + requestsInflight reads aibrix:rrq:* only for decode pods")
 				assert.EqualValues(t, half, dtlSent, "token_load + requestsInflight reads aibrix:dtl:* only for decode pods")
-				assert.GreaterOrEqual(t, sent, half*3+2)
-				assert.Less(t, sent, half*3+30)
+				assert.GreaterOrEqual(t, sent, half*2+2)
+				assert.Less(t, sent, half*2+30)
 			}
 		})
 	}

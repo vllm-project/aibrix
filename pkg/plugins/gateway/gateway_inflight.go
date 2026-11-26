@@ -27,6 +27,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -210,4 +213,113 @@ func (s *Server) narrowToInflightCapacity(routeCtx *types.RoutingContext, pods [
 		)
 	}
 	return nil, errReplicaInflightExceeded
+}
+
+// narrowPDToInflightCapacity applies the per-replica inflight cap to the pods PD routing can
+// actually admit and track in aibrix:rrq:* -- routable decode pods in rolesets that also have
+// a routable prefill pod, plus routable combined pods when prompt-length bucketing is enabled.
+//
+// Prefill pods, encoders, non-HTTP multi-node TP workers (pod-group-index != "0"), and orphan
+// decode pods without a prefill peer are never passed to AdmitTarget or AddRequestCount, so
+// their running-request counts stay 0. Filtering them in Redis both wastes HGETALL commands
+// and leaves non-empty leftovers when every routable decode pod is saturated, masking the 429
+// behind a downstream PD "not ready" 503.
+//
+// When pods carry no PD role/roleset labels (e.g. legacy or synthetic fixtures), this falls
+// back to narrowToInflightCapacity over the full slice. When pods are PD-labeled but have no
+// admissible target candidates (e.g. all decode or all prefill pods are unready), this returns
+// pods unchanged without a Redis read so pdRouter reports its not-ready error instead of a
+// false 429.
+func (s *Server) narrowPDToInflightCapacity(routeCtx *types.RoutingContext, pods []*v1.Pod, scope string) ([]*v1.Pod, error) {
+	if replicaInflightLimit(routeCtx) <= 0 || len(pods) == 0 {
+		return pods, nil
+	}
+	targets, passthrough, hasLabeledPD := partitionPDInflightTargets(routeCtx, pods)
+	if !hasLabeledPD {
+		return s.narrowToInflightCapacity(routeCtx, pods, scope)
+	}
+	if len(targets) == 0 {
+		return pods, nil
+	}
+	keptTargets, err := s.narrowToInflightCapacity(routeCtx, targets, scope)
+	if err != nil {
+		return nil, err
+	}
+	if len(passthrough) == 0 {
+		return keptTargets, nil
+	}
+	out := make([]*v1.Pod, 0, len(keptTargets)+len(passthrough))
+	out = append(out, keptTargets...)
+	out = append(out, passthrough...)
+	return out, nil
+}
+
+// partitionPDInflightTargets splits PD readyPods into inflight-checked target candidates
+// (routable decode pods in prefill-backed rolesets, plus combined spillover pods when
+// prompt-length bucketing is enabled) and non-target passthrough pods (prefill, encode,
+// non-HTTP TP workers, and pods in incomplete rolesets). hasLabeledPD is false when no pod
+// carries both PD roleset and role labels.
+func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) (targets, passthrough []*v1.Pod, hasLabeledPD bool) {
+	var prefillRolesets map[string]struct{}
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		roleSetID, hasRoleset := pod.Labels[pd.RoleSetLabel]
+		roleID, hasRole := pod.Labels[pd.RoleLabel]
+		if !hasRoleset || !hasRole {
+			continue
+		}
+		hasLabeledPD = true
+		if roleID == pd.RolePrefill && pd.IsPodWithHTTPServer(pod) {
+			if prefillRolesets == nil {
+				prefillRolesets = make(map[string]struct{})
+			}
+			prefillRolesets[roleSetID] = struct{}{}
+		}
+	}
+	if !hasLabeledPD {
+		return nil, nil, false
+	}
+
+	bucketing := routeCtx != nil && routeCtx.RoutingOverrides().PD.PromptLengthBucketing
+	targets = make([]*v1.Pod, 0, len(pods)/2+1)
+	passthrough = make([]*v1.Pod, 0, len(pods)/2+1)
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		roleSetID, hasRoleset := pod.Labels[pd.RoleSetLabel]
+		roleID, hasRole := pod.Labels[pd.RoleLabel]
+		if hasRoleset && hasRole && pd.IsPodWithHTTPServer(pod) {
+			switch roleID {
+			case pd.RoleDecode:
+				if _, ok := prefillRolesets[roleSetID]; ok {
+					targets = append(targets, pod)
+					continue
+				}
+			case pd.RolePrefill:
+				// Never admitted via AdmitTarget / aibrix:rrq:*.
+			default:
+				if bucketing && !encode.IsEncoder(pod) && isPDCombinedPod(routeCtx, pod) {
+					targets = append(targets, pod)
+					continue
+				}
+			}
+		}
+		passthrough = append(passthrough, pod)
+	}
+	return targets, passthrough, true
+}
+
+func isPDCombinedPod(routeCtx *types.RoutingContext, pod *v1.Pod) bool {
+	if routeCtx == nil || pod == nil {
+		return false
+	}
+	profile := configprofiles.ResolveProfileFrom(routeCtx.ModelConfig, pod, routeCtx.ReqConfigProfile)
+	if profile == nil {
+		return false
+	}
+	cfg := configprofiles.ParseRoutingConfig(profile.RoutingConfig)
+	return cfg != nil && cfg.Combined != nil && *cfg.Combined
 }
