@@ -309,17 +309,22 @@ type pdRouter struct {
 	// models that hash-collide onto the same stripe simply serialize with each
 	// other, which is always safe and matches pre-striping behavior. Each
 	// selection acquires at most one stripe, so stripe-to-stripe deadlocks
-	// cannot occur; countersMu is taken inside a stripe (in finalPDScore) and
-	// never the other way round. All underlying trackers
+	// cannot occur; post-selection bookkeeping (pendingPrefixCredits,
+	// countersMu/selectionCounts, and selection/bucket-serve Prometheus counters)
+	// runs after the stripe is released (recordPDSelection) so countersMu is no
+	// longer nested under selectStripes. All underlying trackers
 	// (prefillRequestTracker, pendingDecodeTracker, tokenLoadTracker,
 	// pendingPrefixCredits) also maintain their own internal synchronization.
 	//
-	// Only in-memory load-dependent work runs under the stripe lock: the
-	// imbalance fast paths, the per-pod scoring, finalPDScore and the tracker
-	// registrations. Tokenization and prefix matching (PrefillScorePolicy.Prepare),
-	// the bucket-serve plan, combined-pod spillover checks, and the cross-gateway
-	// running-request / shared decode-ledger Redis read run before the lock is
-	// taken so network I/O never serializes concurrent selections.
+	// Only in-memory tracker-dependent work runs under the stripe lock: the
+	// imbalance fast paths, the per-pod scoring, selectFinalPDPair, and the
+	// tracker registrations (selectAndRegisterPDPairUnderLock). Tokenization,
+	// prefix matching and conductor histogram prefetch (PrefillScorePolicy.Prepare),
+	// the bucket-serve plan, combined-pod spillover checks, the cross-gateway
+	// running-request / shared decode-ledger Redis read, read-only scraped decode
+	// metrics, pod-key indexing, and prompt-token estimation run before the lock
+	// is taken so neither network I/O nor read-only cache/body work serializes
+	// concurrent selections.
 	selectStripes [pdSelectLockStripes]paddedMutex
 }
 
@@ -880,9 +885,9 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	// Precompute prefill pod keys once before taking selectStripe.Lock() so
-	// Prepare, tracker lookups, scoring, and registration do not repeatedly
-	// format namespace/name keys.
-	prefillPodKeys, prefillReadyMap, prefillKeySlice := buildPrefillPodKeyIndex(prefillPods)
+	// Prepare, tracker lookups, imbalance resolution, scoring, and registration
+	// do not repeatedly format namespace/name keys.
+	prefillPodKeys, prefillPodsByKey, prefillReadyMap, prefillKeySlice := buildPrefillPodKeyIndex(prefillPods)
 
 	prefillScorer, err := r.preparePrefillScorerWithMap(routingCtx, prefillPods, prefillReadyMap, prefillPol)
 	if err != nil {
@@ -934,7 +939,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	selectedPrefill, selectedDecode, prefixHashes, selectedPrefillKey, selectedDecodeKey, bandApplied, err := r.selectAndRegisterPDPairUnderLock(
 		routingCtx, pdOverrides,
 		prefillPods, decodePods,
-		prefillPodKeys, prefillKeySlice, decodeSnapshots,
+		prefillPodKeys, prefillPodsByKey, prefillKeySlice, decodeSnapshots,
 		runningReqCounts, runningErr, remoteDecodeLedger,
 		prefillPol, decodePol, prefillScorer,
 		bandRoleset, bandMax, promptTokens,
@@ -955,17 +960,19 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	return selectedPrefill, selectedDecode, nil
 }
 
-func buildPrefillPodKeyIndex(prefillPods []*v1.Pod) (map[*v1.Pod]string, map[string]struct{}, []string) {
+func buildPrefillPodKeyIndex(prefillPods []*v1.Pod) (map[*v1.Pod]string, map[string]*v1.Pod, map[string]struct{}, []string) {
 	podKeys := make(map[*v1.Pod]string, len(prefillPods))
+	podsByKey := make(map[string]*v1.Pod, len(prefillPods))
 	readyMap := make(map[string]struct{}, len(prefillPods))
 	keySlice := make([]string, len(prefillPods))
 	for i, pod := range prefillPods {
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		podKeys[pod] = podKey
+		podsByKey[podKey] = pod
 		readyMap[podKey] = struct{}{}
 		keySlice[i] = podKey
 	}
-	return podKeys, readyMap, keySlice
+	return podKeys, podsByKey, readyMap, keySlice
 }
 
 // selectAndRegisterPDPairUnderLock executes the per-model tracker-dependent
@@ -978,6 +985,7 @@ func (r *pdRouter) selectAndRegisterPDPairUnderLock(
 	pdOverrides *types.PDOverrides,
 	prefillPods, decodePods []*v1.Pod,
 	prefillPodKeys map[*v1.Pod]string,
+	prefillPodsByKey map[string]*v1.Pod,
 	prefillKeySlice []string,
 	decodeSnapshots map[*v1.Pod]decodePodSnapshot,
 	runningReqCounts map[string]int64,
@@ -996,7 +1004,7 @@ func (r *pdRouter) selectAndRegisterPDPairUnderLock(
 	prefillCounts := r.prefillRequestTracker.GetPrefillRequestCountsForKeys(prefillKeySlice)
 
 	// check for prefill and decode imbalance
-	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPodWithKeys(prefillPods, prefillPodKeys,
+	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPodWithKeys(prefillPods, prefillPodsByKey,
 		prefillCounts,
 		pdOverrides.Spreads.PrefillLoadImbalanceMinSpread)
 	if isImbalanced && targetPod != nil {
@@ -1049,7 +1057,13 @@ func (r *pdRouter) selectAndRegisterPDPairUnderLock(
 
 	// Register while still holding the model's selection lock so the next selection counts this one.
 	selectedPrefillKey := prefillPodKeys[selectedPrefill]
+	if selectedPrefillKey == "" {
+		selectedPrefillKey = utils.GeneratePodKey(selectedPrefill.Namespace, selectedPrefill.Name)
+	}
 	selectedDecodeKey := decodeSnapshots[selectedDecode].podKey
+	if selectedDecodeKey == "" {
+		selectedDecodeKey = utils.GeneratePodKey(selectedDecode.Namespace, selectedDecode.Name)
+	}
 	r.pendingDecodeTracker.AddPendingDecode(routingCtx.TrackerKey(), selectedDecodeKey)
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.TrackerKey(), selectedPrefillKey)
 	r.chargeTokenLoadWithKeyAndTokens(routingCtx, selectedPrefill, selectedPrefillKey, prefillPol, prefillScorer, promptTokens)
@@ -1096,7 +1110,7 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	return r.loadImbalanceSelectPrefillPodWithKeys(readyPods, nil, podRequestCount, minSpread)
 }
 
-func (r *pdRouter) loadImbalanceSelectPrefillPodWithKeys(readyPods []*v1.Pod, podKeys map[*v1.Pod]string, podRequestCount map[string]int32, minSpread int32) (*v1.Pod, bool) {
+func (r *pdRouter) loadImbalanceSelectPrefillPodWithKeys(readyPods []*v1.Pod, podsByKey map[string]*v1.Pod, podRequestCount map[string]int32, minSpread int32) (*v1.Pod, bool) {
 	var imbalance bool
 	var targetPod *v1.Pod
 	var targetPods []string
@@ -1126,13 +1140,8 @@ func (r *pdRouter) loadImbalanceSelectPrefillPodWithKeys(readyPods []*v1.Pod, po
 
 	if len(targetPods) > 0 {
 		chosenKey := targetPods[rand.IntN(len(targetPods))]
-		if podKeys != nil {
-			for _, pod := range readyPods {
-				if podKeys[pod] == chosenKey {
-					targetPod = pod
-					break
-				}
-			}
+		if podsByKey != nil {
+			targetPod = podsByKey[chosenKey]
 		} else {
 			targetPod = routeutil.PodsByKey(readyPods)[chosenKey]
 		}
