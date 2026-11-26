@@ -81,10 +81,10 @@ type ReplicaComputeResult struct {
 	// FailedMetrics names the metric sources that failed while the others
 	// produced this recommendation, so callers can say it rests on partial data.
 	FailedMetrics []string
-	// DroppedReadyPods is the number of Ready pods whose metric sample was missing (scrape timed
-	// out or failed) across the sources behind this recommendation. A non-zero value means the
-	// recommendation rests on partial per-pod data and may under-count load, so the caller can
-	// optionally hold a scale-down.
+	// DroppedReadyPods is the number of Ready pods whose metric sample was cut by the collection
+	// deadline across the sources behind this recommendation. A non-zero value means the
+	// recommendation rests on partial per-pod data and may under-count load, so the caller holds a
+	// scale-down by default.
 	DroppedReadyPods int
 }
 
@@ -496,8 +496,8 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to collect metrics for %s: %w", workloadKey, err)
 	}
-	// Number of Ready pods whose sample was dropped (timed out/failed); carried out so the
-	// caller can optionally hold a scale-down that rests on this partial per-pod data.
+	// Number of Ready pods whose sample was cut by the collection deadline; carried out so the
+	// caller can hold a scale-down that would otherwise rest on this partial per-pod data.
 	droppedReadyPods := snapshot.DroppedReadyPods
 
 	// Use scaling context from request (single source of truth)

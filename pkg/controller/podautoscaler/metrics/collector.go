@@ -18,7 +18,6 @@ package metrics
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -175,6 +174,10 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	type podResult struct {
 		value float64
 		err   error
+		// timedOut marks a drop caused by the collection deadline (a scrape the deadline cut, or a
+		// pod never launched because the budget was already spent), as opposed to a scrape that
+		// returned its own error (a 500, a parse failure) while the budget was still live.
+		timedOut bool
 	}
 	results := make([]podResult, len(spec.Pods))
 	sem := make(chan struct{}, concurrency)
@@ -184,7 +187,7 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 		// is checked first because a ready select has no priority: with a free slot and a done
 		// context, select could still take the sem case and spawn a pointless goroutine.
 		if err := collectCtx.Err(); err != nil {
-			results[idx] = podResult{err: err}
+			results[idx] = podResult{err: err, timedOut: true}
 			continue
 		}
 		// Acquire a slot in Ready-first order; stop launching once the overall budget is spent
@@ -192,14 +195,18 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 		select {
 		case sem <- struct{}{}:
 		case <-collectCtx.Done():
-			results[idx] = podResult{err: collectCtx.Err()}
+			results[idx] = podResult{err: collectCtx.Err(), timedOut: true}
 			continue
 		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			value, err := scrapeOnePod(collectCtx, sem, fetcher, spec.Pods[i], spec.MetricSource)
-			results[i] = podResult{value: value, err: err}
+			// Classify the drop by the collection context, not the returned error: a deadline that
+			// fires mid-scrape comes back wrapped with %v (the engine fetcher), so an
+			// errors.Is(context.DeadlineExceeded) check would miss it. A non-timeout error (a 500, a
+			// parse failure) returns while collectCtx is still live, so timedOut stays false.
+			results[i] = podResult{value: value, err: err, timedOut: err != nil && collectCtx.Err() != nil}
 		}(idx)
 	}
 	wg.Wait()
@@ -215,14 +222,17 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 	for i, r := range results {
 		if r.err != nil {
 			collectErrors = append(collectErrors, fmt.Errorf("pod %s/%s: %w", spec.Pods[i].Namespace, spec.Pods[i].Name, r.err))
-			if errors.Is(r.err, context.DeadlineExceeded) || errors.Is(r.err, context.Canceled) {
+			if r.timedOut {
 				timedOutPods = append(timedOutPods, fmt.Sprintf("%s/%s", spec.Pods[i].Namespace, spec.Pods[i].Name))
-			}
-			// A Ready pod whose sample is now missing biases the per-pod value low (its load is
-			// assumed to be the mean of the pods that did report), which can cause a spurious
-			// scale-down. Count it so the autoscaler can optionally hold scale-down on partial data.
-			if utils.IsPodReady(&spec.Pods[i]) {
-				droppedReadyPods++
+				// A Ready pod dropped by the collection deadline has its sample missing, which biases
+				// the per-pod value low (its load is assumed to be the mean of the pods that did
+				// report) and can cause a spurious scale-down. Count only these deadline drops -- the
+				// samples this bounded collection newly drops -- so the autoscaler holds scale-down by
+				// default on them. A Ready pod that returned its own error (a 500, a parse failure)
+				// keeps the pre-existing behavior: its sample is skipped and the scale-down proceeds.
+				if utils.IsPodReady(&spec.Pods[i]) {
+					droppedReadyPods++
+				}
 			}
 			continue
 		}

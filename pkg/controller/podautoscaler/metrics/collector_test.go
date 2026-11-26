@@ -85,7 +85,10 @@ type reachabilityFetcher struct {
 	mu          sync.Mutex
 	scraped     map[string]int
 	unreachable map[string]bool
-	value       float64
+	// erroring pods return an immediate non-timeout error (e.g. an HTTP 500 or a parse failure),
+	// as opposed to unreachable pods, which block until the collection deadline.
+	erroring map[string]bool
+	value    float64
 }
 
 func (f *reachabilityFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Pod, _ autoscalingv1alpha1.MetricSource) (float64, error) {
@@ -95,7 +98,11 @@ func (f *reachabilityFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Po
 	}
 	f.scraped[pod.Name]++
 	block := f.unreachable[pod.Name]
+	fail := f.erroring[pod.Name]
 	f.mu.Unlock()
+	if fail {
+		return 0, fmt.Errorf("pod %s returned an error", pod.Name)
+	}
 	if block {
 		<-ctx.Done()
 		return 0, ctx.Err()
@@ -322,5 +329,31 @@ func TestCollectFromPodsCountsDroppedReadyPods(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, snapshot.DroppedReadyPods, "only the Ready pod whose scrape was dropped is counted")
 	assert.Equal(t, []float64{5}, snapshot.Values, "only the reachable Ready pod reported")
+	assert.NoError(t, snapshot.Error, "partial success is not a total failure")
+}
+
+// TestCollectFromPodsCountsOnlyDeadlineDropsAsDroppedReady pins varungup90's narrowing on #3593:
+// DroppedReadyPods counts only Ready pods dropped by the collection deadline, not Ready pods that
+// returned their own error (a 500, a parse failure). Because a dropped Ready pod now holds a scale-
+// down by default, a pod that persistently errors for another reason must not block scale-downs:
+// its sample is skipped and the scale-down proceeds, as before this PR.
+func TestCollectFromPodsCountsOnlyDeadlineDropsAsDroppedReady(t *testing.T) {
+	pods := []corev1.Pod{
+		readyPodForScrape("ready-timeout", "10.0.0.1"), // Ready + blocks past the deadline -> counted
+		readyPodForScrape("ready-500", "10.0.0.2"),     // Ready + immediate error           -> not counted
+		readyPodForScrape("ready-ok", "10.0.0.3"),      // Ready + reachable                 -> not dropped
+	}
+	fetcher := &reachabilityFetcher{
+		unreachable: map[string]bool{"ready-timeout": true},
+		erroring:    map[string]bool{"ready-500": true},
+		value:       5,
+	}
+	bounds := collectBounds{overallTimeout: 100 * time.Millisecond, maxConcurrency: 16}
+
+	snapshot, err := collectFromPods(context.Background(), podCollectionSpec(pods), fetcher, bounds)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, snapshot.DroppedReadyPods, "only the deadline-dropped Ready pod counts, not the one that returned a 500")
+	assert.Equal(t, []float64{5}, snapshot.Values, "the reachable Ready pod reported")
 	assert.NoError(t, snapshot.Error, "partial success is not a total failure")
 }
