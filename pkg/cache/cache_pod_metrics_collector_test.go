@@ -36,6 +36,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -521,4 +522,108 @@ func TestInitPodGatewayMetricsCollector_RegistrationLifecycle(t *testing.T) {
 		return err == nil && len(families) == 0
 	}, time.Second, time.Millisecond)
 	require.NoError(t, initPodGatewayMetricsCollector(NewForTest(), registry, nil))
+}
+
+// A drain-rate series must not survive the pod that produced it (#3505).
+func TestPodGatewayMetricsCollector_DrainRateDropsOnPodDelete(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("drain-delete", "inference", "test-model", "10.0.0.1")
+	store.addPod(original)
+
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedRequests, 30)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+	handler := runningRequestsMetricsHandler(t, store)
+	family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	_, ok = gaugeValueForLabels(family, map[string]string{
+		"namespace": original.Namespace,
+		"pod":       original.Name,
+		"model":     "test-model",
+	})
+	require.True(t, ok, "the drain-rate series must be exported before the pod is deleted")
+
+	store.deletePod(original)
+	family = metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	require.Nil(t, family, "a deleted pod must not leave a drain-rate series")
+}
+
+// A relabel replaces the pod object, so only the new model's series is exported (#3505).
+func TestPodGatewayMetricsCollector_DrainRateRelabelKeepsOnlyNewSeries(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("drain-relabel", "inference", "old-model", "10.0.0.1")
+	store.addPod(original)
+
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedRequests, 30)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+	handler := runningRequestsMetricsHandler(t, store)
+	family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	_, ok = gaugeValueForLabels(family, map[string]string{
+		"namespace": original.Namespace,
+		"pod":       original.Name,
+		"model":     "old-model",
+	})
+	require.True(t, ok, "the old model's series must be exported before the relabel")
+
+	updated := original.DeepCopy()
+	updated.Labels[constants.ModelLabelName] = "new-model"
+	store.updatePod(original, updated)
+
+	pod, ok = store.metaPods.Load(utils.GeneratePodKey(updated.Namespace, updated.Name))
+	require.True(t, ok)
+	seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedRequests, 30)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+	family = metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	_, ok = gaugeValueForLabels(family, map[string]string{
+		"namespace": original.Namespace,
+		"pod":       original.Name,
+		"model":     "old-model",
+	})
+	require.False(t, ok, "the old model's series must be gone after a relabel")
+	_, ok = gaugeValueForLabels(family, map[string]string{
+		"namespace": updated.Namespace,
+		"pod":       updated.Name,
+		"model":     "new-model",
+	})
+	require.True(t, ok, "the new model's series must be exported")
+}
+
+// The collector keeps the same eligibility filter as the running-request gauge (#3505).
+func TestPodGatewayMetricsCollector_DrainRateSkipsUnreadyPods(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("drain-unready", "inference", "test-model", "10.0.0.1")
+	store.addPod(original)
+
+	updated := original.DeepCopy()
+	updated.Status.Conditions[0].Status = v1.ConditionFalse
+	store.updatePod(original, updated)
+
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(updated.Namespace, updated.Name))
+	require.True(t, ok)
+	seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedRequests, 30)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+	handler := runningRequestsMetricsHandler(t, store)
+	family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	require.Nil(t, family, "an unready pod must not export the drain-rate series")
+}
+
+// No computed rate means no series, rather than a zero (#3505).
+func TestPodGatewayMetricsCollector_DrainRateNoRecordNoSeries(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("drain-norecord", "inference", "test-model", "10.0.0.1")
+	store.addPod(original)
+
+	handler := runningRequestsMetricsHandler(t, store)
+	family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	require.Nil(t, family, "a pod without a computed drain rate must not export the series")
 }

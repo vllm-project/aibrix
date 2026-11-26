@@ -296,7 +296,8 @@ var (
 		// The PD-disaggregation decode router scores decode pods on it. Pod-scoped, so
 		// it describes the whole pod even when it serves several models or adapters;
 		// the model label is the pod's model.aibrix.ai/name label, or the annotation
-		// of the same name, empty when neither is set.
+		// of the same name, empty when neither is set. Exported at scrape time by the
+		// gateway's pod metrics collector, so a deleted or relabeled pod leaves no series.
 		RealtimeRunningRequestsDrainRate1m: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PodRawMetrics,
