@@ -19,6 +19,7 @@ package prefill
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -223,6 +224,21 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 
 			prefillResponse, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout)
 			if err != nil {
+				if errors.Is(err, context.Canceled) && leg.DecodeResponded() && !policy.ResetAfterHeaders {
+					// The ext_proc context also ends on a normal response finish.
+					// Decode has answered, so cancellation leaves the late prefill
+					// outcome unobserved, rather than proving success or failure.
+					// ResetAfterHeaders engines can answer before KV arrives and
+					// must retain failure handling, including decode charge release.
+					leg.FinishDecodeAbort()
+					klog.V(4).InfoS("prefill_request_outcome_unobserved",
+						"request_id", requestID,
+						"llm_engine", llmEngine,
+						"prefill_pod", prefillPodName,
+						"elapsed", time.Since(requestTime))
+					return
+				}
+				emitPrefillFailureMetric(asyncCtx, err)
 				// The prefill leg is fire-and-forget, so nobody is waiting on
 				// this error: record it on the leg (and abort the decode leg
 				// that will never receive its KV) before it is only logged.
@@ -306,6 +322,7 @@ func (e *DefaultExecutor) handleSync(
 
 	prefillResponse, err := e.executeHTTP(apiURL, routingCtx, payload, e.effectiveRequestTimeout(routingCtx))
 	if err != nil {
+		emitPrefillFailureMetric(routingCtx, err)
 		klog.ErrorS(err, "prefill_request_failed",
 			"request_id", routingCtx.RequestID,
 			"llm_engine", llmEngine,
@@ -332,11 +349,11 @@ func (e *DefaultExecutor) handleSync(
 }
 
 // executeHTTP posts payload to url and returns the raw JSON response body,
-// which is guaranteed to be a JSON object. Non-200 responses and transport
-// errors are both recorded to Prometheus. The body is deliberately not
-// decoded: merge functions read the fields they need with gjson so that
-// large integers (e.g. TRT-LLM disagg_request_id) and nested key order are
-// preserved exactly.
+// which is guaranteed to be a JSON object. Callers record failure metrics after
+// deciding whether a cancellation leaves the outcome unobserved. The body is
+// deliberately not decoded: merge functions read the fields they need with
+// gjson so that large integers (e.g. TRT-LLM disagg_request_id) and nested key
+// order are preserved exactly.
 //
 // Failures are returned as the typed errors of package pd (PrefillSetupError,
 // PrefillTransportError, PrefillHTTPError, PrefillBodyError), so that
@@ -366,9 +383,6 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
-		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
-			map[string]string{"status": status, "status_code": code})
 		return nil, &pd.PrefillTransportError{Err: err}
 	}
 	defer func() {
@@ -383,9 +397,6 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
-		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
-			map[string]string{"status": status, "status_code": code})
 		return nil, &pd.PrefillHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
@@ -398,6 +409,25 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 	}
 
 	return body, nil
+}
+
+// emitPrefillFailureMetric records HTTP and transport failures only after the
+// caller has ruled out an unobserved late cancellation. Use the typed errors to
+// retain the HTTP status and the existing transport/deadline metric labels.
+func emitPrefillFailureMetric(routingCtx *types.RoutingContext, err error) {
+	var httpErr *pd.PrefillHTTPError
+	var transportErr *pd.PrefillTransportError
+	var status, code string
+	switch {
+	case errors.As(err, &httpErr):
+		status, code = metrics.HttpFailureStatusCode(routingCtx.Context, nil, &http.Response{StatusCode: httpErr.StatusCode})
+	case errors.As(err, &transportErr):
+		status, code = metrics.HttpFailureStatusCode(routingCtx.Context, transportErr.Err, nil)
+	default:
+		return
+	}
+	metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
+		map[string]string{"status": status, "status_code": code})
 }
 
 // forwardablePrefillHeader reports whether key can be copied onto the

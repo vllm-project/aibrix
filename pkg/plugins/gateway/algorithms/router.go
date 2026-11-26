@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"sort"
 	"strconv"
 	"strings"
@@ -605,17 +606,18 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 		return nil, nil, errors.New("no valid target pod found after scoring")
 	}
 
-	// Tie-break: select deterministically by pod name. topPods' order otherwise reflects
-	// readyPodList's underlying order, which traces back to Go map iteration over the pod
-	// registry (see pkg/utils/registry.go) and gets reshuffled whenever that cache is
-	// invalidated — including on ordinary pod-object update churn between requests, not just
-	// membership changes. Without a deterministic tie-break, a request whose scores legitimately
-	// tie across two pods (e.g. once prefix-cache match and load-balance load both equalize) can
-	// flip its winner from one call to the next for reasons unrelated to load or cache affinity,
-	// causing spurious reroutes/thrashing instead of a stable pick.
+	// Tie-break: select deterministically by pod name when no running-request counts are
+	// available. topPods' order otherwise reflects readyPodList's underlying order, which traces
+	// back to Go map iteration over the pod registry (see pkg/utils/registry.go) and gets
+	// reshuffled whenever that cache is invalidated — including on ordinary pod-object update
+	// churn between requests, not just membership changes. Without a deterministic fallback, a
+	// request whose scores legitimately tie across two pods (e.g. once prefix-cache match and
+	// load-balance load both equalize) can flip its winner from one call to the next for reasons
+	// unrelated to load or cache affinity, causing spurious reroutes/thrashing instead of a
+	// stable pick.
 	//
-	// Before the name, prefer the pod with fewer running requests. With two pods, min-max
-	// normalization turns each strategy into a 0/1 vote, so whenever two equally weighted
+	// When every tied pod has a count, prefer the pod with fewer running requests. With two pods,
+	// min-max normalization turns each strategy into a 0/1 vote, so whenever two equally weighted
 	// strategies disagree (least-request,load-balance:1) the blend ties. Breaking that tie by
 	// name alone hands every such request to the same pod, busier or not (#3450). The counts
 	// come from ctx.RunningRequests, the same per-decision snapshot the scorers read, so the
@@ -623,14 +625,26 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	// a count, the name alone decides as before. These are raw counts, not the ramp-adjusted
 	// ones least-request votes on (least.applyRampAdjustment), so a tie can go to a
 	// just-routable pod that the ramp alone would still hold back.
+	//
+	// Pods tied on the fewest running requests are picked uniformly at random, the way
+	// least-request-top-k picks among its least-loaded candidates: near-simultaneous requests
+	// all read the same pre-increment counts (AddRequestCount runs after the routing decision),
+	// so a name-first tie-break sends the whole burst to the name-first pod, which repeats
+	// every engine step with closed-loop clients (#3597). Shuffling before a stable sort by
+	// count keeps the ordering deterministic where counts differ and random only where they
+	// are equal.
 	if len(topPods) > 1 {
 		running := m.tieBreakRunningCounts(ctx, topPods) // nil: order by name only
-		sort.Slice(topPods, func(i, j int) bool {
-			if ri, rj := running[topPods[i]], running[topPods[j]]; ri != rj {
-				return ri < rj
-			}
-			return topPods[i].Name < topPods[j].Name
-		})
+		if running != nil {
+			rand.Shuffle(len(topPods), func(i, j int) { topPods[i], topPods[j] = topPods[j], topPods[i] })
+			sort.SliceStable(topPods, func(i, j int) bool {
+				return running[topPods[i]] < running[topPods[j]]
+			})
+		} else {
+			sort.Slice(topPods, func(i, j int) bool {
+				return topPods[i].Name < topPods[j].Name
+			})
+		}
 	}
 	winner := topPods[0]
 
@@ -672,9 +686,9 @@ const madOutlierMultiplier = 3.0
 // and when mad==0 (every value is identical, so there's no spread to judge outliers against).
 //
 // The better side is left alone: clamping it would pull the best pods onto one bound, so an idle
-// pod and a busier one would both normalize to 1.0, and the name tie-break in scoreAndRank would
-// then pick whichever sorts first. With running requests {20, 0, 49, 50, 51} the bound is 43,
-// so 20 and 0 tied. An unclamped outlier on the better side does set the scale for that scorer
+// pod and a busier one would both normalize to 1.0, leaving the scoreAndRank tie-break to decide
+// between pods that are not equally loaded. With running requests {20, 0, 49, 50, 51} the bound
+// is 43, so 20 and 0 tied. An unclamped outlier on the better side does set the scale for that scorer
 // and compresses the other pods' normalized scores, as plain min-max scaling would: with
 // {0, 49, 50, 51, 52} the pods near 50 score 0.02 to 0.06 instead of 0.2 to 0.6, so the idle
 // pod gains weight in a blend. Unlike the motivating case below, it cannot make a worse pod

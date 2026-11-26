@@ -17,10 +17,8 @@ limitations under the License.
 package utils
 
 import (
-	crand "crypto/rand"
 	"fmt"
 	"math"
-	"math/big"
 	mrand "math/rand/v2"
 	"os"
 	"strconv"
@@ -338,19 +336,6 @@ func IsDataParallelPod(pod *v1.Pod) bool {
 		}
 	}
 	return false
-}
-
-// CryptoShuffle shuffles slice in place using crypto/rand. Every swap reads
-// the OS entropy source, so it costs a getrandom syscall and several
-// allocations per swap; use it where unpredictability matters, not on hot
-// paths. See Shuffle.
-func CryptoShuffle[T any](slice []T) {
-	n := len(slice)
-	for i := n - 1; i > 0; i-- {
-		jBig, _ := crand.Int(crand.Reader, big.NewInt(int64(i+1)))
-		j := int(jBig.Int64())
-		slice[i], slice[j] = slice[j], slice[i]
-	}
 }
 
 // Shuffle shuffles slice in place using math/rand/v2's process-wide generator,

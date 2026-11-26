@@ -179,6 +179,9 @@ func TestRunningRequests_ConcurrentStartStopAndReads(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 500; i++ {
+				if cached, ok := ctx.CachedRunningRequests(pods); ok {
+					assert.Equal(t, int64(1), cached["ns/a"])
+				}
 				got, err := ctx.RunningRequests(pods, read)
 				if assert.NoError(t, err) {
 					assert.Equal(t, int64(1), got["ns/a"])
@@ -191,4 +194,62 @@ func TestRunningRequests_ConcurrentStartStopAndReads(t *testing.T) {
 		ctx.StopRunningRequestsSnapshot()
 	}
 	wg.Wait()
+}
+
+func TestCachedRunningRequests(t *testing.T) {
+	all := snapshotPods("a", "b", "c")
+
+	var nilCtx *RoutingContext
+	got, ok := nilCtx.CachedRunningRequests(all)
+	assert.False(t, ok)
+	assert.Nil(t, got)
+
+	r := &countingReader{live: map[string]int64{"a": 1, "b": 2, "c": 3}}
+	ctx := NewRoutingContext(context.Background(), "pd", "m", "", "req-cached", "")
+
+	// Before StartRunningRequestsSnapshot.
+	got, ok = ctx.CachedRunningRequests(all)
+	assert.False(t, ok)
+	assert.Nil(t, got)
+
+	// Started, but no read has populated counts yet.
+	ctx.StartRunningRequestsSnapshot()
+	got, ok = ctx.CachedRunningRequests(all)
+	assert.False(t, ok)
+	assert.Nil(t, got)
+	assert.Empty(t, r.calls, "CachedRunningRequests must never trigger a read")
+
+	// Populate snapshot via RunningRequests.
+	_, err := ctx.RunningRequests(all, r.read)
+	require.NoError(t, err)
+	require.Len(t, r.calls, 1)
+
+	// Exact set, subset with nil entry, fresh pod instance by key, and empty slice all hit.
+	for _, pods := range [][]*v1.Pod{all, {nil, all[0], all[2]}, snapshotPods("b"), nil} {
+		got, ok = ctx.CachedRunningRequests(pods)
+		require.True(t, ok)
+		assert.Equal(t, map[string]int64{"ns/a": 1, "ns/b": 2, "ns/c": 3}, got)
+	}
+
+	// Uncovered pod misses without invoking the reader.
+	got, ok = ctx.CachedRunningRequests(snapshotPods("a", "d"))
+	assert.False(t, ok)
+	assert.Nil(t, got)
+	assert.Len(t, r.calls, 1)
+
+	// After StopRunningRequestsSnapshot, cached lookup misses.
+	ctx.StopRunningRequestsSnapshot()
+	got, ok = ctx.CachedRunningRequests(all)
+	assert.False(t, ok)
+	assert.Nil(t, got)
+
+	// After reset, cached lookup also misses.
+	ctx.StartRunningRequestsSnapshot()
+	_, err = ctx.RunningRequests(all, r.read)
+	require.NoError(t, err)
+	ctx.reset(context.Background(), "pd", "m", "", "req-cached-2", "")
+	defer ctx.Delete()
+	got, ok = ctx.CachedRunningRequests(all)
+	assert.False(t, ok)
+	assert.Nil(t, got)
 }
