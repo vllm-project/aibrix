@@ -17,7 +17,11 @@ limitations under the License.
 package prefixcache
 
 import (
+	"bytes"
 	"context"
+	"flag"
+	"fmt"
+	"io"
 	"reflect"
 	"testing"
 	"time"
@@ -31,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 )
 
 // MockPodList implements types.PodList for testing
@@ -673,4 +678,61 @@ func cachedPodKeys(t *testing.T, router *prefixCacheAndLoadRouter, model, prompt
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+func capturePrebleKlog(t *testing.T, level string) func() string {
+	t.Helper()
+
+	fs := flag.NewFlagSet("klog-capture", flag.ContinueOnError)
+	klog.InitFlags(fs)
+	vFlag := fs.Lookup("v")
+	require.NotNil(t, vFlag)
+	previous := vFlag.Value.String()
+	require.NoError(t, vFlag.Value.Set(level))
+
+	var logs bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutput(&logs)
+	t.Cleanup(func() {
+		klog.Flush()
+		klog.SetOutput(io.Discard)
+		klog.LogToStderr(true)
+		require.NoError(t, vFlag.Value.Set(previous))
+	})
+
+	return func() string {
+		klog.Flush()
+		return logs.String()
+	}
+}
+
+func TestPrefixCachePreble_NoMatchedPods_LogsMetadataOnly(t *testing.T) {
+	const promptSecret = "SECRET-PREBLE-PROMPT-CANARY"
+	prompt := promptSecret + " shared prefix text across turns"
+
+	livePod := newPod("pod-live", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	readyPods := newMockPodList([]*v1.Pod{livePod}, nil)
+	router := newTestRouter(3, cache.NewWithPodsMetricsForTest([]*v1.Pod{livePod}, "m", nil))
+
+	tokens, err := utils.TokenizeInputText(prompt)
+	require.NoError(t, err)
+	node, _, _ := router.cache.AddPrefix(tokens, "m", "")
+	// Attach the cached prefix strictly to a pod that is no longer ready, so
+	// matchRatio exceeds the threshold while len(prefixMatches) stays empty.
+	node.AddOrUpdatePodForModel("m", prebleTestPodKey("pod-offline"), time.Now())
+
+	logs := capturePrebleKlog(t, "0")
+	ctx := createTestRoutingContext("m", prompt, "req-preble-log")
+	target, err := router.Route(ctx, readyPods)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.2:8000", target)
+
+	logged := logs()
+	assert.Contains(t, logged, "No matched pods found")
+	assert.Contains(t, logged, fmt.Sprintf("totalTokens=%d", len(tokens)))
+	assert.Contains(t, logged, fmt.Sprintf("matchedTokens=%d", len(tokens)))
+	assert.Contains(t, logged, `requestID="req-preble-log"`)
+	assert.Contains(t, logged, `model="m"`)
+	assert.NotContains(t, logged, promptSecret)
+	assert.NotContains(t, logged, "shared prefix text")
 }

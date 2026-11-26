@@ -594,13 +594,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 			}
 			klog.InfoS("Selected pod from longest matching node", "requestID", ctx.RequestID, "podName", targetPod.Name, "matchLength", longestMatch.matchLength)
 		} else {
-			tokenInString, err := utils.DetokenizeText(tokens)
-			matchedTokensInString, _ := utils.DetokenizeText(matchedTokens)
-			if err != nil {
-				klog.ErrorS(err, "DetokenizeTexts failed", "requestID", ctx.RequestID, "tokens", tokenInString, "matchedTokens", matchedTokensInString, "model", ctx.Model)
-			} else {
-				klog.InfoS("No matched pods found", "requestID", ctx.RequestID, "tokens", tokenInString, "matchedTokens", matchedTokensInString, "model", ctx.Model)
-			}
+			klog.InfoS("No matched pods found", "requestID", ctx.RequestID, "totalTokens", len(tokens), "matchedTokens", len(matchedTokens), "model", ctx.Model)
 		}
 	}
 
