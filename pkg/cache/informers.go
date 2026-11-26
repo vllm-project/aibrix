@@ -17,6 +17,7 @@ package cache
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -162,6 +163,13 @@ func (c *Store) addPod(obj interface{}) {
 		}
 	}
 
+	// Restore the adapter edges that cached ModelAdapters list for this pod. A pod
+	// recreated under the same name can be routed to for an adapter before the
+	// controller reloads the adapter there; that is accepted, because dropping
+	// the edge instead could lose the mapping until the next ModelAdapter status
+	// change, which may never come.
+	c.linkModelAdaptersLocked(metaPod, modelName, modelClaims)
+
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
 
@@ -207,12 +215,17 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 	// TODO: No in place update is handled here
 
-	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
+	// Remove old mappings if present. Adapter edges are not inherited from the old
+	// pod: the ModelAdapter informer does not re-add them, because it fires only
+	// when a ModelAdapter changes, so they are rebuilt below from the cached
+	// ModelAdapters that list the pod (see linkModelAdaptersLocked). As in addPod,
+	// a pod recreated under the same name can be routed to for an adapter before
+	// the controller reloads the adapter there; that is accepted, because the
+	// previous behavior could lose the mapping permanently.
 	// A model that loses its only pod stays in the cache until the new mappings are
 	// added below, so a status update of that pod does not reset the model's
-	// pending count and output predictor. This covers the pod's base model only:
-	// adapter models served just by this pod are still dropped here and re-added
-	// later by the adapter informer.
+	// pending count and output predictor. An adapter served only by this pod is
+	// kept the same way while its edge is restored.
 	var emptiedModels []string
 	defer func() {
 		for _, modelName := range emptiedModels {
@@ -259,6 +272,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}
 		}
+		c.linkModelAdaptersLocked(metaPod, newModelName, newModelClaims)
 	} else {
 		c.reconcileModelClaimMetrics(oldMetaPod, nil, nil)
 		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
@@ -339,6 +353,15 @@ func (c *Store) addModelAdapter(obj interface{}) {
 	defer c.mu.Unlock()
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
+	// An Add for an already-recorded adapter is the post-sync re-emit of a List()
+	// snapshot that may be older than the recorded Update, so apply the recorded
+	// state. A new UID is a recreated adapter, which replaces the record.
+	key := utils.GeneratePodKey(model.Namespace, model.Name)
+	if recorded, ok := c.modelAdapters[key]; ok && recorded.UID == model.UID {
+		model = recorded
+	} else {
+		c.recordModelAdapterLocked(model)
+	}
 	for _, pod := range model.Status.Instances {
 		c.addPodAndModelMappingLockedByName(pod, model.Namespace, model.Name)
 	}
@@ -354,6 +377,7 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
+	c.recordModelAdapterLocked(newModel)
 	// Keep the model while its instances are swapped, so an update that leaves the
 	// instance list unchanged does not reset the model's pending count and predictor.
 	emptied := false
@@ -403,27 +427,70 @@ func (c *Store) setModelBaseModelLocked(model *modelv1alpha1.ModelAdapter) {
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
+	var key string
 	model, ok := obj.(*modelv1alpha1.ModelAdapter)
-	if !ok {
+	if ok {
+		key = utils.GeneratePodKey(model.Namespace, model.Name)
+	} else {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			return
 		}
-		model, ok = tombstone.Obj.(*modelv1alpha1.ModelAdapter)
-		if !ok {
-			return
-		}
+		// The tombstone key is namespace/name, the same key as the record.
+		key = tombstone.Key
+		model, _ = tombstone.Obj.(*modelv1alpha1.ModelAdapter)
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// A key-only tombstone carries no status, so unlink the last observed one.
+	if model == nil {
+		model = c.modelAdapters[key]
+	}
+	delete(c.modelAdapters, key)
+	if model == nil {
+		return
+	}
 	for _, pod := range model.Status.Instances {
 		// the namespace of the pod is same as the namespace of model
 		c.deletePodAndModelMappingLocked(pod, model.Namespace, model.Name, 0)
 	}
 
 	c.debugInfo()
+}
+
+// recordModelAdapterLocked remembers the latest observed state of model for
+// linkModelAdaptersLocked, until deleteModelAdapter removes it. The record is
+// kept whether or not the pods it lists are cached, and creates no model entry
+// by itself. Caller must hold c.mu.
+func (c *Store) recordModelAdapterLocked(model *modelv1alpha1.ModelAdapter) {
+	if c.modelAdapters == nil {
+		c.modelAdapters = make(map[string]*modelv1alpha1.ModelAdapter)
+	}
+	c.modelAdapters[utils.GeneratePodKey(model.Namespace, model.Name)] = model
+}
+
+// linkModelAdaptersLocked maps metaPod to each recorded ModelAdapter that lists
+// it in status.instances, so an adapter edge survives a pod update or re-add.
+// A nil or empty spec.baseModel matches any listed pod; otherwise the pod's model
+// name (podModel) or a routable (port > 0) binding in modelClaims must equal it.
+// Caller must hold c.mu.
+func (c *Store) linkModelAdaptersLocked(metaPod *Pod, podModel string,
+	modelClaims map[string]utils.ModelClaimBinding) {
+	for _, model := range c.modelAdapters {
+		if model.Namespace != metaPod.Namespace || !slices.Contains(model.Status.Instances, metaPod.Name) {
+			continue
+		}
+		if model.Spec.BaseModel != nil {
+			if want := strings.TrimSpace(*model.Spec.BaseModel); want != "" &&
+				want != strings.TrimSpace(podModel) && modelClaims[want].Port <= 0 {
+				continue
+			}
+		}
+		c.addPodAndModelMappingLocked(metaPod, model.Name)
+		c.setModelBaseModelLocked(model)
+	}
 }
 
 // addPodLocked adds/resumes pod into the cache. flakyReAdd reports whether this was
