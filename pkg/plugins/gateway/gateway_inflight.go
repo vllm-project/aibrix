@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -27,6 +28,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
@@ -257,9 +259,16 @@ func (s *Server) narrowPDToInflightCapacity(routeCtx *types.RoutingContext, pods
 // partitionPDInflightTargets splits PD readyPods into inflight-checked target candidates
 // (routable decode pods in prefill-backed rolesets, plus combined spillover pods when
 // prompt-length bucketing is enabled) and non-target passthrough pods (prefill, encode,
-// non-HTTP TP workers, and pods in incomplete rolesets). hasLabeledPD is false when no pod
-// carries both PD roleset and role labels.
+// non-HTTP TP workers, and pods in incomplete or non-matching-bucket rolesets).
+// hasLabeledPD is false when no pod carries both PD roleset and role labels.
 func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) (targets, passthrough []*v1.Pod, hasLabeledPD bool) {
+	bucketing := routeCtx != nil && routeCtx.RoutingOverrides().PD.PromptLengthBucketing
+	var promptLength int
+	if bucketing {
+		promptLength, _ = routeCtx.PromptLength()
+	}
+	var cfgCache map[string]*types.RoutingConfig
+
 	var prefillRolesets map[string]struct{}
 	for _, pod := range pods {
 		if pod == nil {
@@ -272,6 +281,9 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 		}
 		hasLabeledPD = true
 		if roleID == pd.RolePrefill && pd.IsPodWithHTTPServer(pod) {
+			if bucketing && !isPDPodSuitableForPromptLength(resolvePDRoutingConfigCached(routeCtx, pod, &cfgCache), promptLength) {
+				continue
+			}
 			if prefillRolesets == nil {
 				prefillRolesets = make(map[string]struct{})
 			}
@@ -282,7 +294,6 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 		return nil, nil, false
 	}
 
-	bucketing := routeCtx != nil && routeCtx.RoutingOverrides().PD.PromptLengthBucketing
 	targets = make([]*v1.Pod, 0, len(pods)/2+1)
 	passthrough = make([]*v1.Pod, 0, len(pods)/2+1)
 	for _, pod := range pods {
@@ -295,15 +306,22 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 			switch roleID {
 			case pd.RoleDecode:
 				if _, ok := prefillRolesets[roleSetID]; ok {
-					targets = append(targets, pod)
-					continue
+					if !bucketing || isPDPodSuitableForPromptLength(resolvePDRoutingConfigCached(routeCtx, pod, &cfgCache), promptLength) {
+						targets = append(targets, pod)
+						continue
+					}
 				}
 			case pd.RolePrefill:
 				// Never admitted via AdmitTarget / aibrix:rrq:*.
 			default:
-				if bucketing && !encode.IsEncoder(pod) && isPDCombinedPod(routeCtx, pod) {
-					targets = append(targets, pod)
-					continue
+				// Covers combined spillover pods and any future non-prefill/decode roles
+				// (excluding encoders, which never run through AdmitTarget).
+				if bucketing && !encode.IsEncoder(pod) {
+					cfg := resolvePDRoutingConfigCached(routeCtx, pod, &cfgCache)
+					if cfg != nil && cfg.Combined != nil && *cfg.Combined && isPDPodSuitableForPromptLength(cfg, promptLength) {
+						targets = append(targets, pod)
+						continue
+					}
 				}
 			}
 		}
@@ -312,14 +330,48 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 	return targets, passthrough, true
 }
 
-func isPDCombinedPod(routeCtx *types.RoutingContext, pod *v1.Pod) bool {
+// resolvePDRoutingConfigCached resolves and parses pod's RoutingConfig once per
+// distinct pod config annotation within one partitionPDInflightTargets pass,
+// avoiding repeated JSON unmarshaling across large mixed/bucketed fleets.
+func resolvePDRoutingConfigCached(routeCtx *types.RoutingContext, pod *v1.Pod, cache *map[string]*types.RoutingConfig) *types.RoutingConfig {
 	if routeCtx == nil || pod == nil {
+		return nil
+	}
+	anno := pod.Annotations[constants.ModelAnnoConfig]
+	if *cache != nil {
+		if cfg, ok := (*cache)[anno]; ok {
+			return cfg
+		}
+	}
+	var cfg *types.RoutingConfig
+	if profile := configprofiles.ResolveProfileFrom(routeCtx.ModelConfig, pod, routeCtx.ReqConfigProfile); profile != nil {
+		cfg = configprofiles.ParseRoutingConfig(profile.RoutingConfig)
+	}
+	if *cache == nil {
+		*cache = make(map[string]*types.RoutingConfig, 4)
+	}
+	(*cache)[anno] = cfg
+	return cfg
+}
+
+// isPDPodSuitableForPromptLength mirrors pdRouter.isPodSuitableForPromptLength /
+// promptLenBucketBounds using only leaf config types so multi-bucket PD fleets
+// evaluate inflight capacity only against pods eligible for promptLength.
+func isPDPodSuitableForPromptLength(cfg *types.RoutingConfig, promptLength int) bool {
+	minLength, maxLength := 0, math.MaxInt32
+	if cfg != nil {
+		if v := cfg.PromptLenBucketMinLength; v != nil && *v > 0 {
+			minLength = *v
+		}
+		if v := cfg.PromptLenBucketMaxLength; v != nil && *v > 0 {
+			maxLength = *v
+		}
+	}
+	if minLength > maxLength {
 		return false
 	}
-	profile := configprofiles.ResolveProfileFrom(routeCtx.ModelConfig, pod, routeCtx.ReqConfigProfile)
-	if profile == nil {
-		return false
+	if minLength == 0 && maxLength == math.MaxInt32 {
+		return true
 	}
-	cfg := configprofiles.ParseRoutingConfig(profile.RoutingConfig)
-	return cfg != nil && cfg.Combined != nil && *cfg.Combined
+	return promptLength >= minLength && promptLength <= maxLength
 }

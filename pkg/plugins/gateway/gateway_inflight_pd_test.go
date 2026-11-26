@@ -387,3 +387,159 @@ func TestSelectTargetPod_PDInflightCombinedSpillover(t *testing.T) {
 			"when both decode and combined pods are saturated, request must fail with 429")
 	})
 }
+
+// TestSelectTargetPod_PDInflightMultiBucketSuitability verifies that under
+// multi-bucket PromptLengthBucketing, inflight checks only consider decode and
+// combined pods whose prompt-length range covers the request:
+//  1. When the matching short-prompt bucket is saturated, an idle decode pod in
+//     another bucket and an idle combined pod restricted to another range must
+//     neither trigger Redis reads nor mask HTTP 429.
+//  2. When a request falls outside every bucket and no suitable combined pod
+//     exists, the inflight filter bypasses Redis (0 reads) so pdRouter returns
+//     its genuine bucket-mismatch error (503) rather than a false 429.
+func TestSelectTargetPod_PDInflightMultiBucketSuitability(t *testing.T) {
+	host, port := newPDInflightPrefillServer(t)
+
+	shortBucketRaw := json.RawMessage(`{"promptLengthBucketing":true,"promptLenBucketMinLength":1,"promptLenBucketMaxLength":100}`)
+	shortBucketAnno := `{"defaultProfile":"short","profiles":{"short":{"routingConfig":{"promptLengthBucketing":true,"promptLenBucketMinLength":1,"promptLenBucketMaxLength":100}}}}`
+	longBucketAnno := `{"defaultProfile":"long","profiles":{"long":{"routingConfig":{"promptLengthBucketing":true,"promptLenBucketMinLength":101,"promptLenBucketMaxLength":4096}}}}`
+	longCombinedAnno := `{"defaultProfile":"long-combined","profiles":{"long-combined":{"routingConfig":{"promptLengthBucketing":true,"combined":true,"promptLenBucketMinLength":101,"promptLenBucketMaxLength":4096}}}}`
+
+	shortPrefill := makePDInflightTestPod("prefill-short", "rs-short", pd.RolePrefill, host, port, nil)
+	shortPrefill.Annotations = map[string]string{constants.ModelAnnoConfig: shortBucketAnno}
+	shortDecode := makePDInflightTestPod("decode-short", "rs-short", pd.RoleDecode, host, port, nil)
+	shortDecode.Annotations = map[string]string{constants.ModelAnnoConfig: shortBucketAnno}
+
+	longPrefill := makePDInflightTestPod("prefill-long", "rs-long", pd.RolePrefill, host, port, nil)
+	longPrefill.Annotations = map[string]string{constants.ModelAnnoConfig: longBucketAnno}
+	longDecode := makePDInflightTestPod("decode-long", "rs-long", pd.RoleDecode, host, port, nil)
+	longDecode.Annotations = map[string]string{constants.ModelAnnoConfig: longBucketAnno}
+
+	longCombined := makePDInflightTestPod("combined-long", "rs-combined", "combined", host, port, nil)
+	longCombined.Annotations = map[string]string{constants.ModelAnnoConfig: longCombinedAnno}
+
+	pods := []*v1.Pod{shortPrefill, shortDecode, longPrefill, longDecode, longCombined}
+
+	t.Run("saturated matching bucket returns 429 despite idle other bucket and unsuitable combined pod", func(t *testing.T) {
+		const model = "pd-multibucket-429"
+		mr := miniredis.RunT(t)
+		reads := &fleetReadCounter{}
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
+		t.Cleanup(func() { _ = client.Close() })
+		require.NoError(t, client.Ping(context.Background()).Err())
+
+		store := cache.InitWithPods(cache.New(client, nil, nil), pods, model)
+		t.Cleanup(store.Close)
+		rm := routing.NewRouterManagerWithCache(store)
+		rm.Init()
+		s := &Server{cache: store, routerManager: rm}
+
+		// Saturate only decode-short (1/1); decode-long and combined-long remain idle (0/1).
+		satCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "seed", "req-seed-short", "user")
+		t.Cleanup(satCtx.Delete)
+		satCtx.SetTargetPod(shortDecode)
+		store.AddRequestCount(satCtx, satCtx.RequestID, model)
+
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "short prompt", "req-short", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"short prompt"}],"stream":true}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1,
+			RoutingConfig:    shortBucketRaw,
+			Routing:          configprofiles.ParseRoutingConfig(shortBucketRaw),
+		}
+
+		rrqBefore := reads.rrqHGetAlls.Load()
+		_, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+		require.ErrorIs(t, err, errReplicaInflightExceeded,
+			"saturated matching bucket must return 429 rather than being masked by idle non-matching bucket or unsuitable combined pod")
+		assert.EqualValues(t, 1, reads.rrqHGetAlls.Load()-rrqBefore,
+			"inflight filter must query only the 1 matching-bucket decode pod")
+	})
+
+	t.Run("unmatched prompt length bypasses inflight filter and preserves bucket mismatch 503", func(t *testing.T) {
+		const model = "pd-multibucket-unmatched"
+		mr := miniredis.RunT(t)
+		reads := &fleetReadCounter{}
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
+		t.Cleanup(func() { _ = client.Close() })
+		require.NoError(t, client.Ping(context.Background()).Err())
+
+		store := cache.InitWithPods(cache.New(client, nil, nil), pods, model)
+		t.Cleanup(store.Close)
+		rm := routing.NewRouterManagerWithCache(store)
+		rm.Init()
+		s := &Server{cache: store, routerManager: rm}
+
+		// Empty message gives prompt length 0, outside [1, 100] and [101, 4096].
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "", "req-unmatched", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"` + model + `","messages":[{"role":"user","content":""}],"stream":true}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1,
+			RoutingConfig:    shortBucketRaw,
+			Routing:          configprofiles.ParseRoutingConfig(shortBucketRaw),
+		}
+
+		rrqBefore := reads.rrqHGetAlls.Load()
+		_, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, errReplicaInflightExceeded), "unmatched prompt length must not report 429 overload")
+		assert.Contains(t, err.Error(), "no prompt-length bucket matches")
+		assert.EqualValues(t, 0, reads.rrqHGetAlls.Load()-rrqBefore,
+			"no Redis inflight reads when no pod matches the request's prompt-length bucket")
+	})
+
+	t.Run("routes to suitable combined pod while ignoring unsuitable combined and mismatched-prefill roleset", func(t *testing.T) {
+		const model = "pd-multibucket-suitable-combined"
+		mr := miniredis.RunT(t)
+		reads := &fleetReadCounter{}
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
+		t.Cleanup(func() { _ = client.Close() })
+		require.NoError(t, client.Ping(context.Background()).Err())
+
+		shortCombinedAnno := `{"defaultProfile":"short-combined","profiles":{"short-combined":{"routingConfig":{"promptLengthBucketing":true,"combined":true,"promptLenBucketMinLength":1,"promptLenBucketMaxLength":100}}}}`
+		shortCombined := makePDInflightTestPod("combined-short", "rs-combined-short", "combined", host, port, nil)
+		shortCombined.Annotations = map[string]string{constants.ModelAnnoConfig: shortCombinedAnno}
+
+		// Mismatched roleset: prefill is long-only [101,4096], decode is short [1,100].
+		// Must NOT count as a short-bucket target because its prefill peer cannot serve short prompts.
+		mismatchPrefill := makePDInflightTestPod("prefill-mismatch", "rs-mismatch", pd.RolePrefill, host, port, nil)
+		mismatchPrefill.Annotations = map[string]string{constants.ModelAnnoConfig: longBucketAnno}
+		mismatchDecode := makePDInflightTestPod("decode-mismatch", "rs-mismatch", pd.RoleDecode, host, port, nil)
+		mismatchDecode.Annotations = map[string]string{constants.ModelAnnoConfig: shortBucketAnno}
+
+		fleet := append(append([]*v1.Pod{}, pods...), shortCombined, mismatchPrefill, mismatchDecode)
+		store := cache.InitWithPods(cache.New(client, nil, nil), fleet, model)
+		t.Cleanup(store.Close)
+		rm := routing.NewRouterManagerWithCache(store)
+		rm.Init()
+		s := &Server{cache: store, routerManager: rm}
+
+		// Saturate decode-short (1/1); combined-short remains idle (0/1).
+		satCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "seed", "req-seed-short-2", "user")
+		t.Cleanup(satCtx.Delete)
+		satCtx.SetTargetPod(shortDecode)
+		store.AddRequestCount(satCtx, satCtx.RequestID, model)
+
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "short prompt", "req-short-combined", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"short prompt"}],"stream":true}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1,
+			RoutingConfig:    shortBucketRaw,
+			Routing:          configprofiles.ParseRoutingConfig(shortBucketRaw),
+		}
+
+		rrqBefore := reads.rrqHGetAlls.Load()
+		addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: fleet}, "")
+		require.NoError(t, err)
+		require.NotEmpty(t, addr)
+		require.Equal(t, shortCombined.Name, ctx.TargetPod().Name)
+		assert.EqualValues(t, 2, reads.rrqHGetAlls.Load()-rrqBefore,
+			"inflight filter must query only decode-short and combined-short, skipping decode-long, combined-long, and decode-mismatch")
+	})
+}
