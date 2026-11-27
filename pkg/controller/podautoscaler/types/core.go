@@ -91,4 +91,10 @@ type MetricSnapshot struct {
 	Timestamp  time.Time
 	Source     string
 	Error      error
+	// DroppedReadyPods counts Ready pods whose scrape was cut by the collection deadline (or never
+	// launched because the budget ran out), so their sample is missing from Values. A pod that
+	// returned its own error is not counted. A missing hot pod biases the per-pod value low, which
+	// can turn into a spurious scale-down; the autoscaler uses this to hold scale-down on the
+	// samples this bounded collection newly drops.
+	DroppedReadyPods int
 }

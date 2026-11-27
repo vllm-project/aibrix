@@ -81,6 +81,11 @@ type ReplicaComputeResult struct {
 	// FailedMetrics names the metric sources that failed while the others
 	// produced this recommendation, so callers can say it rests on partial data.
 	FailedMetrics []string
+	// DroppedReadyPods is the number of Ready pods whose metric sample was cut by the collection
+	// deadline across the sources behind this recommendation. A non-zero value means the
+	// recommendation rests on partial per-pod data and may under-count load, so the caller holds a
+	// scale-down by default.
+	DroppedReadyPods int
 }
 
 // DefaultAutoScaler implements the complete scaling pipeline
@@ -220,6 +225,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 	var validResults []*ReplicaComputeResult // to record the recommended result calculated in the current round
 	var anyValid bool
 	var failedMetrics []string
+	var droppedReadyPods int // Ready pods whose sample was dropped, summed across the valid sources
 
 	for _, metricSource := range metricsSources {
 		// Extract per-request configuration
@@ -244,6 +250,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 
 		if result.Valid {
 			anyValid = true
+			droppedReadyPods += result.DroppedReadyPods
 			// Guard each metric before taking the max, so trimming the winner for pending
 			// replicas never drops the result below what another metric asks for.
 			result = applyPendingReplicaGuard(request, result)
@@ -295,6 +302,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		Valid:                     true,
 		PendingReplicaGuardActive: bestResult.PendingReplicaGuardActive,
 		FailedMetrics:             failedMetrics,
+		DroppedReadyPods:          droppedReadyPods,
 	}, nil
 }
 
@@ -416,7 +424,7 @@ func (a *DefaultAutoScaler) computeReplicasForSingleMetric(
 	algo := a.getOrCreateAlgorithm(request.PodAutoscaler.Spec.ScalingStrategy)
 
 	// Execute the full pipeline for this single metric
-	recommendation, err := a.executeScalingPipeline(ctx, request, metricKey, metricSource, algo)
+	recommendation, droppedReadyPods, err := a.executeScalingPipeline(ctx, request, metricKey, metricSource, algo)
 	if err != nil {
 		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to compute recommendation for metric %q: %w", metricSource.TargetMetric, err)
 	}
@@ -433,6 +441,7 @@ func (a *DefaultAutoScaler) computeReplicasForSingleMetric(
 		MetricValue:      recommendationMetricValue(recommendation),
 		Reason:           recommendation.Reason,
 		Valid:            true,
+		DroppedReadyPods: droppedReadyPods,
 	}, nil
 }
 
@@ -469,7 +478,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	metricKey types.MetricKey,
 	metricSource autoscalingv1alpha1.MetricSource,
 	algo algorithm.ScalingAlgorithm,
-) (*algorithm.ScalingRecommendation, error) {
+) (*algorithm.ScalingRecommendation, int, error) {
 	workloadKey := fmt.Sprintf("%s/%s", request.PodAutoscaler.Namespace, request.PodAutoscaler.Name)
 
 	// Step 1: Collect metrics
@@ -485,8 +494,11 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	klog.InfoS("Collecting metrics", "source", workloadKey, "pods", len(request.Pods))
 	snapshot, err := metrics.CollectMetrics(ctx, collectionSpec, a.factory)
 	if err != nil {
-		return nil, fmt.Errorf("failed to collect metrics for %s: %w", workloadKey, err)
+		return nil, 0, fmt.Errorf("failed to collect metrics for %s: %w", workloadKey, err)
 	}
+	// Number of Ready pods whose sample was cut by the collection deadline; carried out so the
+	// caller can hold a scale-down that would otherwise rest on this partial per-pod data.
+	droppedReadyPods := snapshot.DroppedReadyPods
 
 	// Use scaling context from request (single source of truth)
 	scalingContext := request.ScalingContext
@@ -494,7 +506,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	// Step 2: Process and aggregate metrics
 	stableWindow, panicWindow := metricWindowDurations(request.PodAutoscaler)
 	if err := a.metricsClient.ConfigureMetricWindows(metricKey, stableWindow, panicWindow); err != nil {
-		return nil, fmt.Errorf("failed to configure metric windows for %s: %w", workloadKey, err)
+		return nil, droppedReadyPods, fmt.Errorf("failed to configure metric windows for %s: %w", workloadKey, err)
 	}
 
 	klog.InfoS("Processing metrics snapshot", "source", workloadKey, "healthy metrics pods", len(snapshot.Values), "values", snapshot.Values)
@@ -514,12 +526,12 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		snapshot.Values = snapshot.Values[:1]
 	}
 	if err := a.aggregator.ProcessSnapshot(metricKey, snapshot); err != nil {
-		return nil, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
+		return nil, droppedReadyPods, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
 	}
 	// Use the full metricKey with PaNamespace and PaName for proper multi-tenancy
 	aggregatedMetrics, err := a.aggregator.GetAggregatedMetrics(metricKey, request.Timestamp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get aggregated metrics for %s %s: %w", workloadKey, metricKey, err)
+		return nil, droppedReadyPods, fmt.Errorf("failed to get aggregated metrics for %s %s: %w", workloadKey, metricKey, err)
 	}
 	if perPod {
 		aggregatedMetrics.StableValue /= loadPods
@@ -570,14 +582,14 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		"algorithm", algo.GetAlgorithmType())
 	recommendation, err := algo.ComputeRecommendation(ctx, scalingRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to compute scaling recommendation for %s: %w", workloadKey, err)
+		return nil, droppedReadyPods, fmt.Errorf("failed to compute scaling recommendation for %s: %w", workloadKey, err)
 	}
 	klog.InfoS("Scaling recommendation computed",
 		"source", workloadKey,
 		"algorithm", algo.GetAlgorithmType(),
 		"recommendation", recommendation)
 
-	return recommendation, nil
+	return recommendation, droppedReadyPods, nil
 }
 
 // podsCarryingLoad is the pod count a per-pod sample is scaled by to get the
