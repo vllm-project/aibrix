@@ -188,6 +188,8 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	newModelName, newOk := getModelNameFromPod(newPod)
 	newModelClaims := c.modelClaimBindingsFromPod(newPod)
 	newHasModelInfo := newOk || len(newModelClaims) > 0
+	sameMetricIdentity := oldPod.Namespace == newPod.Namespace && oldPod.Name == newPod.Name && oldPod.UID == newPod.UID &&
+		oldModelName == newModelName && oldOk == newOk && oldIsWorker == newIsWorker
 
 	if !oldOk && !existed && !newHasModelInfo {
 		return // No model information to track in either old or new pod
@@ -222,7 +224,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	var oldMetaPod *Pod
 	if oldOk || existed {
 		oldMetaPod = c.deletePodLocked(oldPod.Name, oldPod.Namespace)
-		if oldModelName != newModelName || oldOk != newOk || oldIsWorker != newIsWorker {
+		if !sameMetricIdentity {
 			c.deletePodGaugeMetrics(oldMetaPod)
 		}
 		if oldMetaPod != nil {
@@ -249,6 +251,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	// Add new mappings if present
 	if newHasModelInfo && !newIsWorker {
 		metaPod, flakyReAdd := c.addPodLocked(newPod, c.reconcileModelClaimMetrics(oldMetaPod, newPod, newModelClaims))
+		if oldMetaPod != nil && sameMetricIdentity {
+			copyPodMetricInventory(oldMetaPod, metaPod)
+		}
 		if flakyReAdd {
 			listeners = c.podLifecycleListenersLocked()
 		}
