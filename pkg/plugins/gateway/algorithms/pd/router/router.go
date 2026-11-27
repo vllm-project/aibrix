@@ -1237,8 +1237,18 @@ func (r *pdRouter) prefetchDecodeMetrics(ctx *types.RoutingContext, decodePods [
 				snap.hasThroughput = true
 			}
 			kvUsageVal := float64(0)
-			if kvUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc); err == nil && kvUsage != nil && isFinite(kvUsage.GetSimpleValue()) {
-				kvUsageVal = kvUsage.GetSimpleValue()
+			if kvUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc); err == nil && kvUsage != nil {
+				// NaN is treated like a missing gauge. An infinite usage is clamped the
+				// way load-balance clamps it: +Inf looks full and -Inf looks free.
+				switch v := kvUsage.GetSimpleValue(); {
+				case math.IsNaN(v):
+				case math.IsInf(v, 1):
+					kvUsageVal = 1
+				case math.IsInf(v, -1):
+					kvUsageVal = 0
+				default:
+					kvUsageVal = v
+				}
 			}
 			freeGPU := math.Round(100 - kvUsageVal*100)
 			if freeGPU <= 0 {

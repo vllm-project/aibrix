@@ -2455,6 +2455,32 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 100, "pod2": 70},
 		},
 		{
+			name: "infinite KV usage - +Inf looks full and -Inf looks free",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: math.Inf(1)},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: math.Inf(-1)},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  5,
+			expectMaxThroughput:    100,
+			expectMaxFreeGPUUsage:  100,
+			expectPodRequestCounts: map[string]float64{"pod1": 5, "pod2": 5},
+			expectPodThroughputs:   map[string]float64{"pod1": 100, "pod2": 100},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 0.1, "pod2": 100},
+		},
+		{
 			name: "NaN and infinite throughput - treated as missing metrics",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
@@ -3450,9 +3476,15 @@ func TestScoreDecodePods_VerboseSummaryPopulated(t *testing.T) {
 // routing. If the NaN reached the shared maxima, every decode score would be
 // NaN and Route would fail.
 func TestRouteWithNaNDecodeMetric(t *testing.T) {
-	for name, metricName := range map[string]string{
-		"kv usage":   metrics.KVCacheUsagePerc,
-		"throughput": metrics.AvgGenerationThroughputToksPerS,
+	for name, bad := range map[string]struct {
+		metric string
+		value  float64
+	}{
+		"kv usage NaN":    {metrics.KVCacheUsagePerc, math.NaN()},
+		"kv usage +Inf":   {metrics.KVCacheUsagePerc, math.Inf(1)},
+		"kv usage -Inf":   {metrics.KVCacheUsagePerc, math.Inf(-1)},
+		"throughput NaN":  {metrics.AvgGenerationThroughputToksPerS, math.NaN()},
+		"throughput +Inf": {metrics.AvgGenerationThroughputToksPerS, math.Inf(1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			prefillPod := burstPod("prefill-0", "prefill", "127.0.0.1")
@@ -3469,7 +3501,7 @@ func TestRouteWithNaNDecodeMetric(t *testing.T) {
 				}
 			}
 			nanMetrics := healthy()
-			nanMetrics[metricName] = &metrics.SimpleMetricValue{Value: math.NaN()}
+			nanMetrics[bad.metric] = &metrics.SimpleMetricValue{Value: bad.value}
 			metricsMap := map[string]map[string]metrics.MetricValue{
 				decodeNaN.Name: nanMetrics,
 				decodeOK.Name:  healthy(),
