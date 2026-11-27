@@ -166,6 +166,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		EventRecorder:       mgr.GetEventRecorderFor("PodAutoscaler"),
 		Mapper:              mgr.GetRESTMapper(),
 		workloadScaleClient: workloadScaleClient,
+		elasticEPProber:     newElasticEPProber(),
 		resyncInterval:      DefaultResyncInterval,
 		eventCh:             make(chan event.GenericEvent),
 		autoScaler:          autoScaler,
@@ -261,6 +262,7 @@ type PodAutoscalerReconciler struct {
 	EventRecorder       record.EventRecorder
 	Mapper              apimeta.RESTMapper
 	autoScaler          AutoScaler
+	elasticEPProber     *elasticEPProber
 	workloadScaleClient WorkloadScale
 	resyncInterval      time.Duration
 	eventCh             chan event.GenericEvent
@@ -732,12 +734,13 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 	})
 
 	st := &autoscalingv1alpha1.PodAutoscalerStatus{
-		LastScaleTime:   paCopy.Status.LastScaleTime,
-		DesiredScale:    paCopy.Status.DesiredScale,
-		ActualScale:     paCopy.Status.ActualScale,
-		Conditions:      conds,
-		ScalingHistory:  paCopy.Status.ScalingHistory,
-		ScheduledBounds: scheduledBoundsStatus(paCopy, time.Now()),
+		LastScaleTime:    paCopy.Status.LastScaleTime,
+		DesiredScale:     paCopy.Status.DesiredScale,
+		ActualScale:      paCopy.Status.ActualScale,
+		Conditions:       conds,
+		ScalingHistory:   paCopy.Status.ScalingHistory,
+		ScheduledBounds:  scheduledBoundsStatus(paCopy, time.Now()),
+		ElasticEPScaling: paCopy.Status.ElasticEPScaling,
 	}
 	paCopy.Status = *st
 	return r.updateStatusIfNeeded(ctx, &pa.Status, paCopy)
@@ -797,12 +800,13 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 	// status must not share the input status's Conditions backing array.
 	conditions := pa.Status.DeepCopy().Conditions
 	st := &autoscalingv1alpha1.PodAutoscalerStatus{
-		LastScaleTime:   pa.Status.LastScaleTime,
-		DesiredScale:    pa.Status.DesiredScale,
-		ActualScale:     pa.Status.ActualScale,
-		Conditions:      conditions, // upsert onto an isolated copy
-		ScalingHistory:  pa.Status.ScalingHistory,
-		ScheduledBounds: scheduledBoundsStatus(&pa, now.Time),
+		LastScaleTime:    pa.Status.LastScaleTime,
+		DesiredScale:     pa.Status.DesiredScale,
+		ActualScale:      pa.Status.ActualScale,
+		Conditions:       conditions, // upsert onto an isolated copy
+		ScalingHistory:   pa.Status.ScalingHistory,
+		ScheduledBounds:  scheduledBoundsStatus(&pa, now.Time),
+		ElasticEPScaling: pa.Status.ElasticEPScaling,
 	}
 
 	// ValidSpec
@@ -1077,9 +1081,14 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 	setCondition(pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "successfully retrieved target scale")
 
 	// Step 3: Compute scaling decision with selector
+	// List the target pods once and share the snapshot with the replica
+	// decision and the elastic EP observation below. A failed list keeps the
+	// previous behavior: it counts as a metric failure inside the decision.
+	pods, podsErr := r.getPodsForScale(ctx, pa, scaleObj)
+
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
 	currentReplicas := counts.Configured
-	scaleDecision, err := r.computeScaleDecision(ctx, *pa, scaleObj, currentReplicas)
+	scaleDecision, err := r.computeScaleDecision(ctx, *pa, currentReplicas, pods, podsErr)
 	if err != nil {
 		setStatus(pa, counts.Observed, currentReplicas, false, ReasonFailedComputeScale, false, false, false, err)
 		// setStatus reports a held replica count as Stable. Say why it is held
@@ -1128,6 +1137,16 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 	setStatus(pa, counts.Observed, scaleDecision.DesiredReplicas,
 		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive,
 		scaleDecision.ScaleDownHeld, scaleError == nil, scaleError)
+
+	// Step 6: Record the observed elastic EP scaling state of the scale target.
+	// The observation is informational in this phase and never changes the
+	// replica decision computed above. A failed pod list leaves no snapshot
+	// to observe, so the previous status is kept: an unusable list must not
+	// be read as "no engine pod enables elastic EP".
+	if podsErr == nil {
+		observation := r.observeElasticEPScaling(ctx, pods)
+		pa.Status.ElasticEPScaling = mergeElasticEPScalingObservation(pa.Status.ElasticEPScaling, observation, metav1.NewTime(r.nowTime()))
+	}
 
 	if scaleError != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, scaleError)
@@ -1203,12 +1222,13 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 // desired replicas, as well as the metric statuses and optionally records a scaling decision
 func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive, scaleDownHeld bool, success bool, err error) {
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
-		ActualScale:     currentReplicas,
-		DesiredScale:    desiredReplicas,
-		LastScaleTime:   pa.Status.LastScaleTime,
-		Conditions:      pa.Status.Conditions,
-		ScalingHistory:  pa.Status.ScalingHistory, // preserve existing history
-		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
+		ActualScale:      currentReplicas,
+		DesiredScale:     desiredReplicas,
+		LastScaleTime:    pa.Status.LastScaleTime,
+		Conditions:       pa.Status.Conditions,
+		ScalingHistory:   pa.Status.ScalingHistory, // preserve existing history
+		ScheduledBounds:  scheduledBoundsStatus(pa, time.Now()),
+		ElasticEPScaling: pa.Status.ElasticEPScaling,
 	}
 
 	// A held scale-down is not scaling, even while observed replicas still
@@ -1347,12 +1367,16 @@ func (r *PodAutoscalerReconciler) getScaleResource(ctx context.Context, pa *auto
 	return scale, targetGR, nil
 }
 
+// failScaleDecision records a failed scaling decision in the status and
+// returns the reconcile result.
+
 // computeScaleDecision determines if scaling is needed and what the target should be
 func (r *PodAutoscalerReconciler) computeScaleDecision(
 	ctx context.Context,
 	pa autoscalingv1alpha1.PodAutoscaler,
-	scaleObj *unstructured.Unstructured,
 	currentReplicas int32,
+	pods []corev1.Pod,
+	podsErr error,
 ) (*ScaleDecision, error) {
 	bounds, err := paschedules.Resolve(&pa, r.nowTime())
 	if err != nil {
@@ -1385,8 +1409,13 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	// Create scaling context as single source of truth for PA-level configuration
 	scalingContext := r.createScalingContextWithBounds(pa, bounds)
 
-	// Use autoscaler for metric-based scaling with provided selector
-	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scalingContext, scaleObj, currentReplicas)
+	// Use autoscaler for metric-based scaling with provided selector. A failed
+	// pod list is a metrics failure, so the hard replica bounds below apply.
+	var replicaResult *ReplicaComputeResult
+	err = podsErr
+	if err == nil {
+		replicaResult, err = r.computeMetricBasedReplicas(ctx, pa, scalingContext, currentReplicas, pods)
+	}
 	if err != nil {
 		var failedMetrics []string
 		if replicaResult != nil {
@@ -1499,17 +1528,17 @@ func (r *PodAutoscalerReconciler) recordScaleError(pa *autoscalingv1alpha1.PodAu
 	r.EventRecorder.Event(pa, corev1.EventTypeWarning, reason, err.Error())
 }
 
-// computeMetricBasedReplicas uses the autoscaler to compute desired replicas based on metrics
-func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
+// getPodsForScale returns the pods backing the PodAutoscaler's scale target.
+// The selector comes from the scale object, so role-level targets keep their
+// sub-target filter. RayClusterFleet targets only include head pods.
+func (r *PodAutoscalerReconciler) getPodsForScale(
 	ctx context.Context,
-	pa autoscalingv1alpha1.PodAutoscaler,
-	scalingContext scalingctx.ScalingContext,
+	pa *autoscalingv1alpha1.PodAutoscaler,
 	scaleObject *unstructured.Unstructured,
-	currentReplicas int32,
-) (*ReplicaComputeResult, error) {
+) ([]corev1.Pod, error) {
 	// Get pod selector - this handles both generic scaling and role-level scaling
 	// Use the scale object we already have to avoid extra API call
-	labelsSelector, err := r.workloadScaleClient.GetPodSelectorFromScale(ctx, &pa, scaleObject)
+	labelsSelector, err := r.workloadScaleClient.GetPodSelectorFromScale(ctx, pa, scaleObject)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod selector: %w", err)
 	}
@@ -1527,7 +1556,19 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod list: %w", err)
 	}
-	replicaState := replicaStateFromPods(podList.Items, currentReplicas)
+	return podList.Items, nil
+}
+
+// computeMetricBasedReplicas uses the autoscaler to compute desired replicas
+// based on metrics. The caller passes the target pods listed for the reconcile.
+func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
+	ctx context.Context,
+	pa autoscalingv1alpha1.PodAutoscaler,
+	scalingContext scalingctx.ScalingContext,
+	currentReplicas int32,
+	pods []corev1.Pod,
+) (*ReplicaComputeResult, error) {
+	replicaState := replicaStateFromPods(pods, currentReplicas)
 
 	// Create request for autoscaler with ScalingContext
 	replicaRequest := ReplicaComputeRequest{
@@ -1535,7 +1576,7 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 		ScalingContext:  scalingContext,
 		CurrentReplicas: currentReplicas,
 		ReplicaState:    replicaState,
-		Pods:            podList.Items,
+		Pods:            pods,
 		Timestamp:       r.nowTime(),
 	}
 
