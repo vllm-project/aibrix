@@ -21,6 +21,7 @@ package v1alpha1
 // with apply.
 type ModelClaimEngineConfigApplyConfiguration struct {
 	Args map[string]string `json:"args,omitempty"`
+	Env  map[string]string `json:"env,omitempty"`
 }
 
 // ModelClaimEngineConfigApplyConfiguration constructs a declarative configuration of the ModelClaimEngineConfig type for use with
@@ -39,6 +40,20 @@ func (b *ModelClaimEngineConfigApplyConfiguration) WithArgs(entries map[string]s
 	}
 	for k, v := range entries {
 		b.Args[k] = v
+	}
+	return b
+}
+
+// WithEnv puts the entries into the Env field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Env field,
+// overwriting an existing map entries in Env field with the same key.
+func (b *ModelClaimEngineConfigApplyConfiguration) WithEnv(entries map[string]string) *ModelClaimEngineConfigApplyConfiguration {
+	if b.Env == nil && len(entries) > 0 {
+		b.Env = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.Env[k] = v
 	}
 	return b
 }

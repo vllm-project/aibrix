@@ -173,6 +173,16 @@ type ModelClaimEngineConfig struct {
 	// an empty string value.
 	// +optional
 	Args map[string]string `json:"args,omitempty"`
+
+	// Env overrides supported environment variables for this engine process.
+	// Values are literal strings and must not contain credentials.
+	// Keep the reserved keys aligned with the engine runtime's validation.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="!['CUDA_VISIBLE_DEVICES', 'NVIDIA_VISIBLE_DEVICES', 'VLLM_SERVER_DEV_MODE', 'ENABLE_KVCACHED', 'KVCACHED_AUTOPATCH', 'KVCACHED_IPC_NAME'].exists(key, key in self)",message="engineConfig.env cannot override runtime-managed environment variables"
+	// +kubebuilder:validation:MaxProperties=24
+	// +kubebuilder:validation:XValidation:rule="self.all(key, key != '' && !key.matches('[=\\x00]'))",message="environment variable names must be non-empty and cannot contain '=' or NUL"
+	// +kubebuilder:validation:XValidation:rule="self.all(key, !self[key].contains('\\x00'))",message="environment variable values cannot contain NUL"
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ModelClaimPhase is a high-level summary of where a ModelClaim is in its

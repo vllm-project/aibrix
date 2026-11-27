@@ -1078,6 +1078,120 @@ def test_endpoints_activate_list_deactivate():
     assert all(m["model_name"] != "ep1" for m in listed["models"])
 
 
+def _engine_env_test_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from aibrix.runtime.model_runtime_api import model_runtime_router
+
+    app = FastAPI()
+    app.include_router(model_runtime_router)
+    return TestClient(app)
+
+
+def test_activate_applies_model_engine_env_only_to_its_process(monkeypatch, tmp_path):
+    import subprocess
+    from datetime import datetime, timezone
+
+    import aibrix.runtime.model_runtime as runtime_module
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.runtime.engine_registry import EngineRegistry
+    from aibrix.runtime.model_runtime import SubprocessEngineLauncher
+
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda _: False)
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: False)
+    monkeypatch.setenv("OMP_NUM_THREADS", "4")
+    monkeypatch.delenv("MODEL_SPECIFIC_SETTING", raising=False)
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path / "cache"))
+    launches = []
+
+    def fake_popen(cmd, env, start_new_session):
+        launches.append(env)
+        return SimpleNamespace(pid=4321 + len(launches), poll=lambda: None)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    registry = EngineRegistry(tmp_path / "engines.json")
+    launcher = SubprocessEngineLauncher()
+    runtime = ModelRuntime(launcher, registry=registry)
+    monkeypatch.setattr(api, "get_model_runtime", lambda: runtime)
+    client = _engine_env_test_client()
+    for name, config in (
+        (
+            "override",
+            {
+                "env": {
+                    "OMP_NUM_THREADS": "1",
+                    "MODEL_SPECIFIC_SETTING": "literal",
+                }
+            },
+        ),
+        ("default", {}),
+    ):
+        response = client.post(
+            "/v1/runtime/models/activate",
+            json={
+                "model_name": name,
+                "artifact_url": "hf://x",
+                "engine_config": config,
+            },
+        )
+        assert response.status_code == 200, response.text
+
+    clock = [datetime.now(timezone.utc)]
+    recovered = ModelRuntime(launcher, registry=registry, now=lambda: clock[0])
+    restored = recovered.list_models()
+    assert all(inst.phase == "restarting" for inst in restored)
+    clock[0] = max(inst.next_restart_at for inst in restored)
+    recovered.supervise_once()
+
+    assert [env["OMP_NUM_THREADS"] for env in launches] == ["1", "4", "1", "4"]
+    assert all(env["ENABLE_KVCACHED"] == "true" for env in launches)
+    assert all(env["KVCACHED_AUTOPATCH"] == "1" for env in launches)
+    assert [env["KVCACHED_IPC_NAME"] for env in launches] == [
+        "kvc_override",
+        "kvc_default",
+        "kvc_override",
+        "kvc_default",
+    ]
+    assert [env.get("MODEL_SPECIFIC_SETTING") for env in launches] == [
+        "literal",
+        None,
+        "literal",
+        None,
+    ]
+    assert os.environ["OMP_NUM_THREADS"] == "4"
+    assert "MODEL_SPECIFIC_SETTING" not in os.environ
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"CUDA_VISIBLE_DEVICES": "0"},
+        {"VLLM_SERVER_DEV_MODE": "0"},
+        {"ENABLE_KVCACHED": "false"},
+        {"KVCACHED_AUTOPATCH": "0"},
+        {"KVCACHED_IPC_NAME": "other"},
+        {"INVALID=NAME": "value"},
+        {"OMP_NUM_THREADS": "1\0"},
+    ],
+)
+def test_activate_rejects_invalid_model_engine_env(env, monkeypatch):
+    import aibrix.runtime.model_runtime_api as api
+
+    runtime = make_agent()
+    monkeypatch.setattr(api, "get_model_runtime", lambda: runtime)
+    response = _engine_env_test_client().post(
+        "/v1/runtime/models/activate",
+        json={
+            "model_name": "bad-env",
+            "artifact_url": "hf://x",
+            "engine_config": {"env": env},
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert not runtime.list_models()
+
+
 def test_a_deactivate_that_waits_does_not_stall_the_other_endpoints():
     # A deactivate waits for the runtime's operation lock, which an activation
     # that downloads weights, or a sleep, can hold for a minute. Waiting on the

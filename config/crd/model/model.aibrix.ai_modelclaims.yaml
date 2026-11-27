@@ -67,6 +67,22 @@ spec:
                     additionalProperties:
                       type: string
                     type: object
+                  env:
+                    additionalProperties:
+                      type: string
+                    maxProperties: 24
+                    type: object
+                    x-kubernetes-validations:
+                    - message: engineConfig.env cannot override runtime-managed environment
+                        variables
+                      rule: '![''CUDA_VISIBLE_DEVICES'', ''NVIDIA_VISIBLE_DEVICES'',
+                        ''VLLM_SERVER_DEV_MODE'', ''ENABLE_KVCACHED'', ''KVCACHED_AUTOPATCH'',
+                        ''KVCACHED_IPC_NAME''].exists(key, key in self)'
+                    - message: environment variable names must be non-empty and cannot
+                        contain '=' or NUL
+                      rule: self.all(key, key != '' && !key.matches('[=\x00]'))
+                    - message: environment variable values cannot contain NUL
+                      rule: self.all(key, !self[key].contains('\x00'))
                 type: object
               modelName:
                 type: string

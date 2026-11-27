@@ -125,6 +125,11 @@ class RuntimeEngineConfig(NoExtraBaseModel):
         description="Engine CLI flags keyed by flag name, e.g. {'--max-model-len': '2048'}",
     )
 
+    env: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Literal environment overrides for the engine process",
+    )
+
 
 class RuntimeClaimRef(NoExtraBaseModel):
     """Stable ModelClaim identity carried into a runtime instance."""

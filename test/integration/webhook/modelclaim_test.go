@@ -88,9 +88,46 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		}, "spec.engineConfig.args"),
 	)
 
+	ginkgo.DescribeTable("rejects runtime-managed engine environment variables", func(key string) {
+		claim := newClaim("engine-env")
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{key: "override"}}
+		err := k8sClient.Create(ctx, claim, client.DryRunAll)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("spec.engineConfig.env"))
+	},
+		ginkgo.Entry("CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"),
+		ginkgo.Entry("NVIDIA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"),
+		ginkgo.Entry("VLLM_SERVER_DEV_MODE", "VLLM_SERVER_DEV_MODE"),
+		ginkgo.Entry("ENABLE_KVCACHED", "ENABLE_KVCACHED"),
+		ginkgo.Entry("KVCACHED_AUTOPATCH", "KVCACHED_AUTOPATCH"),
+		ginkgo.Entry("KVCACHED_IPC_NAME", "KVCACHED_IPC_NAME"),
+	)
+
+	ginkgo.DescribeTable("rejects malformed engine environment entries", func(key, value string) {
+		claim := newClaim("malformed-engine-env")
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{key: value}}
+		err := k8sClient.Create(ctx, claim, client.DryRunAll)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("spec.engineConfig.env"))
+	},
+		ginkgo.Entry("empty key", "", "value"),
+		ginkgo.Entry("equals sign in key", "CUSTOM=KEY", "value"),
+		ginkgo.Entry("NUL in key", "CUSTOM\x00KEY", "value"),
+		ginkgo.Entry("NUL in value", "CUSTOM_KEY", "val\x00ue"),
+	)
+
 	ginkgo.It("preserves defaults, perGPU updates and CEL immutability", func() {
 		claim := newClaim("valid")
 		claim.Spec.ArtifactURL = "/models/weights"
+		claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Env: map[string]string{
+			"OMP_NUM_THREADS": "1", "custom.setting": "",
+		}}
+		for _, key := range []string{
+			"CUSTOM_A", "CUSTOM_B", "CUSTOM_C", "CUSTOM_D",
+			"CUSTOM_E", "CUSTOM_F", "CUSTOM_G", "CUSTOM_H",
+		} {
+			claim.Spec.EngineConfig.Env[key] = "value"
+		}
 		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
 		gomega.Expect(claim.Spec.Engine).To(gomega.Equal("vllm"))
 		gomega.Expect(claim.Spec.ModelName).To(gomega.BeNil())
@@ -99,6 +136,9 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		gomega.Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(before))).To(gomega.Succeed())
 		changed := claim.DeepCopy()
 		changed.Spec.ArtifactURL = "another/model"
+		gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, changed, client.MergeFrom(claim)))).To(gomega.BeTrue())
+		changed = claim.DeepCopy()
+		changed.Spec.EngineConfig.Env["OMP_NUM_THREADS"] = "2"
 		gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, changed, client.MergeFrom(claim)))).To(gomega.BeTrue())
 		claim.Status.Phase = modelapi.ModelClaimPending
 		gomega.Expect(k8sClient.Status().Update(ctx, claim)).To(gomega.Succeed())

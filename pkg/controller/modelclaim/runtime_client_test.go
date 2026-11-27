@@ -57,6 +57,7 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 		assert.Equal(t, "claim-uid", req.ClaimRef.UID)
 		require.NotNil(t, req.EngineConfig)
 		assert.Equal(t, "2048", req.EngineConfig.Args["--max-model-len"])
+		assert.Equal(t, "1", req.EngineConfig.Env["OMP_NUM_THREADS"])
 		_ = json.NewEncoder(w).Encode(ActivateResponse{
 			Status: "success", ModelName: req.ModelName, Port: 9123, IPCName: req.IPCName,
 		})
@@ -70,6 +71,7 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 		ClaimRef:  &ModelClaimRef{Namespace: "default", Name: "m1", UID: "claim-uid"},
 		EngineConfig: &modelv1alpha1.ModelClaimEngineConfig{
 			Args: map[string]string{"--max-model-len": "2048"},
+			Env:  map[string]string{"OMP_NUM_THREADS": "1"},
 		},
 	})
 	require.NoError(t, err)
