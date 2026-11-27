@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -97,6 +98,11 @@ type poolActivationPolicy struct {
 // defaultActivationTimeout is how long an instance may stay Activating after
 // its engine has stopped booting, when the pool does not say.
 const defaultActivationTimeout = 30 * time.Minute
+
+// maxActivationTimeoutSeconds is the longest timeout a time.Duration holds. A
+// longer one would wrap around to a negative duration, which every engine
+// would exceed at once.
+const maxActivationTimeoutSeconds = math.MaxInt64 / int64(time.Second)
 
 type poolReclaimPolicy struct {
 	Mode                   string `json:"mode,omitempty"`
@@ -185,10 +191,11 @@ func parsePoolPolicy(raw string) (*poolPolicy, error) {
 			return nil, &poolPolicyConfigError{class: poolPolicyErrorInvalidSleep, err: err}
 		}
 	}
-	if policy.Activation != nil && policy.Activation.TimeoutSeconds <= 0 {
+	if policy.Activation != nil &&
+		(policy.Activation.TimeoutSeconds <= 0 || policy.Activation.TimeoutSeconds > maxActivationTimeoutSeconds) {
 		return nil, &poolPolicyConfigError{
 			class: poolPolicyErrorInvalidTimeout,
-			err:   errors.New("activation.timeoutSeconds must be positive"),
+			err:   fmt.Errorf("activation.timeoutSeconds must be positive and at most %d", maxActivationTimeoutSeconds),
 		}
 	}
 	return policy, nil

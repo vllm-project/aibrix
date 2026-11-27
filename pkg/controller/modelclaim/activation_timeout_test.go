@@ -294,14 +294,23 @@ func TestAnActivationTimeoutMustBePositive(t *testing.T) {
 		`{"activation":{"timeoutSeconds":0}}`,
 		`{"activation":{"timeoutSeconds":-5}}`,
 		`{"activation":{}}`,
+		// One second more than a time.Duration holds.
+		`{"activation":{"timeoutSeconds":9223372037}}`,
 	} {
 		_, err := parsePoolPolicy(raw)
 		var configErr *poolPolicyConfigError
 		require.ErrorAs(t, err, &configErr, raw)
 		assert.Equal(t, poolPolicyErrorInvalidTimeout, configErr.class, raw)
-		assert.Contains(t, err.Error(), "activation.timeoutSeconds must be positive", raw)
+		assert.Contains(t, err.Error(), "activation.timeoutSeconds must be positive and at most 9223372036", raw)
 	}
-	_, err := parsePoolPolicy(`{"activation":{"timeout":60}}`)
+	// The longest timeout that a time.Duration holds is taken as it is.
+	longest, err := parsePoolPolicy(`{"activation":{"timeoutSeconds":9223372036}}`)
+	require.NoError(t, err)
+	assert.Equal(t, int64(9223372036), longest.Activation.TimeoutSeconds)
+	assert.Positive(t, activationTimeoutOf(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Annotations: map[string]string{constants.ModelPoolPolicyAnnotationKey: `{"activation":{"timeoutSeconds":9223372036}}`},
+	}}))
+	_, err = parsePoolPolicy(`{"activation":{"timeout":60}}`)
 	var configErr *poolPolicyConfigError
 	require.ErrorAs(t, err, &configErr)
 	assert.Equal(t, poolPolicyErrorUnknownField, configErr.class)
