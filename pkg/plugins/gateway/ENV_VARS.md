@@ -437,13 +437,16 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_KV_CONNECTOR_TYPE` | string | `"shfs"` | KV cache transfer backend. Options: `shfs` (GPU shared memory), `nixl` (Neuron), `mooncake` (Mooncake). |
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`, `conductor`, `token_load`, `hybrid_cache_load`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`, `conductor`, `token_load`. |
+| `AIBRIX_TOKEN_LOAD_IMAGE_TOKENS` | int | `1024` | `token_load` prompt estimate: add this many tokens per image content part after excluding its URL or inline payload from the four-bytes-per-token body count. `0` disables the surcharge. Environment-only. |
+| `AIBRIX_TOKEN_LOAD_AUDIO_TOKENS` | int | `1024` | `token_load` prompt estimate: add this many tokens per audio content part after excluding its URL or inline payload from the body count. `0` disables the surcharge. Environment-only. |
+| `AIBRIX_TOKEN_LOAD_VIDEO_TOKENS` | int | `2048` | `token_load` prompt estimate: add this many tokens per video content part after excluding its URL or inline payload from the body count. `0` disables the surcharge. Environment-only. |
 | `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH` | bool | `true` | `token_load` decode policy only: add an estimate of the output generated so far (per-request decode rate × time since routing) to the decode score. `false` scores prompt tokens only. |
 | `AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE` | bool | `true` | `token_load` decode policy only: multiply each decode pod's score by the candidates' mean KV capacity divided by the pod's own (`num_gpu_blocks` × `block_size` from vLLM's `vllm:cache_config_info`, or SGLang's `sglang:max_total_num_tokens`), so pods of different sizes are compared by how full they are. Unknown capacities count as the mean; with none known, or `false`, scores are token counts. |
 | `AIBRIX_TOKEN_LOAD_SHARED_LEDGER` | bool | `true` | `token_load` decode policy only, with Redis configured: share the decode ledger across gateway replicas, so each replica adds the other live replicas' charges to its decode score. `false` keeps the ledger local to each replica. |
 
 The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
-`AIBRIX_BUCKET_SERVE_MODE`), except `AIBRIX_PREFILL_LOAD_CAP_FACTOR`, can also be set per request by the model config profile
-(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides). `AIBRIX_PREFILL_LOAD_CAP_FACTOR` is environment-only.
+`AIBRIX_BUCKET_SERVE_MODE`) can also be set per request by the model config profile
+(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides). Environment-only exceptions include `AIBRIX_PREFILL_LOAD_CAP_FACTOR`, `AIBRIX_TOKEN_LOAD_MAX_SESSIONS`, `AIBRIX_TOKEN_LOAD_IMAGE_TOKENS`, `AIBRIX_TOKEN_LOAD_AUDIO_TOKENS`, and `AIBRIX_TOKEN_LOAD_VIDEO_TOKENS`.
 
 ### PD Prefill Fail-Fast (`algorithms/pd/abort.go`)
 
