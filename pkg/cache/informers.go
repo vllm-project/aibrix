@@ -183,7 +183,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 		return
 	}
 
-	_, oldOk := getModelNameFromPod(oldPod)
+	oldModelName, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
 	newModelClaims := c.modelClaimBindingsFromPod(newPod)
@@ -222,6 +222,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	var oldMetaPod *Pod
 	if oldOk || existed {
 		oldMetaPod = c.deletePodLocked(oldPod.Name, oldPod.Namespace)
+		if oldModelName != newModelName || oldOk != newOk || oldIsWorker != newIsWorker {
+			c.deletePodGaugeMetrics(oldMetaPod)
+		}
 		if oldMetaPod != nil {
 			for _, modelName := range oldMetaPod.Models.Array() {
 				if c.removePodModelMappingLocked(oldMetaPod.Name, oldMetaPod.Namespace, modelName, 1) {
@@ -318,6 +321,7 @@ func (c *Store) deletePod(obj interface{}) {
 
 	// delete base model and associated lora models on this pod
 	metaPod := c.deletePodLocked(name, namespace)
+	c.deletePodGaugeMetrics(metaPod)
 	c.reconcileModelClaimMetrics(metaPod, nil, nil)
 	if metaPod != nil {
 		for _, modelName := range metaPod.Models.Array() {
