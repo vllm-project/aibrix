@@ -48,6 +48,10 @@ func (r *RayClusterFleetReconciler) rolloutRolling(ctx context.Context, d *orche
 	// Scale down, if we can.
 	scaledDown, err := r.reconcileOldReplicaSets(ctx, allRSs, util.FilterActiveReplicaSets(oldRSs), newRS, d)
 	if err != nil {
+		// Check the progress deadline even when a scale-down write fails.
+		if _, statusErr := r.syncRolloutStatus(ctx, allRSs, newRS, d); statusErr != nil {
+			klog.FromContext(ctx).Error(statusErr, "Failed to sync rollout status after scale-down error", "fleet", klog.KObj(d))
+		}
 		return ctrl.Result{}, err
 	}
 	if scaledDown {
@@ -135,7 +139,7 @@ func (r *RayClusterFleetReconciler) reconcileOldReplicaSets(ctx context.Context,
 	// and cause timeout. See https://github.com/kubernetes/kubernetes/issues/16737
 	oldRSs, cleanupCount, err := r.cleanupUnhealthyReplicas(ctx, oldRSs, deployment, maxScaledDown)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 	logger.V(4).Info("Cleaned up unhealthy replicas from old RSes", "count", cleanupCount)
 
@@ -143,7 +147,7 @@ func (r *RayClusterFleetReconciler) reconcileOldReplicaSets(ctx context.Context,
 	allRSs = append(oldRSs, newRS)
 	scaledDownCount, err := r.scaleDownOldReplicaSetsForRollingUpdate(ctx, allRSs, oldRSs, deployment)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 	logger.V(4).Info("Scaled down old RSes", "deployment", klog.KObj(deployment), "count", scaledDownCount)
 

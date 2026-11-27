@@ -123,6 +123,57 @@ func TestModelClaimPortZeroHasNoRoutableBackend(t *testing.T) {
 	assert.Equal(t, "sleeping", binding.Claim)
 }
 
+func TestModelClaimBindingPrefersStateBeforePodKey(t *testing.T) {
+	tests := []struct {
+		name       string
+		candidates map[string]string
+		wantPod    string
+	}{
+		{
+			name: "activating over sleeping and failed",
+			candidates: map[string]string{
+				"a-failed":     constants.ModelClaimRoutingStateFailed,
+				"b-sleeping":   constants.ModelClaimRoutingStateSleeping,
+				"c-activating": constants.ModelClaimRoutingStateActivating,
+			},
+			wantPod: "c-activating",
+		},
+		{
+			name: "sleeping over failed",
+			candidates: map[string]string{
+				"a-failed":   constants.ModelClaimRoutingStateFailed,
+				"b-sleeping": constants.ModelClaimRoutingStateSleeping,
+			},
+			wantPod: "b-sleeping",
+		},
+		{
+			name: "pod key breaks state tie",
+			candidates: map[string]string{
+				"z-sleeping": constants.ModelClaimRoutingStateSleeping,
+				"a-sleeping": constants.ModelClaimRoutingStateSleeping,
+			},
+			wantPod: "a-sleeping",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewForTest()
+			for podName, state := range tt.candidates {
+				pod := warmModelClaimPod(podName, "default", nil)
+				pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"claim"] =
+					fmt.Sprintf(`{"model":"m","port":0,"state":%q}`, state)
+				c.addPod(pod)
+			}
+
+			pod, binding, found := c.ModelClaimBinding("m")
+			require.True(t, found)
+			assert.Equal(t, tt.wantPod, pod.Name)
+			assert.Equal(t, tt.candidates[tt.wantPod], binding.State)
+		})
+	}
+}
+
 func TestModelClaimBindingTracksAnnotationUpdatesAndDeletion(t *testing.T) {
 	c := NewForTest()
 	active := warmModelClaimPod("p1", "default", map[string]int{"m": 9001})
