@@ -17,14 +17,21 @@ limitations under the License.
 package modelclaim
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -64,8 +71,8 @@ func passesTill(t *testing.T, r *ModelClaimReconciler, clock *stuckAt, claim str
 
 // aStuckBoot is a claim with one Activating instance on warm-1, whose engine
 // has been booting for six minutes at t0: alive, not ready, and past the boot
-// window.
-func aStuckBoot(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *stuckAt) {
+// window. Other objects are added to the API server.
+func aStuckBoot(t *testing.T, others ...client.Object) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *stuckAt) {
 	t.Helper()
 	pm := claimWithCost(700, 100)
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
@@ -74,9 +81,47 @@ func aStuckBoot(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alph
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	t0 := time.Unix(1_700_000_000, 0)
 	snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(t0, 6*time.Minute)}
-	r, runtime := newReconciler(t, pm, pod)
+	r, runtime := newReconciler(t, append([]client.Object{pm, pod}, others...)...)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
 	return r, runtime, pm, &stuckAt{t0: t0, snapshot: snapshot}
+}
+
+// aStuckBootBesideARoomyPod is aStuckBoot with a second Pod, warm-2, whose
+// empty card has room for the claim.
+func aStuckBootBesideARoomyPod(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *stuckAt) {
+	t.Helper()
+	roomy, roomySnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	r, runtime, pm, clock := aStuckBoot(t, roomy)
+	runtime.snapshots[roomy.Status.PodIP] = roomySnapshot
+	return r, runtime, pm, clock
+}
+
+// stopTaken makes the runtime of warm-1 report its engine as stopping once it
+// takes a stop, as the runtime does until the engine has exited.
+func stopTaken(runtime *fakeRuntime, clock *stuckAt) {
+	runtime.onDeactivate = func(podIP string) {
+		if podIP == "10.0.0.1" && len(clock.snapshot.Models) > 0 {
+			clock.snapshot.Models[0].Phase = runtimePhaseStopping
+		}
+	}
+}
+
+// refuseClaimWrites makes the API server refuse, once, a write of the claim's
+// status that refuse picks.
+func refuseClaimWrites(r *ModelClaimReconciler, refuse func(*modelv1alpha1.ModelClaim) bool) *bool {
+	refused := false
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+			opts ...client.SubResourceUpdateOption) error {
+			if claim, ok := obj.(*modelv1alpha1.ModelClaim); ok && !refused && refuse(claim) {
+				refused = true
+				return apierrors.NewConflict(schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"},
+					obj.GetName(), fmt.Errorf("the object has been modified"))
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	return &refused
 }
 
 // assertTimedOut checks that a pass stopped the stuck engine on warm-1 and
@@ -91,13 +136,13 @@ func assertTimedOut(t *testing.T, r *ModelClaimReconciler, runtime *fakeRuntime,
 	assert.Equal(t, modelv1alpha1.ModelClaimFailed, inst.Phase)
 	assert.Equal(t, instanceReasonActivationTimedOut, inst.Reason)
 	assert.Equal(t, 1, eventsNamed(events, instanceReasonActivationTimedOut))
-	assert.Equal(t, 1, eventsNamed(events, "within "+timeout+" after its engine stopped booting"))
+	assert.Equal(t, 1, eventsNamed(events, "did not become routable within "+timeout))
 	assert.Zero(t, eventsNamed(events, "EngineFailed"), "the timeout says why, and is not said twice")
 	assert.Contains(t, routeOf(t, r, "warm-1", claim), `"state":"failed"`)
 }
 
 // An engine that never becomes ready is stopped, and its instance fails, once
-// it has been stuck for the default timeout after its boot window.
+// the controller has seen it booting for the default timeout.
 func TestAnEngineThatNeverGetsReadyFailsAfterTheActivationTimeout(t *testing.T) {
 	r, runtime, pm, clock := aStuckBoot(t)
 
@@ -107,7 +152,22 @@ func TestAnEngineThatNeverGetsReadyFailsAfterTheActivationTimeout(t *testing.T) 
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 
 	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+}
+
+// A first boot counts from its start. A pass sees the engine as soon as it
+// starts, and the instance fails at the timeout after that, with no boot
+// window added.
+func TestAFirstBootThatNeverGetsReadyFailsAtTheTimeoutFromItsStart(t *testing.T) {
+	r, runtime, pm, clock := aStuckBoot(t)
+	clock.snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(clock.t0, 0)}
+
+	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
+	passAt(t, r, clock, pm.Name, defaultActivationTimeout-time.Second)
+	assert.Empty(t, runtime.deactivateCalls)
+
+	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
+	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
 }
 
 // A ready engine whose KV limit never takes is not routed, and fails the same
@@ -123,16 +183,14 @@ func TestAReadyEngineWhoseLimitNeverTakesFailsAfterTheActivationTimeout(t *testi
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 
 	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
 }
 
-// An engine the runtime still reports booting, restarting or stopping is
-// never timed out, however long the controller has watched it. Those are the
-// runtime's to settle.
+// An engine the runtime still reports restarting or stopping is never timed
+// out, however long the controller has watched it. Those are the runtime's to
+// settle.
 func TestAnEngineTheRuntimeStillSettlesIsNotTimedOut(t *testing.T) {
 	cases := map[string]func(t0, at time.Time) RuntimeSnapshotModel{
-		// Each reading shows a boot that began a minute before it.
-		"booting": func(_, at time.Time) RuntimeSnapshotModel { return engineBootingFor(at, time.Minute) },
 		// Restarting since before t0, in a long wait between tries.
 		"restarting": func(t0, _ time.Time) RuntimeSnapshotModel {
 			engine := engineBootingFor(t0, 6*time.Minute)
@@ -164,37 +222,34 @@ func TestAnEngineTheRuntimeStillSettlesIsNotTimedOut(t *testing.T) {
 func TestAnEngineThatGetsReadyLateStartsItsTimeoutOver(t *testing.T) {
 	r, runtime, pm, clock := aStuckBoot(t)
 	runtime.deafToKVLimits = true
-	passesTill(t, r, clock, pm.Name, 0, 25*time.Minute)
+	passesTill(t, r, clock, pm.Name, 0, 10*time.Minute)
 
-	readyAt := clock.t0.Add(25 * time.Minute)
+	readyAt := clock.t0.Add(10 * time.Minute)
 	ready := readyEngine(5000)
 	ready.LastTransition = &readyAt
 	clock.snapshot.Models = []RuntimeSnapshotModel{ready}
-	passesTill(t, r, clock, pm.Name, 25*time.Minute, 25*time.Minute+defaultActivationTimeout)
-	passAt(t, r, clock, pm.Name, 25*time.Minute+defaultActivationTimeout-time.Second)
+	passesTill(t, r, clock, pm.Name, 10*time.Minute, 10*time.Minute+defaultActivationTimeout)
+	passAt(t, r, clock, pm.Name, 10*time.Minute+defaultActivationTimeout-time.Second)
 	assert.Empty(t, runtime.deactivateCalls, "the time before it got ready does not count")
 
-	events := passAt(t, r, clock, pm.Name, 25*time.Minute+defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
+	events := passAt(t, r, clock, pm.Name, 10*time.Minute+defaultActivationTimeout)
+	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
 }
 
-// A restart dates the engine anew. Its timeout counts from when it was seen
-// stuck again after the new boot window.
+// A restart dates the engine anew, and its timeout counts from the restart.
 func TestAnEngineRestartStartsItsActivationTimeoutOver(t *testing.T) {
 	r, runtime, pm, clock := aStuckBoot(t)
-	passesTill(t, r, clock, pm.Name, 0, 25*time.Minute)
+	passesTill(t, r, clock, pm.Name, 0, 10*time.Minute)
 
-	// At 25 minutes the engine restarts, and boots again for a minute.
-	restarted := clock.t0.Add(24 * time.Minute)
+	// At 10 minutes the engine has restarted, and boots again for a minute.
+	restarted := clock.t0.Add(9 * time.Minute)
 	clock.snapshot.Models[0].LastTransition = &restarted
-	passAt(t, r, clock, pm.Name, 25*time.Minute)
-	// Past its new boot window, it is stuck again from 31 minutes on.
-	passesTill(t, r, clock, pm.Name, 31*time.Minute, 31*time.Minute+defaultActivationTimeout)
-	passAt(t, r, clock, pm.Name, 31*time.Minute+defaultActivationTimeout-time.Second)
+	passesTill(t, r, clock, pm.Name, 10*time.Minute, 9*time.Minute+defaultActivationTimeout)
+	passAt(t, r, clock, pm.Name, 9*time.Minute+defaultActivationTimeout-time.Second)
 	assert.Empty(t, runtime.deactivateCalls, "the time before the restart does not count")
 
-	events := passAt(t, r, clock, pm.Name, 31*time.Minute+defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
+	events := passAt(t, r, clock, pm.Name, 9*time.Minute+defaultActivationTimeout)
+	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
 }
 
 // An engine that served for hours and then lost its route, held to more KV
@@ -223,49 +278,199 @@ func TestAnEngineThatServedAndLostItsRouteGetsTheWholeTimeout(t *testing.T) {
 	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 
-// A pool sets its own timeout in its policy.
+// A pool sets its own timeout in its policy, which can be shorter than the
+// five minutes after which a boot is looked at less often.
 func TestAPoolSetsItsActivationTimeout(t *testing.T) {
-	deployment, replicaSet, pod := warmPoolObjects(`{"activation":{"timeoutSeconds":120}}`)
+	deployment, replicaSet, pod := warmPoolObjects(`{"activation":{"timeoutSeconds":60}}`)
 	pm := claimWithCost(700, 100)
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
 		Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 300,
 	}}
 	_, snapshot := sizedWarmPod(pod.Name, pod.Status.PodIP, 1000)
 	t0 := time.Unix(1_700_000_000, 0)
-	snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(t0, 6*time.Minute)}
+	snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(t0, 0)}
 	r, runtime := newReconciler(t, pm, deployment, replicaSet, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
 	clock := &stuckAt{t0: t0, snapshot: snapshot}
 
 	passAt(t, r, clock, pm.Name, 0)
-	passAt(t, r, clock, pm.Name, 119*time.Second)
+	passAt(t, r, clock, pm.Name, 59*time.Second)
 	assert.Empty(t, runtime.deactivateCalls)
 
-	events := passAt(t, r, clock, pm.Name, 120*time.Second)
-	assertTimedOut(t, r, runtime, pm.Name, events, "2m0s")
+	events := passAt(t, r, clock, pm.Name, 60*time.Second)
+	assertTimedOut(t, r, runtime, pm.Name, events, "1m0s")
 }
 
-// A stop the runtime does not take leaves the instance Activating, and is
-// asked again on the next pass. The instance fails only once the engine is
-// stopped.
+// A stop the runtime does not take is asked again on every pass. The instance
+// fails all the same, so that a request goes to another instance.
 func TestAStopThatIsNotTakenIsAskedAgain(t *testing.T) {
 	r, runtime, pm, clock := aStuckBoot(t)
 	runtime.deactivateErr = errors.New("runtime busy")
 
 	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
 	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
-	require.Len(t, runtime.deactivateCalls, 1)
+	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+
+	events = passAt(t, r, clock, pm.Name, defaultActivationTimeout+10*time.Second)
+	require.Len(t, runtime.deactivateCalls, 2, "the stop is asked again")
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	assert.Zero(t, eventsNamed(events, instanceReasonActivationTimedOut), "the timeout is said once")
+
+	// Once the runtime has taken the stop, it is not asked again.
+	runtime.deactivateErr = nil
+	stopTaken(runtime, clock)
+	passAt(t, r, clock, pm.Name, defaultActivationTimeout+20*time.Second)
+	require.Len(t, runtime.deactivateCalls, 3)
+	passAt(t, r, clock, pm.Name, defaultActivationTimeout+30*time.Second)
+	assert.Len(t, runtime.deactivateCalls, 3)
+}
+
+// The failure of an instance that timed out is written before its engine is
+// stopped. A write that is refused leaves the engine alone, and the next pass
+// fails the instance at once.
+func TestATimedOutInstanceFailsBeforeItsEngineIsStopped(t *testing.T) {
+	r, runtime, pm, clock := aStuckBoot(t)
+	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
+	refused := refuseClaimWrites(r, func(claim *modelv1alpha1.ModelClaim) bool {
+		return len(claim.Status.Instances) == 1 && claim.Status.Instances[0].Reason == instanceReasonActivationTimedOut
+	})
+
+	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
+	require.True(t, *refused)
+	assert.Empty(t, runtime.deactivateCalls, "the engine is not stopped before its failure is written")
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 	assert.Zero(t, eventsNamed(events, instanceReasonActivationTimedOut))
+	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"state":"activating"`)
+
+	events = passAt(t, r, clock, pm.Name, defaultActivationTimeout+10*time.Second)
+	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+}
+
+// A route that cannot be written after the failure does not bring the engine
+// back. The failure stands, so the next pass writes the route and does not
+// start the engine again.
+func TestATimedOutEngineIsNotStartedAgainWhenItsRouteCannotBeWritten(t *testing.T) {
+	r, runtime, pm, clock := aStuckBoot(t)
+	// The runtime takes the stop, and its next reading shows no engine.
+	runtime.onDeactivate = func(string) { clock.snapshot.Models = nil }
+	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
+	failRoutes := true
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch,
+			opts ...client.PatchOption) error {
+			if _, isPod := obj.(*corev1.Pod); isPod && failRoutes {
+				return fmt.Errorf("the API server did not answer")
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+
+	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
+	require.Len(t, runtime.deactivateCalls, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	assert.Equal(t, 1, eventsNamed(events, instanceReasonActivationTimedOut))
+
+	failRoutes = false
+	passAt(t, r, clock, pm.Name, defaultActivationTimeout+10*time.Second)
+	assert.Empty(t, runtime.activateCalls, "the engine is not started again")
+	assert.Len(t, runtime.deactivateCalls, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"state":"failed"`)
+}
+
+// An instance that timed out moves in the same pass to a Pod with room, once
+// the runtime has taken the stop of its engine.
+func TestATimedOutInstanceMovesInTheSamePass(t *testing.T) {
+	r, runtime, pm, clock := aStuckBootBesideARoomyPod(t)
+	stopTaken(runtime, clock)
+	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
+	require.Empty(t, runtime.activateCalls)
+
+	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
+	assert.Equal(t, 1, eventsNamed(events, instanceReasonActivationTimedOut))
+	assert.Equal(t, 1, eventsNamed(events, "because it did not become routable in time, from pod warm-1 to pod warm-2"))
+	assert.Equal(t, []string{testPeerIP}, runtime.activatedOn)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Empty(t, routeOf(t, r, "warm-1", pm.Name), "the route on warm-1 is taken back")
+	require.NotEmpty(t, runtime.deactivatedOn)
+	assert.Equal(t, "10.0.0.1", runtime.deactivatedOn[0], "the engine on warm-1 is stopped first")
+}
+
+// An instance that timed out does not move while the runtime has not taken
+// the stop of its engine. Moved, it would leave an engine that nothing stops.
+func TestATimedOutInstanceMovesOnlyOnceItsEngineTakesTheStop(t *testing.T) {
+	r, runtime, pm, clock := aStuckBootBesideARoomyPod(t)
+	runtime.deactivateErrOn = map[string]error{"10.0.0.1": errors.New("runtime busy")}
+	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
+
+	passAt(t, r, clock, pm.Name, defaultActivationTimeout)
+	assert.Empty(t, runtime.activateCalls, "the claim does not move yet")
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"state":"failed"`)
+
+	runtime.deactivateErrOn = nil
+	stopTaken(runtime, clock)
+	passAt(t, r, clock, pm.Name, defaultActivationTimeout+10*time.Second)
+	assert.Equal(t, []string{testPeerIP}, runtime.activatedOn, "the claim moves once the stop is taken")
+	assert.Equal(t, "warm-2", getModel(t, r, pm.Name).Status.Instances[0].Pod)
+}
+
+// A move whose write is refused after the engine was stopped does not bring
+// the engine back, since the failure was written first. The next pass moves
+// the claim, and warm-1 gets no engine again.
+func TestATimedOutInstanceWhoseMoveIsRefusedIsNotStartedAgain(t *testing.T) {
+	r, runtime, pm, clock := aStuckBootBesideARoomyPod(t)
+	runtime.onDeactivate = func(podIP string) {
+		if podIP == "10.0.0.1" {
+			clock.snapshot.Models = nil
+		}
+	}
+	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
+	refused := refuseClaimWrites(r, func(claim *modelv1alpha1.ModelClaim) bool {
+		return len(claim.Status.Instances) == 1 && claim.Status.Instances[0].Pod == "warm-2"
+	})
+
+	passAt(t, r, clock, pm.Name, defaultActivationTimeout)
+	require.True(t, *refused)
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
 
 	passAt(t, r, clock, pm.Name, defaultActivationTimeout+10*time.Second)
-	require.Len(t, runtime.deactivateCalls, 2, "the stop is asked again")
-	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	assert.Equal(t, []string{testPeerIP}, runtime.activatedOn)
+	assert.Equal(t, "warm-2", getModel(t, r, pm.Name).Status.Instances[0].Pod)
+}
 
-	runtime.deactivateErr = nil
-	runtime.deactivateCalls, runtime.deactivatedOn = nil, nil
-	events = passAt(t, r, clock, pm.Name, defaultActivationTimeout+20*time.Second)
-	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
+// An engine that no stop has reached is any engine the runtime lists, except
+// one that is stopping, or one that failed and is no longer alive.
+func TestEngineToStop(t *testing.T) {
+	cases := map[string]struct {
+		phase string
+		alive bool
+		want  bool
+	}{
+		"booting":                   {"booting", true, true},
+		"active":                    {"active", true, true},
+		"restarting, not alive":     {"restarting", false, true},
+		"failed, still alive":       {runtimePhaseFailed, true, true},
+		"failed and gone":           {runtimePhaseFailed, false, false},
+		"stopping":                  {runtimePhaseStopping, true, false},
+		"stopping, no longer alive": {runtimePhaseStopping, false, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, engineToStop(&RuntimeSnapshotModel{Phase: tc.phase, Alive: tc.alive}))
+		})
+	}
+	assert.False(t, engineToStop(nil), "an engine the runtime does not list")
 }
 
 func TestActivationTimeoutOfAPool(t *testing.T) {
@@ -277,7 +482,10 @@ func TestActivationTimeoutOfAPool(t *testing.T) {
 		"a policy without it":     {`{"lifecycle":{"sleepAfterSeconds":60}}`, defaultActivationTimeout},
 		"its own timeout":         {`{"activation":{"timeoutSeconds":600}}`, 10 * time.Minute},
 		"beside a lifecycle":      {`{"lifecycle":{"sleepAfterSeconds":60},"activation":{"timeoutSeconds":90}}`, 90 * time.Second},
-		"a policy that not valid": {`{"activation":{"timeoutSeconds":0}}`, defaultActivationTimeout},
+		"beside a bad lifecycle":  {`{"lifecycle":{"sleepAfterSeconds":-1},"activation":{"timeoutSeconds":90}}`, 90 * time.Second},
+		"beside an unknown field": {`{"lifecyle":{},"activation":{"timeoutSeconds":90}}`, 90 * time.Second},
+		"one that is not valid":   {`{"activation":{"timeoutSeconds":0}}`, defaultActivationTimeout},
+		"not JSON":                {`{"activation":`, defaultActivationTimeout},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -297,23 +505,55 @@ func TestAnActivationTimeoutMustBePositive(t *testing.T) {
 		// One second more than a time.Duration holds.
 		`{"activation":{"timeoutSeconds":9223372037}}`,
 	} {
-		_, err := parsePoolPolicy(raw)
+		_, err := activationOf(raw)
 		var configErr *poolPolicyConfigError
 		require.ErrorAs(t, err, &configErr, raw)
 		assert.Equal(t, poolPolicyErrorInvalidTimeout, configErr.class, raw)
 		assert.Contains(t, err.Error(), "activation.timeoutSeconds must be positive and at most 9223372036", raw)
 	}
 	// The longest timeout that a time.Duration holds is taken as it is.
-	longest, err := parsePoolPolicy(`{"activation":{"timeoutSeconds":9223372036}}`)
+	longest, err := activationOf(`{"activation":{"timeoutSeconds":9223372036}}`)
 	require.NoError(t, err)
-	assert.Equal(t, int64(9223372036), longest.Activation.TimeoutSeconds)
+	assert.Equal(t, int64(9223372036), longest.TimeoutSeconds)
 	assert.Positive(t, activationTimeoutOf(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
 		Annotations: map[string]string{constants.ModelPoolPolicyAnnotationKey: `{"activation":{"timeoutSeconds":9223372036}}`},
 	}}))
-	_, err = parsePoolPolicy(`{"activation":{"timeout":60}}`)
+	_, err = activationOf(`{"activation":{"timeout":60}}`)
 	var configErr *poolPolicyConfigError
 	require.ErrorAs(t, err, &configErr)
 	assert.Equal(t, poolPolicyErrorUnknownField, configErr.class)
+	none, err := activationOf(`{"activation":null}`)
+	require.NoError(t, err)
+	assert.Nil(t, none)
+}
+
+// An activation section that is not valid is ignored, and said so once. The
+// rest of the policy still applies.
+func TestAnInvalidActivationLeavesTheSleepPolicyInForce(t *testing.T) {
+	invalid := `{"lifecycle":{"sleepAfterSeconds":60},"activation":{"timeoutSeconds":0}}`
+	deployment, _, _ := warmPoolObjects(invalid)
+	r, _ := newReconciler(t)
+	manager := newPoolPolicyManager(time.Now)
+
+	policy := r.resolvePoolPolicy(deployment, manager)
+	require.NotNil(t, policy, "the sleep policy applies")
+	require.NotNil(t, policy.Lifecycle)
+	assert.Equal(t, int64(60), policy.Lifecycle.SleepAfterSeconds)
+	events := drainEvents(t, r)
+	require.Len(t, events, 1)
+	assert.Contains(t, events[0], "InvalidPoolPolicy")
+	assert.Contains(t, events[0], "the default activation timeout of 15m0s applies")
+	assert.Equal(t, defaultActivationTimeout, activationTimeoutOf(deployment))
+
+	require.NotNil(t, r.resolvePoolPolicy(deployment, manager))
+	assert.Empty(t, drainEvents(t, r), "the same annotation is not reported again")
+
+	deployment.Annotations[constants.ModelPoolPolicyAnnotationKey] = `{"lifecycle":{"sleepAfterSeconds":60},"activation":{"timeoutSeconds":90}}`
+	require.NotNil(t, r.resolvePoolPolicy(deployment, manager))
+	assert.Empty(t, drainEvents(t, r))
+	deployment.Annotations[constants.ModelPoolPolicyAnnotationKey] = invalid
+	r.resolvePoolPolicy(deployment, manager)
+	assert.Len(t, drainEvents(t, r), 1, "a section that is not valid again is reported again")
 }
 
 // A clock not seen for a while is dropped, so the instances of claims that

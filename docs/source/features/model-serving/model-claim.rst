@@ -534,9 +534,10 @@ pool:
        ``sleepAfterSeconds`` when that is set.
 
 A policy with an unknown field or an invalid value is turned off, and the
-Deployment gets an ``InvalidPoolPolicy`` Event. The policy also accepts a
-deprecated ``reclaim`` section, which has no effect on claims that declare
-``perGPU``.
+Deployment gets an ``InvalidPoolPolicy`` Event. An invalid ``activation``
+section is the one exception, described in `Failures`_. The policy also
+accepts a deprecated ``reclaim`` section, which has no effect on claims that
+declare ``perGPU``.
 
 The controller puts a model to sleep once it has been idle for
 ``sleepAfterSeconds``. It first takes the model off the route and checks again
@@ -626,15 +627,27 @@ cannot move. The engine's ``last_error`` in the runtime snapshot says why it
 crashed.
 
 An engine can also stay off the route without crashing, because it never gets
-ready or its KV limit does not take. The controller gives it 30 minutes from
-when it gets ready, or from five minutes after it starts if it is still not
-ready then. A restart starts the count over. The controller then stops the
-engine, and the claim gets an ``ActivationTimedOut`` Event. If another Pod has
-room, the controller starts the claim there. Otherwise, the claim reads
-``Failed``. A pool sets its own timeout in its policy annotation with
+ready or its KV limit does not take. The controller gives such an engine 15
+minutes, and it measures that time in two ways. One count starts at the
+engine's last change of state, such as its start, getting ready or a restart,
+as the runtime agent reports it. The other starts when the controller first
+sees the engine off the route. The shorter count decides, so an engine that
+served for hours and then lost its route still gets the full 15 minutes. The
+controller keeps the second count in memory. A restart of the controller starts
+it over, which can only delay a timeout.
+
+When the time is up, the claim reads ``Failed`` and gets an
+``ActivationTimedOut`` Event. The controller then stops the engine and asks
+again until the runtime agent takes the stop. After that, if another Pod has
+room, the controller starts the claim there.
+
+A pool sets its own timeout in its policy annotation with
 ``activation.timeoutSeconds``, for example
 ``{"activation":{"timeoutSeconds":3600}}``. Raise it for a model that takes
-long to load, such as one that downloads its weights when it starts.
+long to load, such as one that downloads its weights when it starts. If the
+``activation`` section is not valid, the Deployment gets an
+``InvalidPoolPolicy`` Event, and the timeout stays at 15 minutes. The rest of
+the policy still applies.
 
 If the runtime agent crashes, its engines keep running. The image restarts the
 agent, which takes the engines back from ``/var/run/aibrix`` with their ports

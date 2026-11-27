@@ -71,8 +71,11 @@ type fakeRuntime struct {
 	deactivateErr   error
 	deactivateErrOn map[string]error
 	deactivatedOn   []string
-	kvLimitCalls    []SetKVLimitRequest
-	sleepCalls      []SleepRequest
+	// onDeactivate, when set, runs on every stop the runtime takes, as a
+	// runtime changes what its snapshot reports.
+	onDeactivate func(podIP string)
+	kvLimitCalls []SetKVLimitRequest
+	sleepCalls   []SleepRequest
 	// onSleep, when set, runs on every sleep, as a runtime changes what its
 	// snapshot reports.
 	onSleep func(*SleepRequest)
@@ -166,6 +169,9 @@ func (f *fakeRuntime) Deactivate(_ context.Context, podIP string, _ int, req *De
 		return err
 	}
 	delete(f.models, req.ModelName)
+	if f.onDeactivate != nil {
+		f.onDeactivate(podIP)
+	}
 	return nil
 }
 

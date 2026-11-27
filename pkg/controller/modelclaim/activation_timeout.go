@@ -23,14 +23,16 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // instanceReasonActivationTimedOut is the reason of an instance that failed
-// because it stayed Activating past its pool's activation timeout after its
-// engine had stopped booting.
+// because its engine did not become routable within its pool's activation
+// timeout.
 const instanceReasonActivationTimedOut = "ActivationTimedOut"
 
 // stuckActivationForgetAfter is how long a stuck instance may go unseen before
@@ -39,9 +41,8 @@ const instanceReasonActivationTimedOut = "ActivationTimedOut"
 const stuckActivationForgetAfter = 10 * time.Minute
 
 // stuckActivations remembers when the controller first saw each instance
-// stuck: left Activating while its engine no longer boots. It lives in
-// memory only, so a restarted controller starts every clock over, which can
-// only make a timeout later.
+// Activating with a live engine. It lives in memory only, so a restarted
+// controller starts every clock over, which can only make a timeout later.
 type stuckActivations struct {
 	mu   sync.Mutex
 	seen map[string]stuckActivation
@@ -98,15 +99,15 @@ func stuckActivationKey(pm *modelv1alpha1.ModelClaim, inst *modelv1alpha1.ModelC
 // activationTimedOut reports whether an instance has stayed Activating past
 // its pool's activation timeout, and that timeout.
 //
-// The time counts only while the engine no longer boots. It is alive or
-// ready, and past the boot window, or ready and still not routable, as when
-// its KV limit does not take. An engine that boots, restarts or stops is left
-// to the runtime.
+// The time counts while the engine is alive or ready and not routed: while it
+// boots, and after that, as when its KV limit does not take. An engine that
+// restarts or stops is left to the runtime.
 //
-// The stuck time is the shorter of two. The runtime dates the engine's last
-// change of phase on its own clock, so a restarted engine starts over. The
-// controller notes when it first saw the instance stuck, so an engine that
-// served for hours and only now lost its route does not fail at once.
+// The time is the shorter of two. The runtime dates the engine's last change
+// of phase, such as its start or getting ready, on its own clock, so a
+// restarted engine starts over. The controller notes when it first saw the
+// instance this way, so an engine that served for hours and only now lost its
+// route does not fail at once.
 func (r *ModelClaimReconciler) activationTimedOut(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -117,7 +118,7 @@ func (r *ModelClaimReconciler) activationTimedOut(
 	state engineState,
 ) (bool, time.Duration) {
 	key := stuckActivationKey(pm, inst)
-	if state.phase != modelv1alpha1.ModelClaimActivating || state.booting || observed == nil ||
+	if state.phase != modelv1alpha1.ModelClaimActivating || observed == nil ||
 		observed.Phase == runtimePhaseStopping || (!observed.Alive && !observed.Ready) {
 		r.stuckActivations().forget(key)
 		return false, 0
@@ -135,37 +136,111 @@ func (r *ModelClaimReconciler) activationTimedOut(
 	return stuck >= timeout, timeout
 }
 
-// stopTimedOutEngine stops the engine of an instance that timed out, and
-// reports whether the runtime took the stop. The instance fails only after
-// that. A failed instance is replaced on another pod, and its engine is
-// stopped only once a pod is found. On the only pod that could hold the claim,
-// the engine would otherwise keep its memory for as long as the claim exists.
-// A stop that is not taken is asked again on the next pass.
+// failTimedOutInstance fails an instance that stayed Activating past its
+// timeout. The failure is written at once, before the engine is stopped.
+// Stopped first, a pass that ended before the write would leave the instance
+// Activating with no engine, and the next pass would start the engine again.
+// Written, the failure stands until the instance is replaced, as a move does.
+// The route says so at once, so a request goes to another instance.
+func (r *ModelClaimReconciler) failTimedOutInstance(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	slot int,
+	pod *corev1.Pod,
+	timeout time.Duration,
+) error {
+	was := pm.Status.Instances[slot]
+	pm.Status.Instances[slot].Phase = modelv1alpha1.ModelClaimFailed
+	pm.Status.Instances[slot].Reason = instanceReasonActivationTimedOut
+	if err := r.Status().Update(ctx, pm); err != nil {
+		pm.Status.Instances[slot] = was
+		return err
+	}
+	inst := &pm.Status.Instances[slot]
+	r.stuckActivations().forget(stuckActivationKey(pm, inst))
+	r.Recorder.Event(pm, corev1.EventTypeWarning, instanceReasonActivationTimedOut,
+		activationTimeoutMessage(pm, inst, timeout))
+	if err := r.annotateWarmPodWithState(ctx, pm, pod, 0, constants.ModelClaimRoutingStateFailed, ""); err != nil {
+		klog.ErrorS(err, "could not say on the route that an instance timed out", "pod", klog.KObj(pod), "model", pm.Name)
+	}
+	return nil
+}
+
+// stopTimedOutEngine asks the runtime to stop the engine of an instance that
+// timed out. A runtime that takes the stop finishes it on its own. A stop it
+// did not take is asked again on the next pass.
 func (r *ModelClaimReconciler) stopTimedOutEngine(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	inst *modelv1alpha1.ModelClaimInstance,
 	pod *corev1.Pod,
-	timeout time.Duration,
 	readings *runtimeReadings,
-) bool {
+) {
 	err := r.Runtime.Deactivate(ctx, pod.Status.PodIP, DefaultRuntimePort, &DeactivateRequest{
 		ModelName: servedModelName(pm),
 		Mode:      DeactivateStop,
 	})
 	readings.forget(pod.Name)
 	if err != nil {
-		klog.ErrorS(err, "could not stop an engine that did not become routable in time",
-			"model", pm.Name, "pod", inst.Pod, "timeout", timeout)
+		klog.ErrorS(err, "could not stop the engine of an instance that timed out", "model", pm.Name, "pod", inst.Pod)
+	}
+}
+
+// engineToStop reports whether a runtime reading shows an engine that no stop
+// has reached. A stopping engine is stopped by the runtime. One that failed
+// and is no longer alive has given its memory back for good.
+func engineToStop(observed *RuntimeSnapshotModel) bool {
+	if observed == nil || observed.Phase == runtimePhaseStopping {
 		return false
 	}
-	r.stuckActivations().forget(stuckActivationKey(pm, inst))
-	return true
+	return observed.Phase != runtimePhaseFailed || observed.Alive
+}
+
+// replaceableFailedSlots returns the positions of the failed instances that
+// can be replaced now, in order. An instance that timed out waits until the
+// runtime has taken the stop of its engine. Once a replacement takes its place,
+// nothing would stop that engine, and it would keep its memory.
+func (r *ModelClaimReconciler) replaceableFailedSlots(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	readings *runtimeReadings,
+) []int {
+	var slots []int
+	for _, slot := range failedInstanceSlots(pm) {
+		inst := &pm.Status.Instances[slot]
+		if inst.Reason == instanceReasonActivationTimedOut && r.timedOutEngineRuns(ctx, pm, inst, readings) {
+			continue
+		}
+		slots = append(slots, slot)
+	}
+	return slots
+}
+
+// timedOutEngineRuns reports whether the runtime of an instance that timed out
+// still shows an engine that no stop has reached. A Pod that is gone, or a
+// runtime that cannot be read, shows nothing, and the instance is replaced as
+// any failed one is.
+func (r *ModelClaimReconciler) timedOutEngineRuns(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	readings *runtimeReadings,
+) bool {
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil ||
+		pod.Status.PodIP == "" {
+		return false
+	}
+	snapshot, err := readings.of(ctx, pod)
+	if err != nil {
+		return false
+	}
+	return engineToStop(snapshotModelForClaim(snapshot, pm, servedModelName(pm)))
 }
 
 // activationTimeoutMessage says why an instance failed on its activation
 // timeout.
 func activationTimeoutMessage(pm *modelv1alpha1.ModelClaim, inst *modelv1alpha1.ModelClaimInstance, timeout time.Duration) string {
-	return fmt.Sprintf("model %s on pod %s did not become routable within %s after its engine stopped booting; "+
-		"its engine was stopped", servedModelName(pm), inst.Pod, timeout)
+	return fmt.Sprintf("model %s on pod %s did not become routable within %s; stopping its engine",
+		servedModelName(pm), inst.Pod, timeout)
 }

@@ -65,6 +65,8 @@ func whyMoved(reason string) string {
 		return "because its card could not take it back from sleep,"
 	case instanceReasonWakeFailed:
 		return "because it could not be woken there,"
+	case instanceReasonActivationTimedOut:
+		return "because it did not become routable in time,"
 	}
 	return "after terminal engine failure"
 }

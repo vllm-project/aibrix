@@ -201,7 +201,8 @@ func TestReconcileDoesNotAskARuntimeAgainWhoseReadBackFailed(t *testing.T) {
 	readings := newRuntimeReadings(r.Runtime)
 	claim := getModel(t, r, pm.Name)
 
-	r.reconcileInstanceHealth(context.Background(), claim, readings)
+	_, err := r.reconcileInstanceHealth(context.Background(), claim, readings)
+	require.NoError(t, err)
 	require.Equal(t, 2, runtime.snapshotCalls)
 
 	snapshot, err := readings.of(context.Background(), pod)
@@ -218,11 +219,12 @@ func TestReconcileReadsARuntimeAgainAfterAWriteThatFailed(t *testing.T) {
 	readings := newRuntimeReadings(r.Runtime)
 	claim := getModel(t, r, pm.Name)
 
-	r.reconcileInstanceHealth(context.Background(), claim, readings)
+	_, err := r.reconcileInstanceHealth(context.Background(), claim, readings)
+	require.NoError(t, err)
 	require.Len(t, runtime.kvLimitCalls, 1)
 	require.Equal(t, 1, runtime.snapshotCalls, "a write that failed is not read back")
 
-	_, err := readings.of(context.Background(), pod)
+	_, err = readings.of(context.Background(), pod)
 	require.NoError(t, err)
 	assert.Equal(t, 2, runtime.snapshotCalls)
 	assert.Equal(t, 1, eventsNamed(drainEvents(t, r), "KVLimitFailed"))
