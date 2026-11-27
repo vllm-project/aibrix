@@ -48,6 +48,10 @@ func (r *RayClusterFleetReconciler) rolloutRolling(ctx context.Context, d *orche
 	// Scale down, if we can.
 	scaledDown, err := r.reconcileOldReplicaSets(ctx, allRSs, util.FilterActiveReplicaSets(oldRSs), newRS, d)
 	if err != nil {
+		// Check the progress deadline even when a scale-down write fails.
+		if _, statusErr := r.syncRolloutStatus(ctx, allRSs, newRS, d); statusErr != nil {
+			klog.FromContext(ctx).Error(statusErr, "Failed to sync rollout status after scale-down error", "fleet", klog.KObj(d))
+		}
 		return ctrl.Result{}, err
 	}
 	if scaledDown {

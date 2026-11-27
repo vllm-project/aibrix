@@ -810,13 +810,14 @@ func TestDeadlineOperationErrors(t *testing.T) {
 			g, f := NewWithT(t), newFleetTestFixture(t, interceptor.Funcs{})
 			ctx, rs := context.Background(), &orchestrationv1alpha1.RayClusterReplicaSet{}
 			g.Expect(f.reconciler.Get(ctx, client.ObjectKey{Namespace: "default", Name: "fleet-rs"}, rs)).To(Succeed())
+			rolling := strings.HasPrefix(op, "rolling ")
 			if op == "create" {
 				f.fleet.Spec.Template.Spec.RayVersion = "new"
 			}
 			if op == "update" {
 				rs.Spec.Replicas = ptr.To(int32(0))
 			}
-			if strings.HasPrefix(op, "cleanup") || strings.HasPrefix(op, "rolling") {
+			if strings.HasPrefix(op, "cleanup") || rolling {
 				old := rs.DeepCopy()
 				old.Name, old.UID, old.ResourceVersion = "old", "old-uid", ""
 				old.Spec.Template.Spec.RayVersion, old.Annotations[util.RevisionAnnotation] = "old", "0"
@@ -827,10 +828,14 @@ func TestDeadlineOperationErrors(t *testing.T) {
 					f.fleet.Spec.RevisionHistoryLimit = ptr.To(int32(0))
 				}
 				if op == "rolling scale" {
-					old.Status.AvailableReplicas = 1
+					old.Status.ReadyReplicas, old.Status.AvailableReplicas = 1, 1
 				}
 				g.Expect(f.reconciler.Create(ctx, old)).To(Succeed())
 				f.fleet.Spec.Strategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt(1))
+				if rolling {
+					// Start with both ReplicaSets reflected in status so failed writes cannot look like progress.
+					f.fleet.Status = calculateStatus([]*orchestrationv1alpha1.RayClusterReplicaSet{rs, old}, rs, f.fleet)
+				}
 			}
 			f.save(t, rs)
 			injected := error(errors.NewServiceUnavailable("operation failure"))
@@ -859,19 +864,44 @@ func TestDeadlineOperationErrors(t *testing.T) {
 				funcs.List = func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error { return fail() }
 			case "create":
 				funcs.Create = func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return fail() }
-			case "update", "rolling unhealthy", "rolling scale":
+			case "update":
 				funcs.Update = func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error { return fail() }
+			case "rolling unhealthy", "rolling scale":
+				funcs.Update = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if old, ok := obj.(*orchestrationv1alpha1.RayClusterReplicaSet); ok && old.Name == "old" {
+						return fail()
+					}
+					return c.Update(ctx, obj, opts...)
+				}
 			case "cleanup", "cleanup notfound":
 				funcs.Delete = func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error { return fail() }
 			}
 			f.reconciler.Client = interceptor.NewClient(f.reconciler.Client.(client.WithWatch), funcs)
-			result, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(f.fleet)})
+			request := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(f.fleet)}
+			result, err := f.reconciler.Reconcile(ctx, request)
 			g.Expect(err == wantErr).To(BeTrue(), "original operation error")
 			g.Expect(result).To(Equal(reconcile.Result{}))
 			g.Expect(calls).To(BeNumerically(">", 0))
 			if op == "create" {
 				g.Expect(util.GetDeploymentCondition(f.getFleet(t).Status, orchestrationv1alpha1.RayClusterFleetProgressing).Reason).To(Equal(util.FailedRSCreateReason))
 				g.Expect(f.reconciler.Recorder.(*record.FakeRecorder).Events).To(Receive(ContainSubstring("Warning " + util.FailedRSCreateReason)))
+			}
+			if rolling {
+				g.Expect(calls).To(Equal(1))
+				condition := util.GetDeploymentCondition(f.getFleet(t).Status, orchestrationv1alpha1.RayClusterFleetProgressing)
+				g.Expect(condition).NotTo(BeNil())
+				g.Expect(condition.Status).To(Equal(corev1.ConditionTrue))
+
+				deadline := time.Duration(*f.fleet.Spec.ProgressDeadlineSeconds) * time.Second
+				f.now = f.now.Add(deadline + time.Second)
+				result, err = f.reconciler.Reconcile(ctx, request)
+				g.Expect(calls).To(Equal(2))
+				g.Expect(err == injected).To(BeTrue(), "original scale-down error after the deadline")
+				g.Expect(result).To(Equal(reconcile.Result{}))
+				condition = util.GetDeploymentCondition(f.getFleet(t).Status, orchestrationv1alpha1.RayClusterFleetProgressing)
+				g.Expect(condition).NotTo(BeNil())
+				g.Expect(condition.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(condition.Reason).To(Equal(util.TimedOutReason))
 			}
 		})
 	}
