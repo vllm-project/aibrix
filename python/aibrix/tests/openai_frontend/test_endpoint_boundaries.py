@@ -221,7 +221,7 @@ async def test_vllm_omni_video_sync_preserves_multipart_and_response(status_code
                     request.method,
                     request.url.raw_path,
                     request.headers["content-type"],
-                    request.headers["content-length"],
+                    request.headers.get("content-length"),
                     await request.aread(),
                 )
             )
@@ -292,7 +292,7 @@ async def test_vllm_omni_video_sync_preserves_multipart_and_response(status_code
                     "POST",
                     path.replace("/sync", "").encode(),
                     upload.headers["content-type"],
-                    upload.headers["content-length"],
+                    None,
                     body,
                 )
             ]

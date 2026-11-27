@@ -32,7 +32,7 @@ source files are cleaned up after use (steps 5–8).*
 ### Supported requests
 
 - `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings`
-- `POST /v1/images/generations`, `/v1/videos`
+- `POST /v1/images/generations`, `/v1/videos`, `/v1/videos/sync`
 - `POST /v1/responses`, `/v1/responses/compact`
 - Declared engine-native JSON endpoints with a result schema; SGLang `/generate`,
   `/encode`, `/classify`, and `/v1/rerank` support both `POST` and `PUT`.
@@ -130,6 +130,20 @@ curl http://localhost:8000/v1/responses \
 HTTP `output` becomes `{"url":"tos://my-bucket/results","artifacts":["resp_123.json"]}`.
 The stored file contains `{"output":[...]}`, not the receipt.
 
+### Synchronous video to object storage
+
+With the `vllm-omni` proxy spec, pass `output` as JSON text in the form:
+
+```bash
+curl http://localhost:8000/v1/videos/sync \
+  -F 'model=my-model' \
+  -F 'prompt=Generate a short video.' \
+  -F 'output={"url":"tos://my-bucket/results"}'
+```
+
+The video is saved as `<id>-0.<extension>`; HTTP returns the receipt after upload completes.
+Omitting `output` or sending `output=null` keeps the native video response.
+
 ### Storage configuration
 
 Local and HTTP destinations need no storage configuration. Configure object
@@ -157,8 +171,12 @@ For S3, use `STORAGE_TYPE=s3`, `STORAGE_AWS_BUCKET`,
 ## Limitations
 
 - No persistence for streaming, `background=true` Responses, GET-only metadata,
-  multipart or WebSocket requests. Ordinary background Responses still forward;
-  the proxy does not poll them for persistence.
+  WebSocket requests, or multipart endpoints other than `/v1/videos/sync`.
+  Ordinary background Responses still forward; the proxy does not poll them
+  for persistence.
+- Synchronous video persistence needs temporary disk space for the generated
+  MP4, but not for input uploads. Object-storage writes currently load the
+  completed video into memory.
 - Responses persistence changes the HTTP `output` type from an array to a
   receipt object; it is an opt-in AIBrix extension, not the standard SDK shape.
 - Native results require declared schema fields. Empty results and zero values

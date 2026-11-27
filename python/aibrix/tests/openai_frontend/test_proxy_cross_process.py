@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -105,7 +106,11 @@ class ProxyProcess:
         self.proc = subprocess.Popen(
             cmd,
             cwd=PKG_ROOT,
-            env={**os.environ, "PYTHONPATH": PKG_ROOT, "PYTHONUNBUFFERED": "1"},
+            env={
+                **os.environ,
+                "PYTHONPATH": PKG_ROOT,
+                "PYTHONUNBUFFERED": "1",
+            },
             stdout=self._log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -688,3 +693,113 @@ class TestStreamingMultipartCrossProcess:
             timeout=30,
         )
         assert r.status_code == 200 and r.json()["sha256"] == sha
+
+
+class TestVideoSyncMultipartCrossProcess:
+    @pytest.mark.parametrize("setting", ["VLLM_OMNI_STORAGE_PATH", "--proxy-media-dir"])
+    def test_shared_storage_preserves_unmanaged_jobs_on_shutdown(
+        self, tmp_path, setting
+    ):
+        shared = (tmp_path / "shared").resolve()
+        args = (
+            [setting, str(shared)]
+            if setting.startswith("--")
+            else ["--setenv", setting, str(shared)]
+        )
+        proxy = ProxyProcess(str(tmp_path), *args)
+        try:
+            proxy.wait_ready()
+            configured = httpx.get(
+                f"{proxy.engine_url}/_test/env",
+                params={"name": "VLLM_OMNI_SERVER_STORAGE__PATH"},
+                timeout=10,
+            )
+            assert configured.json() == {"VLLM_OMNI_SERVER_STORAGE__PATH": str(shared)}
+            # A native Omni job outside the sync adapter remains engine-owned.
+            response = httpx.post(
+                f"{proxy.engine_url}/v1/videos",
+                files=[("model", (None, "minimax-h3"))],
+                timeout=30,
+            )
+            assert response.status_code == 200, response.text
+            source = shared / response.json()["id"]
+            video = source.read_bytes()
+            output = tmp_path / "output"
+            persisted = httpx.post(
+                f"{proxy.url}/v1/videos/sync",
+                files=[
+                    ("model", (None, "minimax-h3")),
+                    ("output", (None, json.dumps({"url": str(output)}))),
+                ],
+                timeout=30,
+            )
+            assert persisted.status_code == 200, persisted.text
+            (artifact,) = persisted.json()["output"]["artifacts"]
+            assert (output / artifact).read_bytes() == video
+            assert list(shared.iterdir()) == [source]
+        finally:
+            proxy.stop()
+        assert source.read_bytes() == video
+
+    def test_persists_video_with_ordered_inputs(self, ready_proxy, tmp_path):
+        output_dir = tmp_path / "videos"
+        output = json.dumps({"url": str(output_dir)})
+        response = httpx.post(
+            f"{ready_proxy.url}/v1/videos/sync",
+            files=[
+                ("model", (None, "minimax-h3")),
+                ("input_references", ("first.png", b"first", "image/png")),
+                ("input_references", ("second.png", b"second", "image/png")),
+                ("output", (None, output)),
+            ],
+            timeout=30,
+        )
+        assert response.status_code == 200, response.text
+        (artifact,) = response.json()["output"]["artifacts"]
+        media = (output_dir / artifact).read_bytes()
+        assert media.startswith(b"\x00\x00\x00\x18ftypmp42")
+        payload = json.loads(media[12:])
+        assert payload["model"] == "minimax-h3"
+        assert payload["output"] is None
+        assert [ref["filename"] for ref in payload["references"]] == [
+            "first.png",
+            "second.png",
+        ]
+        assert ready_proxy.metric("proxy_in_flight_requests") == 0
+
+    def test_large_video_upload_removes_output_with_bounded_memory(
+        self, ready_proxy, tmp_path
+    ):
+        output_dir = tmp_path / "videos"
+        output = json.dumps({"url": str(output_dir)})
+        url = f"{ready_proxy.url}/v1/videos/sync"
+        # Warm up the parser and local writer before measuring upload memory.
+        httpx.post(
+            url,
+            files=[("model", (None, "minimax-h3")), ("output", (None, output))],
+            timeout=30,
+        ).raise_for_status()
+        size = 48 * MiB
+        chunks, sha = _audio_chunks(size)
+        with (
+            io.BytesIO(b"".join(chunks)) as upload,
+            _PeakRSS(ready_proxy.proc.pid) as rss,
+        ):
+            response = httpx.post(
+                url,
+                files=[
+                    ("output", (None, output)),
+                    ("model", (None, "minimax-h3")),
+                    ("input_references", ("first.png", upload, "image/png")),
+                ],
+                timeout=120,
+            )
+        assert response.status_code == 200, response.text
+        (artifact,) = response.json()["output"]["artifacts"]
+        payload = json.loads((output_dir / artifact).read_bytes()[12:])
+        assert payload["output"] is None
+        assert payload["references"] == [
+            {"filename": "first.png", "size": size, "sha256": sha}
+        ]
+        assert rss.growth < 16 * MiB
+        assert ready_proxy.metric("proxy_in_flight_requests") == 0

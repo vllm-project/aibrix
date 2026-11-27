@@ -316,9 +316,12 @@ def add_proxy_args(parser: argparse.ArgumentParser):
         "--proxy-media-dir",
         type=str,
         default=None,
-        help="Directory for media the proxy downloads on behalf of the engine "
-        "(default: a private temp dir). Passed to vLLM as "
-        "--allowed-local-media-path.",
+        help="Directory for downloaded media and vLLM-Omni generated videos "
+        "(vllm-omni default: configured Omni storage path, otherwise /tmp/storage; "
+        "other engines: a private temp dir). An explicit directory must match any "
+        "configured Omni storage path. Omni storage and explicit directories are "
+        "not deleted on frontend shutdown. "
+        "Passed to vLLM as --allowed-local-media-path.",
     )
     proxy_group.add_argument(
         "--proxy-fetch-media",

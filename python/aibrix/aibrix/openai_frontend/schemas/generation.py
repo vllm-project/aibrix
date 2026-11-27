@@ -3,7 +3,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 
-"""Minimal image generation and async video job wire models.
+"""Minimal image generation and video response models.
 
 Unknown engine fields pass through. Local output paths are declared by SGLang's
 multimodal_gen response schema, not inferred from input fields or filenames.
@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, get_args
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aibrix.openai_frontend.schemas.media import OUTPUT_MEDIA
 from aibrix.openai_frontend.schemas.output import (
@@ -99,6 +99,13 @@ class VideoGenerationRequest(BaseModel):
         if self.output is not None and getattr(self, "stream", False):
             raise ValueError("output requires a non-streaming JSON video response")
         return self
+
+
+class VideoSyncResult(BaseModel):
+    """Local video selected by the synchronous vLLM-Omni job adapter."""
+
+    file_path: str = Field(json_schema_extra={OUTPUT_MEDIA: "video"})
+    media_type: Optional[str] = None
 
 
 class VideoResponse(SglangVideoResponseFields):

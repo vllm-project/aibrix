@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+# 	http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,8 @@
 
 import asyncio
 import json
+import os
+from pathlib import Path
 
 import httpcore
 import httpx
@@ -23,9 +25,10 @@ import pytest
 from httpcore._async.connection_pool import AsyncPoolRequest, PoolByteStream
 from starlette.requests import Request
 
+from aibrix.openai_frontend.engine import proxy_engine
 from aibrix.openai_frontend.engine.proxy_engine import EngineState, ProxyEngine
 from aibrix.openai_frontend.proxy.runtime import video_sync
-from aibrix.openai_frontend.proxy.runtime.engine_spec import VLLM_OMNI_SPEC
+from aibrix.openai_frontend.proxy.runtime.engine_spec import VLLM_OMNI_SPEC, VLLM_SPEC
 from aibrix.openai_frontend.utils.utils import ClientError, ServerError
 
 JOB = {
@@ -36,6 +39,200 @@ JOB = {
     "stage_durations": {"diffusion": 1.1},
     "peak_memory_mb": 2000.0,
 }
+
+
+@pytest.fixture(autouse=True)
+def isolated_video_storage(monkeypatch, tmp_path):
+    for key in (
+        "VLLM_OMNI_STORAGE_PATH",
+        "VLLM_OMNI_SERVER_STORAGE",
+        "VLLM_OMNI_SERVER_STORAGE__PATH",
+        "VLLM_OMNI_SERVER_STORAGE__TYPE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        proxy_engine, "DEFAULT_VIDEO_STORAGE_PATH", str(tmp_path / "omni")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "VLLM_OMNI_SERVER_STORAGE__PATH",
+        "VLLM_OMNI_STORAGE_PATH",
+        "VLLM_OMNI_SERVER_STORAGE",
+    ],
+)
+@pytest.mark.parametrize("source", ["inherited", "engine_env"])
+async def test_video_storage_preserves_operator_path(
+    monkeypatch, tmp_path, setting, source
+):
+    monkeypatch.chdir(tmp_path)
+    value = (
+        '{"path":"media/videos","file_ttl":600}'
+        if setting == "VLLM_OMNI_SERVER_STORAGE"
+        else "media/videos"
+    )
+    engine_env = {setting: value} if source == "engine_env" else {}
+    if setting != "VLLM_OMNI_SERVER_STORAGE":
+        monkeypatch.setenv("VLLM_OMNI_SERVER_STORAGE", '{"path":"lower-priority"}')
+    if setting == "VLLM_OMNI_SERVER_STORAGE__PATH":
+        monkeypatch.setenv("VLLM_OMNI_STORAGE_PATH", "legacy")
+    if source == "inherited":
+        monkeypatch.setenv(setting, value)
+    else:
+        monkeypatch.setenv(
+            setting,
+            '{"path":"inherited"}'
+            if setting == "VLLM_OMNI_SERVER_STORAGE"
+            else "inherited",
+        )
+    original_env = engine_env.copy()
+    engine = ProxyEngine(
+        ["unused"],
+        spec=VLLM_OMNI_SPEC,
+        engine_env=engine_env,
+        fetch_media=False,
+    )
+    media_dir = tmp_path / "media" / "videos"
+    try:
+        assert Path(engine._media_dir) == media_dir
+        assert engine._owned_media_dir is None
+        assert media_dir.is_dir()
+        assert engine._subprocess._env["VLLM_OMNI_SERVER_STORAGE__PATH"] == str(
+            media_dir
+        )
+        assert engine._subprocess._cmd[-2:] == [
+            "--allowed-local-media-path",
+            str(media_dir),
+        ]
+        assert engine_env == original_env
+        # Injecting only PATH must leave settings such as file_ttl intact.
+        effective_env = {**os.environ, **engine._subprocess._env}
+        assert effective_env[setting] == (
+            str(media_dir) if setting == "VLLM_OMNI_SERVER_STORAGE__PATH" else value
+        )
+        (media_dir / "video_gen_existing").write_bytes(b"video")
+    finally:
+        await engine.aclose()
+    assert (media_dir / "video_gen_existing").read_bytes() == b"video"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("storage_path", [None, "media/videos", "shared"])
+async def test_video_storage_uses_explicit_media_dir(
+    monkeypatch, tmp_path, storage_path
+):
+    monkeypatch.chdir(tmp_path)
+    media_dir = tmp_path / "media" / "videos"
+    media_dir.mkdir(parents=True)
+    (tmp_path / "shared").symlink_to(media_dir, target_is_directory=True)
+    engine_env = (
+        {"VLLM_OMNI_SERVER_STORAGE__PATH": storage_path}
+        if storage_path is not None
+        else {}
+    )
+    engine = ProxyEngine(
+        ["unused"],
+        spec=VLLM_OMNI_SPEC,
+        engine_env=engine_env,
+        media_dir="media/./videos",
+        fetch_media=False,
+    )
+    try:
+        assert Path(engine._media_dir) == media_dir
+        assert engine._subprocess._env["VLLM_OMNI_SERVER_STORAGE__PATH"] == str(
+            media_dir
+        )
+    finally:
+        await engine.aclose()
+    assert media_dir.is_dir()
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        {"VLLM_OMNI_SERVER_STORAGE__PATH": "storage"},
+        {"VLLM_OMNI_STORAGE_PATH": "storage"},
+        {"VLLM_OMNI_SERVER_STORAGE": '{"path":"storage"}'},
+    ],
+)
+def test_video_storage_rejects_conflicting_media_dir(monkeypatch, tmp_path, setting):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="Conflicting.*--proxy-media-dir"):
+        ProxyEngine(
+            ["unused"],
+            spec=VLLM_OMNI_SPEC,
+            engine_env=setting,
+            media_dir="media",
+        )
+    assert not (tmp_path / "media").exists()
+    assert not (tmp_path / "storage").exists()
+
+
+@pytest.mark.asyncio
+async def test_default_video_storage_survives_shutdown(monkeypatch, tmp_path):
+    engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
+    media_dir = Path(engine._media_dir)
+    existing = media_dir / "video_gen_existing"
+    existing.write_bytes(b"existing video")
+    result = await engine._fetcher.fetch("data:image/png;base64,aW1hZ2U=")
+    assert result.temp_dir is not None
+    input_dir = Path(result.temp_dir.name)
+    events = []
+
+    def stop():
+        assert input_dir.is_dir()
+        # A worker can finish writing while its process tree is being stopped.
+        (media_dir / "video_gen_last").write_bytes(b"video")
+        events.append("stop")
+
+    cleanup_all = engine._fetcher.cleanup_all
+
+    def cleanup():
+        assert (media_dir / "video_gen_last").read_bytes() == b"video"
+        events.append("cleanup")
+        cleanup_all()
+
+    async def close_client():
+        assert not input_dir.exists()
+        assert existing.read_bytes() == b"existing video"
+        events.append("close_client")
+
+    monkeypatch.setattr(engine._subprocess, "shutdown", stop)
+    monkeypatch.setattr(engine._fetcher, "cleanup_all", cleanup)
+    monkeypatch.setattr(engine._subprocess, "close_client", close_client)
+    try:
+        assert media_dir == tmp_path / "omni"
+        assert engine._owned_media_dir is None
+        assert engine._subprocess._env["VLLM_OMNI_SERVER_STORAGE__PATH"] == str(
+            media_dir
+        )
+    finally:
+        await engine.aclose()
+    await engine.aclose()
+    assert events == ["stop", "cleanup", "close_client"]
+    assert (media_dir / "video_gen_last").read_bytes() == b"video"
+    replacement = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
+    try:
+        assert Path(replacement._media_dir) == media_dir
+        assert existing.read_bytes() == b"existing video"
+    finally:
+        await replacement.aclose()
+
+
+@pytest.mark.asyncio
+async def test_other_engines_still_remove_default_media_directory():
+    engine = ProxyEngine(["unused"], spec=VLLM_SPEC, fetch_media=False)
+    media_dir = Path(engine._media_dir)
+    try:
+        assert engine._owned_media_dir is not None
+        assert media_dir.is_dir()
+        assert not engine._subprocess._env
+    finally:
+        await engine.aclose()
+    assert not media_dir.exists()
 
 
 def make_request(messages):
@@ -500,12 +697,14 @@ async def test_video_sync_abort_over_http_then_new_inference(monkeypatch, phase)
             head = (await reader.readuntil(b"\r\n\r\n")).decode()
             method, path, _ = head.split("\r\n", 1)[0].split()
             if method == "POST":
-                length = next(
-                    int(line.split(":", 1)[1])
-                    for line in head.split("\r\n")
-                    if line.lower().startswith("content-length:")
-                )
-                assert await reader.readexactly(length) == b"--b--\r\n"
+                assert "transfer-encoding: chunked" in head.lower()
+                assert "content-length:" not in head.lower()
+                body = bytearray()
+                while size := int(await reader.readline(), 16):
+                    body.extend(await reader.readexactly(size))
+                    assert await reader.readexactly(2) == b"\r\n"
+                assert await reader.readline() == b"\r\n"
+                assert body == b"--b--\r\n"
                 creates.append(f"video_gen_{len(creates) + 1}")
                 if len(creates) == 1 and phase == "create":
                     entered.set()
