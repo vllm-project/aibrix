@@ -37,7 +37,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -187,13 +186,7 @@ func bucketServeGroups(routingCtx *types.RoutingContext, readyPods []*v1.Pod) []
 // config profile declares, with the whole range as the default: a pod that
 // declares none is not bucket-scoped.
 func podPromptLenBucketBounds(routingCtx *types.RoutingContext, pod *v1.Pod) (int, int) {
-	profile := configprofiles.ResolveProfileFrom(routingCtx.ModelConfig, pod, routingCtx.ReqConfigProfile)
-	if profile == nil {
-		// Without a model config (model-level or model.aibrix.ai/config on the
-		// pod) a pod is not bucket-scoped; treat as any length.
-		return 0, math.MaxInt32
-	}
-	return promptLenBucketBounds(configprofiles.ParseRoutingConfig(profile.RoutingConfig))
+	return pd.PodPromptLenBucketBounds(routingCtx, pod)
 }
 
 // effectiveScorePolicies returns prefill/decode scoring policies for this request.
@@ -2050,17 +2043,7 @@ func (r *pdRouter) enqueuePrefixUpdate(prefixHashes []uint64, model, pod string)
 }
 
 func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext, pod *v1.Pod, promptLength int) bool {
-	minLength, maxLength := podPromptLenBucketBounds(routingCtx, pod)
-
-	if minLength > maxLength {
-		return false
-	}
-	// If no prompt length range is configured, the pod is assumed to be suitable for handling any length.
-	if minLength == 0 && maxLength == math.MaxInt32 {
-		return true
-	}
-
-	return promptLength >= minLength && promptLength <= maxLength
+	return pd.IsPodSuitableForPromptLength(routingCtx, pod, promptLength)
 }
 
 // collectAndBucketPods partitions readyPods into prefill, decode, and combined
@@ -2081,22 +2064,17 @@ func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext
 // promptLengthBucketingDecodePods, combinedPods).
 func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyPods []*v1.Pod, promptLength int) ([]*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod) {
 	bucketingEnabled := effectivePromptLengthBucketing(routingCtx)
+	var cfgCache map[string]*types.RoutingConfig
 
 	var combinedPods []*v1.Pod
 	if bucketingEnabled {
 		for _, pod := range readyPods {
-			_, hasRoleset := pod.Labels[PDRoleSetIdentifier]
-			if !hasRoleset {
+			_, roleID, ok := pd.RoutablePDLabels(pod)
+			if !ok || roleID == PDRolePrefill || roleID == PDRoleDecode || roleID == PDRoleEncode {
 				continue
 			}
-			roleID, hasRole := pod.Labels[PDRoleIdentifier]
-			if !hasRole || roleID == PDRolePrefill || roleID == PDRoleDecode || roleID == PDRoleEncode {
-				continue
-			}
-			if !pd.IsPodWithHTTPServer(pod) {
-				continue
-			}
-			if isCombinedPod(routingCtx, pod) && r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
+			cfg := pd.ResolvePodRoutingConfig(routingCtx, pod, &cfgCache)
+			if pd.IsCombinedRoutingConfig(cfg) && pd.IsPromptLengthInBucket(cfg, promptLength) {
 				combinedPods = append(combinedPods, pod)
 			}
 		}
@@ -2113,12 +2091,12 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 		if bucketingEnabled {
 			var bucketPrefills, bucketDecodes []*v1.Pod
 			for _, pod := range b.prefills {
-				if r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
+				if pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routingCtx, pod, &cfgCache), promptLength) {
 					bucketPrefills = append(bucketPrefills, pod)
 				}
 			}
 			for _, pod := range b.decodes {
-				if r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
+				if pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routingCtx, pod, &cfgCache), promptLength) {
 					bucketDecodes = append(bucketDecodes, pod)
 				}
 			}
@@ -2201,12 +2179,7 @@ func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedP
 }
 
 func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
-	profile := configprofiles.ResolveProfileFrom(routingCtx.ModelConfig, pod, routingCtx.ReqConfigProfile)
-	if profile == nil {
-		return false
-	}
-	cfg := configprofiles.ParseRoutingConfig(profile.RoutingConfig)
-	return cfg != nil && cfg.Combined != nil && *cfg.Combined
+	return pd.IsCombinedPod(routingCtx, pod)
 }
 
 // promptLenBucketBounds returns the prompt-length range a pod's profile
@@ -2214,17 +2187,7 @@ func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
 // not bucket-scoped. A negative minimum or a non-positive maximum falls back to
 // its default, mirroring the pod-side tolerance of a partially filled range.
 func promptLenBucketBounds(cfg *types.RoutingConfig) (int, int) {
-	minLength, maxLength := 0, math.MaxInt32
-	if cfg == nil {
-		return minLength, maxLength
-	}
-	if v := cfg.PromptLenBucketMinLength; v != nil && *v > 0 {
-		minLength = *v
-	}
-	if v := cfg.PromptLenBucketMaxLength; v != nil && *v > 0 {
-		maxLength = *v
-	}
-	return minLength, maxLength
+	return pd.PromptLenBucketBounds(cfg)
 }
 
 // decodePodMetricsReady reports whether RealtimeNumRequestsRunning is available for pod.
