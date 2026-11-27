@@ -227,13 +227,12 @@ func newRedisClientFactoryFromEnv() (redisClientFactory, error) {
 		}
 		// All operations go to the discovered master; replicas cannot serve quota writes.
 		options := redis.FailoverOptions{
-			MasterName:            masterName,
-			SentinelAddrs:         addresses,
-			SentinelUsername:      LoadEnv("REDIS_SENTINEL_USERNAME", ""),
-			SentinelPassword:      LoadEnv("REDIS_SENTINEL_PASSWORD", ""),
-			Password:              redisPassword,
-			DB:                    0,
-			ContextTimeoutEnabled: true,
+			MasterName:       masterName,
+			SentinelAddrs:    addresses,
+			SentinelUsername: LoadEnv("REDIS_SENTINEL_USERNAME", ""),
+			SentinelPassword: LoadEnv("REDIS_SENTINEL_PASSWORD", ""),
+			Password:         redisPassword,
+			DB:               0,
 		}
 		return func(settings *RedisClientSettings) *redis.Client {
 			opt := options

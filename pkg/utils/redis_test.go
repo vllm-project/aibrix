@@ -272,6 +272,9 @@ func TestRedisSentinelDiscoveryAndReconnect(t *testing.T) {
 	client := GetRedisClient()
 	require.NotNil(t, client)
 	t.Cleanup(func() { _ = client.Close() })
+	// The shared client keeps the configured defaults in both modes; per-pool
+	// deadlines are owned by the callers that derive their own pool.
+	require.False(t, client.Options().ContextTimeoutEnabled)
 	require.NoError(t, client.Set(context.Background(), "before", "ok", 0).Err())
 	value, err := oldMaster.Get("before")
 	require.NoError(t, err)
