@@ -199,6 +199,16 @@ Create the name of the metadata service service account
 {{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}
 {{- $gatewaySentinel := dig "dependencies" "redis" "sentinel" dict .Values.gatewayPlugin -}}
 {{- $gatewaySentinelEnabled := dig "enabled" false $gatewaySentinel -}}
+{{- $gatewayEnvs := default dict .Values.gatewayPlugin.container.envs -}}
+{{- $managedRedisEnvs := list "REDIS_SENTINEL_ENABLED" "REDIS_SENTINEL_MASTER_NAME" "REDIS_SENTINEL_ADDRESSES" "REDIS_SENTINEL_USERNAME" "REDIS_SENTINEL_PASSWORD" -}}
+{{- if $gatewaySentinelEnabled -}}
+  {{- $managedRedisEnvs = append $managedRedisEnvs "REDIS_PASSWORD" -}}
+{{- end -}}
+{{- range $key := $managedRedisEnvs -}}
+  {{- if hasKey $gatewayEnvs $key -}}
+    {{- fail (printf "%s is managed by gatewayPlugin.dependencies.redis; do not set it in gatewayPlugin.container.envs." $key) -}}
+  {{- end -}}
+{{- end -}}
 
 {{- if $gatewaySentinelEnabled -}}
 {{- if and (not (dig "authEnabled" true $gatewaySentinel)) (or (dig "username" "" $gatewaySentinel) (dig "password" "" $gatewaySentinel)) -}}
@@ -216,12 +226,6 @@ Create the name of the metadata service service account
 {{- range $address := $gatewaySentinel.addresses -}}
 {{- if not (regexMatch "^([^[:space:]:,]+|\\[[^[:space:]]+\\]):[0-9]+$" $address) -}}
 {{- fail "gatewayPlugin.dependencies.redis.sentinel.addresses must contain host:port addresses." -}}
-{{- end -}}
-{{- end -}}
-{{- $gatewayEnvs := default dict .Values.gatewayPlugin.container.envs -}}
-{{- range $key := list "REDIS_SENTINEL_ENABLED" "REDIS_SENTINEL_MASTER_NAME" "REDIS_SENTINEL_ADDRESSES" "REDIS_SENTINEL_USERNAME" "REDIS_SENTINEL_PASSWORD" -}}
-{{- if hasKey $gatewayEnvs $key -}}
-{{- fail (printf "%s is managed by gatewayPlugin.dependencies.redis.sentinel; do not also set it in container.envs." $key) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

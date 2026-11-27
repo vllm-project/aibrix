@@ -206,7 +206,23 @@ tests:
       gatewayPlugin.container.envs.REDIS_SENTINEL_ENABLED: "false"
     asserts:
       - failedTemplate:
-          errorMessage: "REDIS_SENTINEL_ENABLED is managed by gatewayPlugin.dependencies.redis.sentinel; do not also set it in container.envs."
+          errorMessage: "REDIS_SENTINEL_ENABLED is managed by gatewayPlugin.dependencies.redis; do not set it in gatewayPlugin.container.envs."
+  - it: should reject a Sentinel environment override when Sentinel is disabled
+    set:
+      gatewayPlugin.dependencies.redis.sentinel.enabled: false
+      gatewayPlugin.container.envs.REDIS_SENTINEL_ENABLED: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: "REDIS_SENTINEL_ENABLED is managed by gatewayPlugin.dependencies.redis; do not set it in gatewayPlugin.container.envs."
+  - it: should reject a data password environment override when Sentinel is enabled
+    set:
+      <<: *sentinelValidation
+      metadata.redis.enabled: false
+      gatewayPlugin.dependencies.redis.password: "data-secret"
+      gatewayPlugin.container.envs.REDIS_PASSWORD: "different-secret"
+    asserts:
+      - failedTemplate:
+          errorMessage: "REDIS_PASSWORD is managed by gatewayPlugin.dependencies.redis; do not set it in gatewayPlugin.container.envs."
 ---
 suite: Gateway Redis Sentinel Secret
 templates:
