@@ -264,22 +264,45 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 	// ensures all mappings are established (addModelAdapter is idempotent).
 	adapterCount := 0
 	if modelInformer != nil {
-		adapters := modelInformer.GetStore().List()
-		adapterCount = len(adapters)
-		for _, obj := range adapters {
-			ev := WatchEvent{Type: EventAdd, Object: obj}
+		adapterCount = reemitModelAdapters(modelInformer.GetStore(), func(ev WatchEvent) {
 			if p.modelListHealth != nil {
 				p.modelListHealth.Apply(ev, handler)
 			} else {
 				handler(ev)
 			}
-		}
+		})
 	}
 
 	klog.InfoS("Kubernetes discovery provider initialized",
 		"pods", len(podInformer.GetStore().List()), "modelAdapters", adapterCount)
 
 	return nil
+}
+
+// reemitModelAdapters replays each ModelAdapter in store as EventAdd and
+// returns how many it emitted. Each key is re-read with GetByKey right before
+// its emit. client-go removes an object from the store before it queues
+// OnDelete to listeners, so a delete handler can only run after the store
+// removal: any delete the replay races with is either already a missing key
+// (skipped) or reaches the store after the re-read. This narrows the window
+// rather than closing it; the span between GetByKey and the handler applying
+// the Add remains.
+func reemitModelAdapters(store cache.Store, emit func(WatchEvent)) int {
+	emitted := 0
+	for _, key := range store.ListKeys() {
+		current, exists, err := store.GetByKey(key)
+		if err != nil {
+			klog.V(4).InfoS("Skipping ModelAdapter re-emit: cannot read from store", "key", key, "err", err)
+			continue
+		}
+		if !exists {
+			klog.V(4).InfoS("Skipping ModelAdapter re-emit: deleted since snapshot", "key", key)
+			continue
+		}
+		emit(WatchEvent{Type: EventAdd, Object: current})
+		emitted++
+	}
+	return emitted
 }
 
 // canListModelClaims lists ModelClaims once before they are watched. A role
