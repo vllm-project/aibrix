@@ -40,6 +40,7 @@ from aibrix.openapi.protocol import (
 from aibrix.runtime.model_runtime import (
     EngineServingError,
     ModelNotFoundError,
+    PortInUseError,
     RuntimeOperationResult,
     UnsupportedModelControlError,
     get_model_runtime,
@@ -72,6 +73,16 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
                 if request.claim_ref is not None
                 else None
             ),
+        )
+    except PortInUseError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "model_name": request.model_name,
+                "reason": "PortInUse",
+                "message": str(exc),
+            },
         )
     except ValueError as exc:
         logger.warning(f"invalid activation request for {request.model_name}: {exc}")

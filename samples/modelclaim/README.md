@@ -44,3 +44,30 @@ engines:
 kubectl delete -f samples/modelclaim/modelclaims.yaml
 kubectl delete -f samples/modelclaim/warm-runtime-pool.yaml
 ```
+
+## Requesting a stable inference port
+
+Add `spec.servingPort: 18081` to a ModelClaim to request that port on every
+selected Pod. Omit it to keep automatic allocation. The port is immutable,
+like the engine configuration; create a new claim to change it. Valid values
+are 1 through 65535, excluding runtime management port 8080. Do not set `--port` in
+`spec.engineConfig.args`; new claims reject it and direct you to `servingPort`.
+Existing claims using that argument can still receive metadata updates.
+
+The controller skips occupied ports reported by runtime snapshots, including
+sleeping and starting engines. The runtime checks again before launching.
+An explicit pre-launch `409` response with reason `PortInUse` lets the
+controller release its provisional placement and try another Pod. If no
+placement is available and ports conflict, `Scheduled=False` reports
+`PortInUse`; the claim is retried. An ambiguous timeout does not trigger a
+second launch elsewhere. An OS port check cannot reserve the port against
+unrelated processes that bind it after the check.
+
+Upgrade both controller and runtime sidecars for conflict-aware placement.
+Older runtime images do not provide the typed pre-launch conflict contract.
+
+Serving ports do not fix same-name ownership across
+claims: use distinct served model names. A different claim with the same
+served name but another port can still be rejected by the runtime rather
+than retried as a port conflict. A rejected launch can leave neighboring
+engines at the KV limits planned for it until the next card-division pass.

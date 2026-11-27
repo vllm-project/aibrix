@@ -25,6 +25,7 @@ import (
 // ModelClaimSpecApplyConfiguration represents a declarative configuration of the ModelClaimSpec type for use
 // with apply.
 type ModelClaimSpecApplyConfiguration struct {
+	ServingPort      *int32                                    `json:"servingPort,omitempty"`
 	ModelName        *string                                   `json:"modelName,omitempty"`
 	PodSelector      *v1.LabelSelectorApplyConfiguration       `json:"podSelector,omitempty"`
 	ArtifactURL      *string                                   `json:"artifactURL,omitempty"`
@@ -40,6 +41,14 @@ type ModelClaimSpecApplyConfiguration struct {
 // apply.
 func ModelClaimSpec() *ModelClaimSpecApplyConfiguration {
 	return &ModelClaimSpecApplyConfiguration{}
+}
+
+// WithServingPort sets the ServingPort field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ServingPort field is set to the value of the last call.
+func (b *ModelClaimSpecApplyConfiguration) WithServingPort(value int32) *ModelClaimSpecApplyConfiguration {
+	b.ServingPort = &value
+	return b
 }
 
 // WithModelName sets the ModelName field in the declarative configuration to the given value

@@ -1206,3 +1206,36 @@ func TestKVInitialCapacityDecode(t *testing.T) {
 		})
 	}
 }
+
+func TestOnlyTypedConflictAllowsPortFallback(t *testing.T) {
+	cases := []struct {
+		status   int
+		body     string
+		conflict bool
+	}{
+		{409, `{"status":"error","reason":"PortInUse"}`, true},
+		{409, `{"status":"error","message":"other refusal"}`, false},
+		{500, `{"status":"error","reason":"PortInUse"}`, false},
+		{502, `proxy timeout`, false},
+	}
+	for _, tc := range cases {
+		err := statusError("POST", "http://runtime/v1/runtime/models/activate", tc.status, []byte(tc.body))
+		if errors.Is(err, errPortInUse) != tc.conflict {
+			t.Fatalf("%+v: %v", tc, err)
+		}
+		if tc.conflict && !callNotDone(err) {
+			t.Fatal("typed conflict must be known not started")
+		}
+	}
+}
+
+func TestPortConflictDiscriminatorOnlyAppliesToActivation(t *testing.T) {
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, activatePath},
+		{http.MethodPost, wakePath},
+		{http.MethodPost, deactivatePath},
+	} {
+		err := statusError(tc.method, "http://runtime"+tc.path, http.StatusConflict, []byte(`{"status":"error","reason":"PortInUse"}`))
+		require.False(t, errors.Is(err, errPortInUse))
+	}
+}

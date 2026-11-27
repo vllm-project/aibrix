@@ -27,19 +27,21 @@ without a GPU (MockEngineLauncher).
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
 import shlex
 import signal
 import socket
+import struct
 import sys
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple, overload
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, overload
 
 from aibrix.runtime.engine_registry import EngineRegistry
 
@@ -149,6 +151,10 @@ class ModelRuntimeMetricsSnapshot:
 
 class ModelNotFoundError(LookupError):
     """Raised when a control request targets an absent runtime model."""
+
+
+class PortInUseError(RuntimeError):
+    """A requested port was occupied before an engine launch was attempted."""
 
 
 class UnsupportedModelControlError(RuntimeError):
@@ -1947,16 +1953,28 @@ class ModelRuntime:
         claim_ref: Optional[Dict[str, str]] = None,
     ) -> ModelInstance:
         with self._operation_lock, self._lock:
+            if not 0 <= port <= 65535:
+                raise ValueError("port must be between 0 and 65535")
             if engine == "vllm":
                 validate_vllm_parallelism(engine_config, additional_config)
             existing = self._models.get(model_name)
             if existing is not None:
+                if port and existing.port != port:
+                    raise ValueError(
+                        f"model {model_name!r} already uses port {existing.port}; "
+                        "deactivate it before changing its port"
+                    )
                 if existing.phase == "failed":
                     raise RuntimeError(
                         f"model {model_name!r} has failed on this pod; "
                         "deactivate it before activating again"
                     )
                 return existing  # idempotent; the supervisor owns recovery
+            if port and (
+                any(model.port == port for model in self._models.values())
+                or not self._port_free(port)
+            ):
+                raise PortInUseError(f"requested serving port {port} is in use")
             inst = ModelInstance(
                 model_name=model_name,
                 port=port or self._pick_port(),
@@ -2417,6 +2435,7 @@ class ModelRuntime:
             "accelerators": accelerators,
             "models": models,
             "cached_artifacts": cached_artifacts(),
+            "listening_ports": listening_ports(),
         }
 
     @staticmethod
@@ -2464,18 +2483,154 @@ class ModelRuntime:
         for port in range(self._port_lo, self._port_hi):
             if port in used:
                 continue
-            if _external_runtime_mock_enabled() or self._port_free(port):
-                return port
+            try:
+                if _external_runtime_mock_enabled() or self._port_free(port):
+                    return port
+            except ValueError:
+                # Automatic allocation can try another port. An explicit
+                # request instead reports the actual bind error to its caller.
+                continue
         raise RuntimeError("no free port available in agent range")
 
     @staticmethod
     def _port_free(port: int) -> bool:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(("127.0.0.1", port))
+                # Match the launcher's wildcard listener and allow immediate
+                # reuse after an engine leaves accepted sockets in TIME_WAIT.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("0.0.0.0", port))
                 return True
-        except OSError:
-            return False
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return False
+            raise ValueError(f"cannot bind serving port {port}: {exc}") from exc
+
+
+def listening_ports() -> Optional[List[int]]:
+    """Advisory listeners in this Linux network namespace, including sidecars.
+
+    The engine binds the IPv4 wildcard. An IPv4 listener therefore blocks it,
+    but a port seen only in the IPv6 table may belong to an IPv6-only socket
+    (IPV6_V6ONLY) or to one bound to a specific IPv6 address, both of which
+    coexist with that bind. /proc cannot tell these apart, so such ports are
+    classified from the kernel's socket diagnostics, a read-only query that
+    binds nothing. When that classification is unavailable those ports are
+    left out as unknown, so an unreadable diagnostic can never hold a Pod
+    back. A missing/unreadable proc table means the whole snapshot is unknown.
+    The locked pre-launch bind check remains authoritative.
+    """
+    ipv4: Set[int] = set()
+    ipv6: Set[int] = set()
+    try:
+        for table, ports in (("/proc/net/tcp", ipv4), ("/proc/net/tcp6", ipv6)):
+            try:
+                with open(table) as stream:
+                    for line in stream.readlines()[1:]:
+                        fields = line.split()
+                        if fields[3] == "0A":
+                            ports.add(int(fields[1].rsplit(":", 1)[1], 16))
+            except FileNotFoundError:
+                if table.endswith("tcp6"):
+                    continue
+                raise
+    except (OSError, ValueError, IndexError):
+        return None
+    blocking = set(ipv4)
+    ipv6_only_candidates = ipv6 - ipv4
+    if ipv6_only_candidates:
+        sharing = _ipv6_listeners_sharing_ipv4_port()
+        for port in ipv6_only_candidates:
+            # Unclassified means unknown, not blocked: the runtime's own
+            # pre-launch bind check decides, and its conflict answer is handled.
+            if sharing is not None and sharing.get(port):
+                blocking.add(port)
+    return sorted(blocking)
+
+
+_NETLINK_SOCK_DIAG = 4
+_SOCK_DIAG_BY_FAMILY = 20
+_NLM_F_REQUEST_DUMP = 0x1 | 0x300
+_NLMSG_ERROR = 2
+_NLMSG_DONE = 3
+_INET_DIAG_SKV6ONLY = 11
+_TCP_LISTEN_STATE_MASK = 1 << 10
+_IPV4_MAPPED_PREFIX = "00000000000000000000ffff"
+
+
+def _ipv6_listeners_sharing_ipv4_port() -> Optional[Dict[int, bool]]:
+    """Map each IPv6 listening port to whether it blocks the IPv4 wildcard bind.
+
+    Read-only: it asks the kernel's NETLINK_SOCK_DIAG for listening IPv6 TCP
+    sockets, so nothing is bound and no other process or launch is disturbed.
+    A listener blocks the engine's ``0.0.0.0`` bind when it is a dual-stack
+    wildcard (``::`` without IPV6_V6ONLY) or is bound to an IPv4-mapped
+    address. An IPv6-only wildcard or a specific IPv6 address does not.
+    Returns None when the diagnostics cannot be read.
+    """
+    try:
+        with socket.socket(
+            socket.AF_NETLINK, socket.SOCK_RAW, _NETLINK_SOCK_DIAG
+        ) as sock:
+            sock.settimeout(2.0)
+            request = (
+                struct.pack(
+                    "=BBBBI",
+                    socket.AF_INET6,
+                    socket.IPPROTO_TCP,
+                    0,
+                    0,
+                    _TCP_LISTEN_STATE_MASK,
+                )
+                + b"\0" * 48
+            )
+            header = struct.pack(
+                "=IHHII",
+                16 + len(request),
+                _SOCK_DIAG_BY_FAMILY,
+                _NLM_F_REQUEST_DUMP,
+                1,
+                0,
+            )
+            sock.send(header + request)
+            blocks: Dict[int, bool] = {}
+            while True:
+                data = sock.recv(65536)
+                offset = 0
+                while offset + 16 <= len(data):
+                    length, kind = struct.unpack_from("=IH", data, offset)
+                    if length < 16:
+                        return None
+                    if kind == _NLMSG_DONE:
+                        return blocks
+                    if kind == _NLMSG_ERROR:
+                        return None
+                    body = data[offset + 16 : offset + length]
+                    if len(body) < 72:
+                        return None
+                    port = struct.unpack_from("!H", body, 4)[0]
+                    source = body[8:24].hex()
+                    v6only = None
+                    attr = 72
+                    while attr + 4 <= len(body):
+                        size, attr_type = struct.unpack_from("=HH", body, attr)
+                        if size < 4:
+                            break
+                        if attr_type == _INET_DIAG_SKV6ONLY:
+                            v6only = body[attr + 4]
+                        attr += (size + 3) & ~3
+                    if source.startswith(_IPV4_MAPPED_PREFIX):
+                        blocked = True
+                    elif source == "0" * 32:
+                        blocked = v6only != 1
+                    else:
+                        blocked = False
+                    blocks[port] = blocks.get(port, False) or blocked
+                    offset += (length + 3) & ~3
+                if not data:
+                    return None
+    except (OSError, struct.error, IndexError):
+        return None
 
 
 # --------------------------------------------------------------------------- #

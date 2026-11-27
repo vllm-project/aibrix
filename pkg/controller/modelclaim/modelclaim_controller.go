@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -111,8 +112,9 @@ type ModelClaimReconciler struct {
 	Backoff *placementBackoff
 	// Reservations remembers the cards held for claims that room is being
 	// made for, and Footprints what engines were seen to hold asleep.
-	Reservations *cardReservations
-	Footprints   *sleepingFootprints
+	Reservations  *cardReservations
+	Footprints    *sleepingFootprints
+	PortConflicts *portConflictHistory
 	// APIReader reads ModelClaims straight from the API server for the GPU
 	// memory account, where an instance recorded moments ago and not yet in the
 	// informer would read as free memory. Falls back to the cached client when
@@ -657,6 +659,45 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 	}
 }
 
+// candidatesWithoutPortConflicts keeps snapshot port occupancy advisory: the
+// runtime checks again before launch. Resident engines retain their ports in
+// every phase, except the engine already owned by this claim.
+func candidatesWithoutPortConflicts(admissible []corev1.Pod, snapshots map[string]*RuntimeSnapshot, pm *modelv1alpha1.ModelClaim) ([]corev1.Pod, []string) {
+	var portConflicts []string
+	if pm.Spec.ServingPort != nil {
+		filtered := make([]corev1.Pod, 0, len(admissible))
+		for _, pod := range admissible {
+			conflict := false
+			if snapshot := snapshots[pod.Name]; snapshot != nil {
+				owned := snapshotModelForClaim(snapshot, pm, servedModelName(pm))
+				if owned == nil || owned.Port != *pm.Spec.ServingPort {
+					for _, port := range snapshot.ListeningPorts {
+						if port == *pm.Spec.ServingPort {
+							conflict = true
+							break
+						}
+					}
+				}
+				for i := range snapshot.Models {
+					engine := &snapshot.Models[i]
+					if engine.Port == *pm.Spec.ServingPort && engine != owned {
+						conflict = true
+						break
+					}
+				}
+			}
+			if conflict {
+				portConflicts = append(portConflicts, pod.Name)
+			}
+			if !conflict {
+				filtered = append(filtered, pod)
+			}
+		}
+		admissible = filtered
+	}
+	return admissible, portConflicts
+}
+
 // ensureActivated brings the model up to its desired replica count by selecting
 // warm pods and asking the runtime sidecar to activate an engine process on
 // each. Lack of an available warm pod is not an error (the model stays Pending and
@@ -740,7 +781,16 @@ func (r *ModelClaimReconciler) ensureActivated(
 			return DefaultRequeueDuration, nil
 		}
 	}
-	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	usable, portConflicts := candidatesWithoutPortConflicts(candidates, snapshots, pm)
+	reachable, _ := admissibleCandidates(usable, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	canBeTried := func(pod corev1.Pod) bool {
+		return slices.ContainsFunc(reachable, func(p corev1.Pod) bool { return p.Name == pod.Name })
+	}
+	usable, recentConflicts := r.portConflictHistory().filter(pm, usable, r.now(), canBeTried)
+	admissible, refusals := admissibleCandidates(usable, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	refusals = append(refusals, snapshotPortRefusals(pm, portConflicts)...)
+	refusals = append(refusals, recentPortRefusals(pm, recentConflicts)...)
+	portConflicts = append(portConflicts, recentConflicts...)
 	rankByRoom(placementStates, ledgers)
 
 	// Every pod the claim is on stays out of the ranking, the pods where its
@@ -752,6 +802,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	// A failed engine is stopped once per pass, however many pods its
 	// replacement has to try.
 	stopped := map[string]bool{}
+	lateConflicts := 0
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)-len(failed)) {
 		pod, selectErr := selectPodForActivationWithState(
 			admissible, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
@@ -764,8 +815,12 @@ func (r *ModelClaimReconciler) ensureActivated(
 			//
 			// A failed instance that cannot be replaced stays as it is, so the
 			// claim stays Failed.
-			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, claims, ledgers, placementStates,
+			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, usable, claims, ledgers, placementStates,
 				admissible, refusals, failed, selectErr, readings)
+			if portsBlockAllCandidates(pm, usable, portConflicts) {
+				refusal = portPlacementRefusal(pm, portConflicts)
+			}
+
 			reason := refusal.reason
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
@@ -867,7 +922,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			return 0, fmt.Errorf("reserve %s on %s: %w", servedModelName(pm), pod.Name, err)
 		}
 
-		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, activateRequest(pm))
+		resp, aerr := r.activateForClaim(ctx, pm, pod.Status.PodIP)
 		readings.forget(pod.Name)
 		if errors.Is(aerr, errRuntimeSilent) {
 			// The runtime is left alone for now, so the call was not sent and
@@ -876,17 +931,13 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// the rest of the pass, as a card that could not be divided is.
 			// Ranking cannot tell such a pod from the others, so without this
 			// the same pod could be picked on every pass.
-			if replaced != nil {
-				pm.Status.Instances[slot] = *replaced
-			} else {
-				pm.Status.Instances = pm.Status.Instances[:slot]
-			}
 			// The shorter list is written at once. Until then, an account
 			// read from the API server would charge the card for a start
 			// that was never asked for.
-			if err := r.Status().Update(ctx, pm); err != nil {
+			if err := r.releaseProvisionalPlacement(ctx, pm, slot, replaced); err != nil {
 				return 0, fmt.Errorf("take back %s on %s: %w", servedModelName(pm), pod.Name, err)
 			}
+			r.portConflictHistory().noteAttempt(pm, pod, r.now())
 			refusals = append(refusals, podRefusal{
 				pod:       pod.Name,
 				roomBytes: ledgers[pod.Name].maximumRoomBytes(),
@@ -896,6 +947,38 @@ func (r *ModelClaimReconciler) ensureActivated(
 					pod.Name, servedModelName(pm), aerr),
 			})
 			admissible = withoutPod(admissible, pod.Name)
+			continue
+		}
+		if requestedServingPortConflict(pm, aerr) {
+			claimPortConflictsTotal.Inc()
+			r.portConflictHistory().note(pm, pod, r.now(), len(candidates))
+			lateConflicts++
+			klog.InfoS("runtime refused requested serving port before launch", "model", klog.KObj(pm), "pod", pod.Name, "port", *pm.Spec.ServingPort)
+			// Only the runtime's pre-spawn conflict proves that no engine
+			// started. Undo the provisional record before trying another pod.
+			if err := r.releaseProvisionalPlacement(ctx, pm, slot, replaced); err != nil {
+				return 0, fmt.Errorf("release port-conflicted placement: %w", err)
+			}
+			// Read the API server rather than the informer, which can still
+			// charge this card for the record just removed.
+			r.divideCardsAsListed(ctx, []corev1.Pod{*pod}, readings)
+			portConflicts = append(portConflicts, pod.Name)
+			usable = withoutPod(usable, pod.Name)
+			refusals = append(refusals, podRefusal{
+				pod: pod.Name, known: true, couldHold: true,
+				roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+				reason:    fmt.Sprintf("%s refused serving port %d: %v", pod.Name, *pm.Spec.ServingPort, aerr),
+			})
+			admissible = withoutPod(admissible, pod.Name)
+			if lateConflicts >= 2 {
+				meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+					Type: string(modelv1alpha1.ModelClaimConditionTypeScheduled), Status: metav1.ConditionFalse,
+					Reason: "PortInUse", Message: fmt.Sprintf("serving port %d conflicted on pods %v; remaining candidates will be tried on the next pass", *pm.Spec.ServingPort, portConflicts),
+				})
+				// Retry a later batch after the ordinary controller round, not
+				// immediately from the reservation/status event.
+				return DefaultRequeueDuration, nil
+			}
 			continue
 		}
 		if aerr != nil {
@@ -916,14 +999,8 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// A replacement known not to have started puts the failed instance
 			// back, so the claim still reads as failed, and its pod stays out of
 			// the next pass's ranking.
-			switch {
-			case !callNotDone(aerr):
-				markPlaced(pm, pod)
-			case replaced != nil:
-				pm.Status.Instances[slot] = *replaced
-			default:
-				pm.Status.Instances = pm.Status.Instances[:slot]
-			}
+			r.portConflictHistory().noteAttempt(pm, pod, r.now())
+			r.retainActivationAttempt(pm, pod, slot, replaced, aerr)
 			if replaced != nil {
 				return 0, fmt.Errorf("activate replacement on pod %s: %w", pod.Name, aerr)
 			}
@@ -960,6 +1037,17 @@ func (r *ModelClaimReconciler) ensureActivated(
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return 0, nil
+}
+
+// releaseProvisionalPlacement undoes only a launch known not to have
+// happened, preserving the failed instance when this was a replacement.
+func (r *ModelClaimReconciler) releaseProvisionalPlacement(ctx context.Context, pm *modelv1alpha1.ModelClaim, slot int, replaced *modelv1alpha1.ModelClaimInstance) error {
+	if replaced != nil {
+		pm.Status.Instances[slot] = *replaced
+	} else {
+		pm.Status.Instances = pm.Status.Instances[:slot]
+	}
+	return r.Status().Update(ctx, pm)
 }
 
 func placementRefusalWait(
@@ -1051,7 +1139,7 @@ func (r *ModelClaimReconciler) refusePlacement(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	perGPU perGPUBytes,
-	candidates []corev1.Pod,
+	candidates, usable []corev1.Pod,
 	claims *modelv1alpha1.ModelClaimList,
 	ledgers map[string]podLedger,
 	placementStates map[string]PodPlacementState,
@@ -1078,10 +1166,10 @@ func (r *ModelClaimReconciler) refusePlacement(
 		why, making := "", false
 		switch preemptionPolicyOf(pm) {
 		case modelv1alpha1.ModelClaimPreemptionSleepLowerPriority:
-			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, candidates, claims,
+			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, usable, claims,
 				ledgers, placementStates, readings)
 		default:
-			why, making = r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings)
+			why, making = r.makeRoomToPlace(ctx, pm, perGPU, usable, ledgers, readings)
 		}
 		if making {
 			refused.reason, refused.message, refused.eventType = scheduledReasonMakingRoom, why, corev1.EventTypeNormal
@@ -1119,7 +1207,12 @@ func markPlaced(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod) {
 
 // activateRequest is what the runtime is asked to start for a claim.
 func activateRequest(pm *modelv1alpha1.ModelClaim) *ActivateRequest {
+	var port int32
+	if pm.Spec.ServingPort != nil {
+		port = *pm.Spec.ServingPort
+	}
 	return &ActivateRequest{
+		Port:         port,
 		ModelName:    servedModelName(pm),
 		ArtifactURL:  pm.Spec.ArtifactURL,
 		Engine:       pm.Spec.Engine,
@@ -1484,6 +1577,19 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			continue
 		}
 		observed := snapshotModelForClaim(snapshot, pm, served)
+		if observed != nil && observed.Phase != runtimePhaseFailed && !servingPortMatches(pm, observed.Port) {
+			// A previous runtime may return an existing engine on another
+			// port. Keep ownership, but never route it or start a duplicate.
+			if inst.Reason != "ServingPortMismatch" {
+				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ServingPortMismatch",
+					"pod %s reports port %d instead of requested port %d; upgrade the runtime or remove the conflicting engine", inst.Pod, observed.Port, *pm.Spec.ServingPort)
+			}
+			inst.Phase, inst.Reason, inst.Port = modelv1alpha1.ModelClaimActivating, "ServingPortMismatch", 0
+			if err := r.annotateWarmPodWithState(ctx, pm, pod, 0, constants.ModelClaimRoutingStateActivating, inst.Reason); err != nil {
+				klog.ErrorS(err, "remove mismatched serving port route", "model", pm.Name, "pod", inst.Pod)
+			}
+			continue
+		}
 		if footprint, known := sleepingFootprintOf(observed); known {
 			r.footprints().note(pm, footprint)
 		}
@@ -1879,7 +1985,7 @@ func (r *ModelClaimReconciler) startMissingEngine(
 	podIP string,
 ) (stays, started bool) {
 	served := servedModelName(pm)
-	resp, err := r.Runtime.Activate(ctx, podIP, DefaultRuntimePort, activateRequest(pm))
+	resp, err := r.activateForClaim(ctx, pm, podIP)
 	if errors.Is(err, errRuntimeSilent) {
 		// The runtime is left alone for now, so the call was not sent and
 		// nothing failed to start. The instance stays as it is, as it does
@@ -1888,7 +1994,11 @@ func (r *ModelClaimReconciler) startMissingEngine(
 		return true, false
 	}
 	if err != nil {
-		recordActivation(pm.Namespace, served, false)
+		if requestedServingPortConflict(pm, err) {
+			claimPortConflictsTotal.Inc()
+		} else {
+			recordActivation(pm.Namespace, served, false)
+		}
 		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ActivateFailed",
 			"model %s had no engine on pod %s, and starting one failed: %v", served, inst.Pod, err)
 		// Unless the start is known not to have happened, the engine may be
@@ -2452,4 +2562,98 @@ func enqueueModelClaimsForPod(c client.Client) handler.MapFunc {
 		}
 		return requests
 	}
+}
+
+// requestedServingPortConflict permits alternate placement only for a requested
+// port and the runtime's explicit pre-launch conflict contract.
+func requestedServingPortConflict(pm *modelv1alpha1.ModelClaim, err error) bool {
+	return pm.Spec.ServingPort != nil && errors.Is(err, errPortInUse)
+}
+
+func portsBlockAllCandidates(pm *modelv1alpha1.ModelClaim, usable []corev1.Pod, conflicts []string) bool {
+	if len(conflicts) == 0 {
+		return false
+	}
+	alreadyOn := instancePods(pm)
+	for _, pod := range usable {
+		if !alreadyOn[pod.Name] {
+			return false
+		}
+	}
+	return true
+}
+
+func portPlacementRefusal(pm *modelv1alpha1.ModelClaim, conflicts []string) placementRefused {
+	return placementRefused{
+		reason:      "PortInUse",
+		message:     fmt.Sprintf("serving port %d is in use on pods %v; free the port or select another pool", *pm.Spec.ServingPort, conflicts),
+		eventType:   corev1.EventTypeWarning,
+		eventReason: "PortInUse",
+	}
+}
+
+// portUsableCandidates applies each waiting claim's own requested port before
+// direct-fit, make-room or preemption feasibility is considered.
+func (r *ModelClaimReconciler) portUsableCandidates(ctx context.Context, claim *modelv1alpha1.ModelClaim, candidates []corev1.Pod, readings *runtimeReadings) []corev1.Pod {
+	if claim.Spec.ServingPort == nil {
+		return candidates
+	}
+	usable, _ := candidatesWithoutPortConflicts(candidates, readings.ofPods(ctx, candidates), claim)
+	usable, _ = r.portConflictHistory().filter(claim, usable, r.now(), nil)
+	return usable
+}
+
+// A success response may come from an older runtime that ignores the requested
+// port. This is not proof that no engine started: keep the placement record.
+func servingPortResponseError(pm *modelv1alpha1.ModelClaim, resp *ActivateResponse) error {
+	if resp == nil {
+		return fmt.Errorf("runtime returned no activation response")
+	}
+	if !servingPortMatches(pm, resp.Port) {
+		return fmt.Errorf("runtime returned serving port %d instead of requested port %d; upgrade the runtime", resp.Port, *pm.Spec.ServingPort)
+	}
+	return nil
+}
+
+func servingPortMatches(pm *modelv1alpha1.ModelClaim, port int32) bool {
+	return pm.Spec.ServingPort == nil || port == *pm.Spec.ServingPort
+}
+
+// A response may be lost after launch. Only a proven pre-launch failure lets
+// the controller remove ownership; a failed replacement restores its record.
+func (r *ModelClaimReconciler) retainActivationAttempt(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod, slot int, replaced *modelv1alpha1.ModelClaimInstance, err error) {
+	switch {
+	case !callNotDone(err):
+		markPlaced(pm, pod)
+	case replaced != nil:
+		pm.Status.Instances[slot] = *replaced
+	default:
+		pm.Status.Instances = pm.Status.Instances[:slot]
+	}
+}
+
+func snapshotPortRefusals(pm *modelv1alpha1.ModelClaim, conflicts []string) []podRefusal {
+	refusals := make([]podRefusal, 0, len(conflicts))
+	for _, name := range conflicts {
+		refusals = append(refusals, podRefusal{pod: name, known: true, couldHold: true,
+			reason: fmt.Sprintf("%s has serving port %d occupied by another engine or listener", name, *pm.Spec.ServingPort)})
+	}
+	return refusals
+}
+
+func (r *ModelClaimReconciler) activateForClaim(ctx context.Context, pm *modelv1alpha1.ModelClaim, podIP string) (*ActivateResponse, error) {
+	resp, err := r.Runtime.Activate(ctx, podIP, DefaultRuntimePort, activateRequest(pm))
+	if err == nil {
+		err = servingPortResponseError(pm, resp)
+	}
+	return resp, err
+}
+
+func recentPortRefusals(pm *modelv1alpha1.ModelClaim, conflicts []string) []podRefusal {
+	refusals := make([]podRefusal, 0, len(conflicts))
+	for _, name := range conflicts {
+		refusals = append(refusals, podRefusal{pod: name, known: true, couldHold: true,
+			reason: fmt.Sprintf("%s recently refused serving port %d; waiting before probing it again", name, *pm.Spec.ServingPort)})
+	}
+	return refusals
 }

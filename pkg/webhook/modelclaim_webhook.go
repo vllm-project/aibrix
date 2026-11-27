@@ -91,6 +91,7 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 			}
 		}
 	}
+	allErrs = append(allErrs, validateModelClaimServingPort(oldClaim, claim)...)
 	// Require a declaration on creation and prevent removal of an existing one.
 	// Grandfather absence only for legacy objects; keep the schema optional.
 	if spec.PerGPU == nil && (oldClaim == nil || oldClaim.Spec.PerGPU != nil) {
@@ -108,4 +109,23 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 		return nil
 	}
 	return apierrors.NewInvalid(modelapi.GroupVersion.WithKind("ModelClaim").GroupKind(), claim.Name, allErrs)
+}
+
+// validateModelClaimServingPort validates new or changed port declarations,
+// while preserving metadata updates for legacy claims with engine port args.
+func validateModelClaimServingPort(oldClaim, claim *modelapi.ModelClaim) field.ErrorList {
+	var allErrs field.ErrorList
+	path := field.NewPath("spec")
+	spec := &claim.Spec
+
+	if oldClaim == nil && spec.EngineConfig != nil {
+		for key := range spec.EngineConfig.Args {
+			flag, _, _ := utils.ModelClaimEngineFlag(key)
+			if flag == "--port" {
+				allErrs = append(allErrs, field.Invalid(path.Child("engineConfig", "args"), "<redacted>",
+					"must not set --port; use spec.servingPort instead"))
+			}
+		}
+	}
+	return allErrs
 }

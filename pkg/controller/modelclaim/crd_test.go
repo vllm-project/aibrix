@@ -129,3 +129,25 @@ func TestHistoricalModelClaimWithoutPreemptionPolicyDecodesEmpty(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"spec":{"artifactURL":"huggingface://historical/model"}}`), claim))
 	require.Equal(t, modelapi.ModelClaimPreemptionPolicy(""), claim.Spec.PreemptionPolicy)
 }
+
+func TestModelClaimServingPortSchema(t *testing.T) {
+	for _, path := range crdPaths {
+		spec := modelClaimSpecSchema(t, path)
+		port, found := spec.Properties["servingPort"]
+		require.True(t, found, path)
+		require.Equal(t, "integer", port.Type, path)
+		require.Equal(t, "int32", port.Format, path)
+		require.NotNil(t, port.Minimum, path)
+		require.Equal(t, float64(1), *port.Minimum, path)
+		require.NotNil(t, port.Maximum, path)
+		require.Equal(t, float64(65535), *port.Maximum, path)
+		require.Contains(t, port.XValidations, apiextensionsv1.ValidationRule{Rule: "self != 8080", Message: "servingPort must not use runtime port 8080"}, path)
+		var immutable bool
+		for _, rule := range spec.XValidations {
+			if rule.FieldPath == ".servingPort" && rule.Rule == "has(self.servingPort) == has(oldSelf.servingPort) && (!has(self.servingPort) || self.servingPort == oldSelf.servingPort)" {
+				immutable = true
+			}
+		}
+		require.True(t, immutable, path)
+	}
+}

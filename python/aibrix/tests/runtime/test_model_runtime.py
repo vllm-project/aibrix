@@ -3337,3 +3337,312 @@ def test_sglang_grace_restarts_after_a_recovered_probe():
     assert inst.phase == "booting"
     assert inst.next_restart_at is None
     assert inst.restart_count == 0
+
+
+@pytest.mark.parametrize(
+    "phase", ["active", "sleeping", "booting", "stopping", "failed"]
+)
+def test_explicit_port_conflicts_with_every_resident_phase(phase):
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    first = agent.activate(model_name="first", artifact_url="hf://x", port=18081)
+    first.phase = phase
+    with pytest.raises(PortInUseError, match="18081"):
+        agent.activate(model_name="second", artifact_url="hf://x", port=18081)
+    assert agent._launcher.launched == ["first"]
+    assert {m.model_name for m in agent.list_models()} == {"first"}
+
+
+def test_explicit_port_checks_os_listener_and_can_retry_after_release():
+    import socket
+
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with pytest.raises(PortInUseError):
+            agent.activate(model_name="first", artifact_url="hf://x", port=port)
+        assert agent.list_models() == []
+    inst = agent.activate(model_name="first", artifact_url="hf://x", port=port)
+    assert inst.port == port
+
+
+def test_explicit_port_idempotence_requires_same_port():
+    agent = make_agent()
+    first = agent.activate(model_name="first", artifact_url="hf://x", port=18081)
+    assert (
+        agent.activate(model_name="first", artifact_url="hf://x", port=18081) is first
+    )
+    assert agent.activate(model_name="first", artifact_url="hf://x") is first
+    with pytest.raises(ValueError, match="already uses port"):
+        agent.activate(model_name="first", artifact_url="hf://x", port=18082)
+    assert agent._launcher.launched == ["first"]
+
+
+def test_explicit_port_endpoint_reports_typed_prelaunch_conflict(monkeypatch):
+    import json
+
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.openapi.protocol import ActivateRuntimeModelRequest
+
+    agent = make_agent()
+    agent.activate(model_name="first", artifact_url="hf://x", port=18081)
+    monkeypatch.setattr(api, "get_model_runtime", lambda: agent)
+    response = api.activate_runtime_model(
+        ActivateRuntimeModelRequest(
+            model_name="second", artifact_url="hf://x", port=18081
+        )
+    )
+    assert response.status_code == 409
+    assert json.loads(response.body)["reason"] == "PortInUse"
+    assert agent._launcher.launched == ["first"]
+
+
+def test_concurrent_explicit_port_has_only_one_launch():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    barrier = Barrier(2)
+
+    def activate(name):
+        barrier.wait(timeout=5)
+        try:
+            return agent.activate(model_name=name, artifact_url="hf://x", port=18081)
+        except PortInUseError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(activate, ["first", "second"]))
+    assert sum(result is not None for result in results) == 1
+    assert len(agent._launcher.launched) == 1
+    assert len(agent.list_models()) == 1
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.2"])
+def test_explicit_port_rejects_wildcard_and_specific_address_listeners(host):
+    import socket
+
+    from aibrix.runtime.model_runtime import PortInUseError
+
+    agent = make_agent()
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, 0))
+        listener.listen()
+        with pytest.raises(PortInUseError):
+            agent.activate(
+                model_name="first",
+                artifact_url="hf://x",
+                port=listener.getsockname()[1],
+            )
+        assert agent._launcher.launched == []
+        assert agent.list_models() == []
+
+
+def test_explicit_port_can_reuse_after_server_active_close():
+    import socket
+
+    agent = make_agent()
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with socket.socket() as client:
+            client.connect(("127.0.0.1", port))
+            conn, _ = listener.accept()
+            conn.sendall(b"x")
+            assert client.recv(1) == b"x"
+            conn.close()
+            assert client.recv(1) == b""
+    assert (
+        agent.activate(model_name="first", artifact_url="hf://x", port=port).port
+        == port
+    )
+
+
+def test_explicit_port_permission_error_is_not_a_conflict(monkeypatch):
+    import errno
+    from unittest.mock import MagicMock
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    sock = MagicMock()
+    sock.__enter__.return_value.bind.side_effect = OSError(errno.EACCES, "denied")
+    monkeypatch.setattr(runtime_module.socket, "socket", lambda *args: sock)
+    with pytest.raises(ValueError, match="cannot bind serving port"):
+        agent.activate(model_name="first", artifact_url="hf://x", port=80)
+    assert agent._launcher.launched == []
+    assert agent.list_models() == []
+
+
+def test_automatic_port_skips_probe_errors_and_tries_next(monkeypatch):
+    agent = make_agent()
+    attempted = []
+
+    def probe(port):
+        attempted.append(port)
+        if len(attempted) == 1:
+            raise ValueError("cannot bind serving port: permission denied")
+        return True
+
+    monkeypatch.setattr(agent, "_port_free", probe)
+    inst = agent.activate(model_name="first", artifact_url="hf://x")
+    assert attempted == [20000, 20001]
+    assert inst.port == 20001
+
+
+def test_snapshot_lists_external_listener():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.2", 0))
+        listener.listen()
+        assert listener.getsockname()[1] in listening_ports()
+
+
+def test_snapshot_ignores_ipv6_only_listener_the_engine_can_share():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        listener.bind(("::", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as engine:
+            engine.bind(("0.0.0.0", port))  # coexists, so it is not a conflict
+        assert port not in listening_ports()
+
+
+def test_snapshot_keeps_dual_stack_wildcard_listener():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        listener.bind(("::", 0))
+        listener.listen()
+        assert listener.getsockname()[1] in listening_ports()
+
+
+def test_snapshot_ignores_ipv6_listener_on_a_specific_address():
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.bind(("::1", 0))
+        listener.listen()
+        assert listener.getsockname()[1] not in listening_ports()
+
+
+def test_snapshot_leaves_out_ipv6_port_when_classification_is_unavailable(monkeypatch):
+    import socket
+
+    import aibrix.runtime.model_runtime as model_runtime
+
+    monkeypatch.setattr(
+        model_runtime, "_ipv6_listeners_sharing_ipv4_port", lambda: None
+    )
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        listener.bind(("::", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        assert port not in model_runtime.listening_ports()
+
+
+def test_snapshot_keeps_ipv4_listener_when_classification_is_unavailable(monkeypatch):
+    import socket
+
+    import aibrix.runtime.model_runtime as model_runtime
+
+    monkeypatch.setattr(
+        model_runtime, "_ipv6_listeners_sharing_ipv4_port", lambda: None
+    )
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.3", 0))
+        listener.listen()
+        assert listener.getsockname()[1] in model_runtime.listening_ports()
+
+
+def test_listener_classification_rejects_truncated_reply(monkeypatch):
+    import struct
+
+    import aibrix.runtime.model_runtime as model_runtime
+
+    class Reply:
+        def __init__(self, *args, **kwargs):
+            self.chunks = [struct.pack("=IHHII", 24, 20, 0, 1, 0) + b"\0" * 8]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def settimeout(self, value):
+            pass
+
+        def send(self, data):
+            pass
+
+        def recv(self, size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    monkeypatch.setattr(model_runtime.socket, "socket", Reply)
+    assert model_runtime._ipv6_listeners_sharing_ipv4_port() is None
+
+
+def test_snapshot_does_not_bind_while_classifying_listeners(monkeypatch):
+    import socket
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    binds = []
+    real_bind = socket.socket.bind
+
+    def recording_bind(self, address):
+        binds.append(address)
+        return real_bind(self, address)
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        listener.bind(("::", 0))
+        listener.listen()
+        monkeypatch.setattr(socket.socket, "bind", recording_bind)
+        listening_ports()
+    assert binds == []
+
+
+def test_listener_observation_unavailable_is_unknown(monkeypatch):
+    import builtins
+
+    from aibrix.runtime.model_runtime import listening_ports
+
+    def unavailable(*args, **kwargs):
+        raise PermissionError("not accessible")
+
+    monkeypatch.setattr(builtins, "open", unavailable)
+    assert listening_ports() is None
+
+
+def test_explicit_port_in_automatic_range_remains_reserved_for_its_model():
+    agent = make_agent()
+    fixed = agent.activate(model_name="fixed", artifact_url="hf://x", port=20000)
+    automatic = agent.activate(model_name="automatic", artifact_url="hf://x")
+    assert fixed.port == 20000
+    assert automatic.port == 20001
