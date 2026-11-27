@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -28,10 +27,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -281,7 +278,7 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 		}
 		hasLabeledPD = true
 		if roleID == pd.RolePrefill && pd.IsPodWithHTTPServer(pod) {
-			if bucketing && !isPDPodSuitableForPromptLength(resolvePDRoutingConfigCached(routeCtx, pod, &cfgCache), promptLength) {
+			if bucketing && !pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache), promptLength) {
 				continue
 			}
 			if prefillRolesets == nil {
@@ -300,13 +297,11 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 		if pod == nil {
 			continue
 		}
-		roleSetID, hasRoleset := pod.Labels[pd.RoleSetLabel]
-		roleID, hasRole := pod.Labels[pd.RoleLabel]
-		if hasRoleset && hasRole && pd.IsPodWithHTTPServer(pod) {
+		if roleSetID, roleID, ok := pd.RoutablePDLabels(pod); ok {
 			switch roleID {
 			case pd.RoleDecode:
 				if _, ok := prefillRolesets[roleSetID]; ok {
-					if !bucketing || isPDPodSuitableForPromptLength(resolvePDRoutingConfigCached(routeCtx, pod, &cfgCache), promptLength) {
+					if !bucketing || pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache), promptLength) {
 						targets = append(targets, pod)
 						continue
 					}
@@ -317,8 +312,8 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 				// Covers combined spillover pods and any future non-prefill/decode roles
 				// (excluding encoders, which never run through AdmitTarget).
 				if bucketing && !encode.IsEncoder(pod) {
-					cfg := resolvePDRoutingConfigCached(routeCtx, pod, &cfgCache)
-					if cfg != nil && cfg.Combined != nil && *cfg.Combined && isPDPodSuitableForPromptLength(cfg, promptLength) {
+					cfg := pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache)
+					if pd.IsCombinedRoutingConfig(cfg) && pd.IsPromptLengthInBucket(cfg, promptLength) {
 						targets = append(targets, pod)
 						continue
 					}
@@ -328,50 +323,4 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 		passthrough = append(passthrough, pod)
 	}
 	return targets, passthrough, true
-}
-
-// resolvePDRoutingConfigCached resolves and parses pod's RoutingConfig once per
-// distinct pod config annotation within one partitionPDInflightTargets pass,
-// avoiding repeated JSON unmarshaling across large mixed/bucketed fleets.
-func resolvePDRoutingConfigCached(routeCtx *types.RoutingContext, pod *v1.Pod, cache *map[string]*types.RoutingConfig) *types.RoutingConfig {
-	if routeCtx == nil || pod == nil {
-		return nil
-	}
-	anno := pod.Annotations[constants.ModelAnnoConfig]
-	if *cache != nil {
-		if cfg, ok := (*cache)[anno]; ok {
-			return cfg
-		}
-	}
-	var cfg *types.RoutingConfig
-	if profile := configprofiles.ResolveProfileFrom(routeCtx.ModelConfig, pod, routeCtx.ReqConfigProfile); profile != nil {
-		cfg = configprofiles.ParseRoutingConfig(profile.RoutingConfig)
-	}
-	if *cache == nil {
-		*cache = make(map[string]*types.RoutingConfig, 4)
-	}
-	(*cache)[anno] = cfg
-	return cfg
-}
-
-// isPDPodSuitableForPromptLength mirrors pdRouter.isPodSuitableForPromptLength /
-// promptLenBucketBounds using only leaf config types so multi-bucket PD fleets
-// evaluate inflight capacity only against pods eligible for promptLength.
-func isPDPodSuitableForPromptLength(cfg *types.RoutingConfig, promptLength int) bool {
-	minLength, maxLength := 0, math.MaxInt32
-	if cfg != nil {
-		if v := cfg.PromptLenBucketMinLength; v != nil && *v > 0 {
-			minLength = *v
-		}
-		if v := cfg.PromptLenBucketMaxLength; v != nil && *v > 0 {
-			maxLength = *v
-		}
-	}
-	if minLength > maxLength {
-		return false
-	}
-	if minLength == 0 && maxLength == math.MaxInt32 {
-		return true
-	}
-	return promptLength >= minLength && promptLength <= maxLength
 }
