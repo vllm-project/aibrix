@@ -338,6 +338,12 @@ func TestMaxTokensFromRequestBody(t *testing.T) {
 		{name: "max tokens wins", body: []byte(`{"max_tokens":128,"max_completion_tokens":256}`), want: int64Ptr(128)},
 		{name: "absent", body: []byte(`{"model":"m"}`), want: nil},
 		{name: "invalid", body: []byte(`{`), want: nil},
+		{name: "null max tokens falls back", body: []byte(`{"max_tokens":null,"max_completion_tokens":256}`), want: int64Ptr(256)},
+		{name: "null max tokens alone is absent", body: []byte(`{"max_tokens":null}`), want: nil},
+		{name: "null max completion tokens is absent", body: []byte(`{"max_completion_tokens":null}`), want: nil},
+		{name: "both max fields null is absent", body: []byte(`{"max_tokens":null,"max_completion_tokens":null}`), want: nil},
+		{name: "null max completion tokens keeps max tokens", body: []byte(`{"max_tokens":128,"max_completion_tokens":null}`), want: int64Ptr(128)},
+		{name: "zero max tokens is present", body: []byte(`{"max_tokens":0,"max_completion_tokens":256}`), want: int64Ptr(0)},
 	}
 
 	for _, tt := range tests {
@@ -350,6 +356,49 @@ func TestMaxTokensFromRequestBody(t *testing.T) {
 			if assert.NotNil(t, got) {
 				assert.Equal(t, *tt.want, *got)
 			}
+		})
+	}
+}
+
+func TestAutoConfigProfileIgnoresNullMaxTokens(t *testing.T) {
+	profileJSON := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request"},
+			"short-output":{"routingStrategy":"throughput","routingConfig":{"maxTokensLt":4096}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	tests := []struct {
+		name     string
+		body     []byte
+		wantName string
+	}{
+		{name: "null max tokens selects default", body: []byte(`{"max_tokens":null}`), wantName: "default"},
+		{name: "null max tokens falls back to large max completion tokens selects default", body: []byte(`{"max_tokens":null,"max_completion_tokens":8192}`), wantName: "default"},
+		{name: "null max tokens falls back to small max completion tokens", body: []byte(`{"max_tokens":null,"max_completion_tokens":256}`), wantName: "short-output"},
+		{name: "zero max tokens is present and selects short output", body: []byte(`{"max_tokens":0}`), wantName: "short-output"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = autoConfigProfile
+			ctx.Message = "prompt"
+			ctx.ReqBody = tt.body
+			ctx.ReqHeaders = map[string]string{}
+
+			applyConfigProfile(ctx, pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.Equal(t, tt.wantName, ctx.ReqConfigProfile)
+			assert.Equal(t, tt.wantName, ctx.RespHeaders[HeaderAIBrixConfigProfile])
 		})
 	}
 }
