@@ -23,6 +23,7 @@ import (
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -38,10 +39,10 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 	var processingErrorCode int
 
 	headers := []*configPb.HeaderValueOption{}
-	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
+	headers = errresp.BuildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
 	suppressRoutingDiagnostics := routerCtx != nil && routerCtx.ConfigProfile != nil && routerCtx.ConfigProfile.AuthoritativeRoutingPolicy
 	if routerCtx != nil && routerCtx.HasRouted() && !suppressRoutingDiagnostics {
-		headers = buildEnvoyProxyHeaders(headers,
+		headers = errresp.BuildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routerCtx.Algorithm),
 			HeaderTargetPod, routerCtx.TargetPod().Name,
 			HeaderTargetPodIP, routerCtx.TargetAddress())
@@ -83,7 +84,7 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 			if delResp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, code); delResp != nil {
 				return delResp, isProcessingError, processingErrorCode
 			}
-			headers = buildEnvoyProxyHeaders(headers, headerValue.Key, string(headerValue.RawValue))
+			headers = errresp.BuildEnvoyProxyHeaders(headers, headerValue.Key, string(headerValue.RawValue))
 			break
 		}
 	}
@@ -94,6 +95,18 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 	var removeHeaders []string
 	if routerCtx != nil && videoJobResponseNeedsBuffering(routerCtx.ReqHeaders[methodKey], routerCtx.ReqPath) {
 		removeHeaders = []string{"content-length"}
+	}
+	if isProcessingError {
+		// Error normalization can change the body length. In Streamed mode these
+		// headers are already downstream when the final body chunk is processed.
+		removeHeaders = []string{"content-length"}
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      "content-type",
+				RawValue: []byte("application/json"),
+			},
+			AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+		})
 	}
 
 	return &extProcPb.ProcessingResponse{

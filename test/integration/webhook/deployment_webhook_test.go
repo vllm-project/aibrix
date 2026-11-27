@@ -23,7 +23,9 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vllm-project/aibrix/pkg/webhook"
@@ -42,6 +44,57 @@ var _ = ginkgo.Describe("deployment default webhook", func() {
 	ginkgo.AfterEach(func() {
 		webhookutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
+
+	for _, operation := range []string{"create", "update"} {
+		ginkgo.DescribeTable("preserves adapter storage on "+operation,
+			func(source *corev1.VolumeSource) {
+				dep := wrapper.MakeDeployment("dep-storage", ns.Name, nil).
+					AddContainer(corev1.Container{Name: "engine", Image: "vllm/vllm-openai:test"}).Obj()
+				dep.Spec.Template.Spec.Volumes = []corev1.Volume{{
+					Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}}
+				if source != nil {
+					dep.Spec.Template.Spec.Volumes = append(dep.Spec.Template.Spec.Volumes, corev1.Volume{
+						Name: webhook.DefaultAdapterVolumeName, VolumeSource: *source.DeepCopy(),
+					})
+				}
+				wantVolumes := dep.Spec.Template.Spec.DeepCopy().Volumes
+				if source == nil {
+					wantVolumes = append(wantVolumes, corev1.Volume{
+						Name:         webhook.DefaultAdapterVolumeName,
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					})
+				}
+				if operation == "create" {
+					dep.Annotations[webhook.SidecarInjectionAnnotation] = "true"
+				}
+				gomega.Expect(k8sClient.Create(ctx, dep)).To(gomega.Succeed())
+				if operation == "update" {
+					dep.Annotations = map[string]string{webhook.SidecarInjectionAnnotation: "true"}
+					gomega.Expect(k8sClient.Update(ctx, dep)).To(gomega.Succeed())
+				}
+				var created appsv1.Deployment
+				key := client.ObjectKeyFromObject(dep)
+				gomega.Expect(k8sClient.Get(ctx, key, &created)).To(gomega.Succeed())
+				expectAdapterStorage(&created.Spec.Template.Spec, wantVolumes)
+
+				created.Annotations["test.aibrix.ai/repeated-admission"] = "true"
+				gomega.Expect(k8sClient.Update(ctx, &created)).To(gomega.Succeed())
+				gomega.Expect(k8sClient.Get(ctx, key, &created)).To(gomega.Succeed())
+				expectAdapterStorage(&created.Spec.Template.Spec, wantVolumes)
+			},
+			ginkgo.Entry("PVC", &corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: "adapter-cache",
+			}}),
+			ginkgo.Entry("hostPath", &corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
+				Path: "/var/lib/adapters", Type: ptr.To(corev1.HostPathDirectory),
+			}}),
+			ginkgo.Entry("configured emptyDir", &corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+				Medium: corev1.StorageMediumMemory, SizeLimit: ptr.To(resource.MustParse("64Mi")),
+			}}),
+			ginkgo.Entry("missing volume", (*corev1.VolumeSource)(nil)),
+		)
+	}
 
 	type testDefaultingCase struct {
 		deployment     func() *appsv1.Deployment
@@ -150,3 +203,15 @@ var _ = ginkgo.Describe("deployment default webhook", func() {
 		),
 	)
 })
+
+func expectAdapterStorage(spec *corev1.PodSpec, wantVolumes []corev1.Volume) {
+	ginkgo.GinkgoHelper()
+	gomega.Expect(spec.Volumes).To(gomega.ConsistOf(wantVolumes))
+	gomega.Expect(spec.Containers).To(gomega.HaveLen(2))
+	gomega.Expect(spec.Containers[0].Name).To(gomega.Equal(webhook.SidecarName))
+	for _, container := range spec.Containers {
+		gomega.Expect(container.VolumeMounts).To(gomega.Equal([]corev1.VolumeMount{{
+			Name: webhook.DefaultAdapterVolumeName, MountPath: webhook.DefaultAdapterMountPath,
+		}}))
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,22 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	v1 "k8s.io/api/core/v1"
 )
+
+var (
+	// trackerKeyNonceBase/Seq produce the per-request suffix for TrackerKey. See newTrackerKey.
+	trackerKeyNonceBase = rand.Uint32()
+	trackerKeyNonceSeq  atomic.Uint32
+)
+
+// newTrackerKey derives a process-unique key for a request's gateway-internal load trackers from
+// its requestID. requestID is NOT guaranteed unique: when the client sends a traceparent,
+// RequestID is the 32-hex trace id, which a retrying or fan-out client reuses, so two concurrent
+// requests can share it. A fixed-width nonce suffix (process-random high half, monotonic counter
+// low half) makes every request distinct while keeping requestID as the human-readable, greppable
+// prefix. This mirrors the engine rid hardening in algorithms/pd/engine/request_id.go.
+func newTrackerKey(requestID string) string {
+	return fmt.Sprintf("%s-%08x%08x", requestID, trackerKeyNonceBase, trackerKeyNonceSeq.Add(1))
+}
 
 var (
 	nilPod     = &v1.Pod{}
@@ -65,7 +82,10 @@ type ResolvedConfigProfile struct {
 	// parse; routingalgorithms.ResolveRoutingOverrides turns it into the
 	// request's concrete overrides.
 	Routing *RoutingConfig
-	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
+	// ProfileName is the name of the profile the request resolved to, empty when no
+	// profile was resolved. enforceModelRPS keeps one counter per model and ProfileName.
+	ProfileName string
+	// RequestsPerSecond is the profile's request-rate limit enforced by enforceModelRPS,
 	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
 	// (which takes precedence and scales it by the model's current routable replica count).
 	// Zero means unset/unlimited.
@@ -102,6 +122,8 @@ type PodScorer interface {
 
 // PostRouteUpdater defines the interface for strategies that need to update
 // internal state after a target pod has been selected.
+// readyPodList may wrap a shared read-only snapshot (for example on the
+// single-candidate fast path); implementations must not mutate or append to it.
 type PostRouteUpdater interface {
 	PostRouteUpdate(ctx *RoutingContext, readyPodList PodList, targetPod *v1.Pod) error
 }
@@ -123,11 +145,16 @@ type RoutingContext struct {
 	Model            string
 	// BaseModel is the served base-model name when Model is a LoRA adapter.
 	// Empty for base-model requests.
-	BaseModel      string
-	Engine         string
-	Stream         bool
-	Message        string
-	RequestID      string
+	BaseModel string
+	Engine    string
+	Stream    bool
+	Message   string
+	RequestID string
+	// trackerKey is a process-unique key for this request's gateway-internal PD load trackers.
+	// Unlike RequestID (which equals the client traceparent trace id when one is sent), it is
+	// always unique, so a shared trace id cannot collide one request's load accounting with
+	// another's. Set once in reset; read via TrackerKey.
+	trackerKey     string
 	User           *string
 	Span           trace.Span // record attrs for main span
 	RequestTime    time.Time  // Time when the routing context is created.
@@ -146,6 +173,11 @@ type RoutingContext struct {
 	ReqBody          []byte
 	ReqPath          string
 	ReqConfigProfile string
+	// ModelConfig is the model config JSON that discovery supplied for Model as
+	// a whole (the config field of a local-mode endpoints file), or empty. The
+	// gateway sets it from the cache before it resolves ConfigProfile, and
+	// profile resolution reads it ahead of pod annotations.
+	ModelConfig string
 	// AsyncJobBackendID is the backend-private identifier used for a pinned
 	// asynchronous job request. It is retained only for the lifetime of this
 	// routing context so gateway error processing can replace it with the public
@@ -168,8 +200,9 @@ type RoutingContext struct {
 	RespHeaders map[string]string
 
 	// ConfigProfile holds the resolved model config profile for this request.
-	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
-	// based on config-profile header. Nil when no config is present.
+	// Set in HandleRequestBody from ModelConfig, or else the
+	// model.aibrix.ai/config pod annotation, based on the config-profile
+	// header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
 	// ReplicaInflightAdmitted tells request tracking to skip its Redis increment and keep the
@@ -202,6 +235,10 @@ type RoutingContext struct {
 	// and read by that same goroutine, so no atomic is needed here (the PD leg
 	// keeps one for the async prefill and abort paths).
 	routingOverrides *RoutingOverrides
+	// runningRequests holds the running-request counts read during the current routing
+	// decision, shared by every reader in it. Nil outside a decision. See RunningRequests.
+	runningRequests   atomic.Pointer[runningRequestsSnapshot]
+	seededPrefixMatch atomic.Pointer[SeededPrefixMatch]
 	// trustedPolicyAttributes contains request policy inputs populated by trusted
 	// in-process producers. External routers must still apply their operator
 	// allowlist before serializing any entry.
@@ -317,6 +354,8 @@ func (r *RoutingContext) PrefixTokens() []byte {
 }
 
 func (r *RoutingContext) SetPrefixTokens(tokens []byte) {
+	// A new tokenization invalidates any match computed from the previous tokens.
+	r.SetSeededPrefixMatch(nil)
 	r.prefixTokens = tokens
 }
 
@@ -502,15 +541,23 @@ func (r *RoutingContext) GetRoutingDelay() time.Duration {
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
-	if port, ok := utils.ModelClaimPortForPod(pod, r.Model); ok {
+	return PodTargetAddress(pod, r.Model, r.RequestID)
+}
+
+// PodTargetAddress is the ip:port at which pod serves model, or "" when the pod
+// is not yet routable for it. It is what RoutingContext.TargetAddress resolves
+// to, exposed so background work can reach a pod exactly as a request would.
+// requestID only tags log lines.
+func PodTargetAddress(pod *v1.Pod, model, requestID string) string {
+	if port, ok := utils.ModelClaimPortForPod(pod, model); ok {
 		if port > 0 {
-			return r.targetAddressWithPort(pod.Status.PodIP, port)
+			return fmt.Sprintf("%v:%v", pod.Status.PodIP, port)
 		}
 		// Known ModelClaim model that is not yet routable (port 0). Do not fall
 		// back to the default deployment port on this warm pool pod.
 		return ""
 	}
-	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
+	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(requestID, pod))
 }
 
 func (r *RoutingContext) targetAddressWithPort(podIP string, port int) string {
@@ -559,6 +606,9 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Message = message
 	r.PrefixMatchText = ""
 	r.RequestID = requestID
+	// Mint a process-unique tracker key from the (now final) requestID. Done here, after
+	// RequestID is set and on every pool reuse, so each request gets its own key.
+	r.trackerKey = newTrackerKey(requestID)
 	if user != "" {
 		r.User = &user
 	} else {
@@ -572,6 +622,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqHeaders = map[string]string{}
 	r.ReqPath = ""
 	r.ReqConfigProfile = ""
+	r.ModelConfig = ""
 	r.ReqBody = []byte{}
 	r.AsyncJobBackendID = ""
 	r.PrefillStartTime = time.Time{}
@@ -587,6 +638,8 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// the new profile never configured (ResolveRoutingOverrides sets them once
 	// per request, and a request without a profile leaves them unset).
 	r.ClearRoutingOverrides()
+	r.StopRunningRequestsSnapshot()
+	r.SetSeededPrefixMatch(nil)
 	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
 	r.ReplicaInflightChecked = false
@@ -614,6 +667,19 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// are bounded, and the goroutine releases the leg's abort context when it
 	// exits (PDLegState.FinishDecodeAbort).
 	r.pdLeg.Store(newPDLegState())
+}
+
+// TrackerKey returns a process-unique key for this request's gateway-internal PD load trackers
+// (the prefill/decode request trackers, the token-load ledger and the prefix credits). Callers
+// must key those maps by this, not by RequestID: RequestID equals the client traceparent trace
+// id when one is sent, so concurrent or retried requests can share it and corrupt one pod's load
+// accounting. RequestID stays the client-facing/propagated id for logs, headers and the engine rid.
+//
+// It is valid only on a context built via NewRoutingContext (which mints the key in reset). A
+// bare &RoutingContext{} -- e.g. the model-less contexts the metrics helpers construct -- has an
+// empty key, which is unsafe to use as a tracker key; those contexts never reach the trackers.
+func (r *RoutingContext) TrackerKey() string {
+	return r.trackerKey
 }
 
 func (r *RoutingContext) debugWait() {

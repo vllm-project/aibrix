@@ -282,7 +282,7 @@ decode_score = running_reqs_with_pending
 
 ### `token_load`
 
-Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
+Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under the model's selection lock (`selectStripes`) together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
 
 ```
 decode_score = decode_tokens + generated_tokens
@@ -290,7 +290,7 @@ generated_tokens = rate × Σ over outstanding charges (now − routed_at)
 rate = AvgGenerationThroughputToksPerS / running requests   (mean of the other pods if unknown)
 ```
 
-When the prefill response carries `usage.prompt_tokens`, the prefill executor replaces the decode charge with it (`TokenLoadTracker.CorrectDecodeCost`), since the body-size estimate is far off for requests with media. `generated_tokens` estimates the output the pod's outstanding requests have produced so far (it sits in the decode KV too); `pd.TokenLoadTracker.DecodeGrowth` computes it in O(1) per pod from the count and the summed charge times of the outstanding charges. `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false` scores prompt tokens only. The cold-start score does not apply to `token_load`: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. With Redis configured, the decode ledger is shared across gateway replicas (`AIBRIX_TOKEN_LOAD_SHARED_LEDGER`, default on): each replica publishes its per-pod charges, count and summed charge times under its instance ID (`cache.Store.PublishDecodeLedger`), and `scoreDecodePods` adds the other live replicas' values, read with the running-request counts (`GetPodsRunningRequestsAndDecodeLedger`). Without Redis the ledger is local to each replica. Each decode pod's `token_load` score is then multiplied by the candidates' mean KV capacity over its own (`decodeKVCapacities`, `AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE`, default on), with capacities from the scraped `kv_cache_num_gpu_blocks` × `kv_cache_block_size` (vLLM `vllm:cache_config_info` labels) or `kv_cache_capacity_tokens` (SGLang); unknown capacities count as the mean.
+Before a prefill response arrives, `prompt_tokens` is estimated as one token per four request-body bytes for text, with chat media URL/base64 payloads removed from that byte count and a configurable surcharge added per part: `AIBRIX_TOKEN_LOAD_IMAGE_TOKENS` (default `1024`), `AIBRIX_TOKEN_LOAD_AUDIO_TOKENS` (`1024`), and `AIBRIX_TOKEN_LOAD_VIDEO_TOKENS` (`2048`). The recognized chat part types are `image_url`, `audio_url`, `input_audio`, and `video_url`; other media shapes (for example vLLM `image_embeds` / `image_pil` or Responses-style `input_image`) keep the original body-byte estimate. Set any surcharge to `0` to disable it. When the prefill response carries `usage.prompt_tokens`, the prefill executor replaces the decode charge with it (`TokenLoadTracker.CorrectDecodeCost`). `generated_tokens` estimates the output the pod's outstanding requests have produced so far (it sits in the decode KV too); `pd.TokenLoadTracker.DecodeGrowth` computes it in O(1) per pod from the count and the summed charge times of the outstanding charges. `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false` scores prompt tokens only. The cold-start score does not apply to `token_load`: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. With Redis configured, the decode ledger is shared across gateway replicas (`AIBRIX_TOKEN_LOAD_SHARED_LEDGER`, default on): each replica publishes its per-pod charges, count and summed charge times under its instance ID (`cache.Store.PublishDecodeLedger`), and `scoreDecodePods` adds the other live replicas' values, read with the running-request counts (`GetPodsRunningRequestsAndDecodeLedger`). Without Redis the ledger is local to each replica. Each decode pod's `token_load` score is then multiplied by the candidates' mean KV capacity over its own (`decodeKVCapacities`, `AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE`, default on), with capacities from the scraped `kv_cache_num_gpu_blocks` × `kv_cache_block_size` (vLLM `vllm:cache_config_info` labels) or `kv_cache_capacity_tokens` (SGLang); unknown capacities count as the mean.
 
 ### Config profile overrides for PD score policies
 
@@ -298,7 +298,7 @@ When the gateway resolves a model config profile (`routingCtx.ConfigProfile` fro
 
 | Field | Values | Effect |
 |-------|--------|--------|
-| `prefillScorePolicy` | `prefix_cache`, `least_request` | Overrides `AIBRIX_PREFILL_SCORE_POLICY` for that request |
+| `prefillScorePolicy` | `prefix_cache`, `least_request`, `conductor`, `token_load`, `hybrid_cache_load` | Overrides `AIBRIX_PREFILL_SCORE_POLICY` for that request |
 | `decodeScorePolicy` | `load_balancing`, `least_request`, `conductor`, `token_load` (or any name registered via `pd.RegisterDecodePolicy`) | Overrides `AIBRIX_DECODE_SCORE_POLICY` for that request |
 
 Example fragment inside a profile:
@@ -325,12 +325,12 @@ When the selected prefill pod's roleset has `role-name: encode` pods and a vLLM 
 
 ```
 Gateway ──POST /v1/chat/completions {messages:[{role:user, content:[item i]}]}──► Encode Pod   (one per item, in parallel)
-         ◄── 200 ──────────────────────────────────────────────────────────────── Encode Pod   (output stored by the EC connector)
+         ◄── 200 {ec_transfer_params?} ────────────────────────────────────────── Encode Pod   (output stored by the EC connector)
 
-Gateway ──prefill as below, request body unchanged──────────────────────────────► Prefill Pod  (finds the output by the item's hash)
+Gateway ──prefill as below, plus the encoders' ec_transfer_params──────────────► Prefill Pod  (finds the output by the item's hash, or pulls it)
 ```
 
-Items are spread round-robin over the roleset's encode pods. The body is not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Connectors that need transfer handles passed through the request (vLLM's `*_embeds` rewrite in `disagg_epd_proxy.py`) are not supported.
+Items are spread round-robin over the roleset's encode pods. The media items are not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. Any `ec_transfer_params` the client sent are dropped. When the encode responses carry them (`ECCPUConnector` with NIXL), they are merged and set on the prefill body, so the prefill pod can pull the output from the encoder. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Rewriting items to `*_embeds` (the default of vLLM's `disagg_epd_proxy.py`) and connectors that need the consumer picked before encoding (`ECMooncakeConnector`) are not supported.
 
 When bucketing routes the request to a combined pod instead, `Route` runs the same stage on the combined pod's roleset. For E+PD rolesets, where encode pods sit in front of pods that serve the whole request, the gateway runs it outside the PD router: with any other routing strategy, `selectTargetPod` drops encode pods from the candidates and encodes on the chosen pod's roleset before returning it.
 
@@ -377,6 +377,24 @@ For SGLang, `Route()` returning a decode pod means the gateway has dispatched
 the asynchronous prefill worker, not that the prefill HTTP request has already
 completed. Prefill success/failure metrics are emitted by the async worker after
 the prefill HTTP request returns.
+
+For SGLang, the async prefill HTTP call retains the request's ext_proc stream
+cancellation and deadline. The pending prefill HTTP request is cancelled when
+that stream ends, either because the client disconnects or because the response
+finishes normally, rather than waiting for `AIBRIX_PREFILL_REQUEST_TIMEOUT`.
+If decode has already responded, cancellation leaves the late prefill outcome
+unobserved: the gateway logs it at verbosity 4, skips prefill failure handling,
+and emits neither a prefill success nor a failure metric. Deadlines and other
+HTTP failures still follow the failure path. The prefill timeout (or the model
+profile override) still bounds calls whose streams remain active.
+Cancellation closes the prefill connection; stopping engine work and
+releasing KV resources depend on the deployed SGLang version's disconnect
+handling. The gateway does not send a separate prefill `/abort_request`.
+
+This async cancellation policy is specific to async handlers. vLLM already
+retains client cancellation through synchronous prefill: `IsAsync()` is false,
+so the executor passes the original routing context to the HTTP call. The
+SGLang policy change does not change vLLM's cancellation behavior.
 
 `rid` is the engine-visible request id of the attempt. SGLang reads it from the
 request body (the `X-Request-Id` header is ignored) and its `/abort_request`
@@ -679,7 +697,7 @@ Enabled by `AIBRIX_BUCKET_SERVE=true`, which requires `AIBRIX_PROMPT_LENGTH_BUCK
 Plain bucketing keeps every roleset whose range covers the request as a candidate, and the scoring decides among them. Adaptive bucket serving narrows that choice. The gateway keeps a per-model picture of the prompt lengths it routes, charges every roleset the traffic only it can serve, and splits each range that several rolesets still need into one band per roleset, drawing each band against one replica-proportional share so a roleset carrying several overlaps does not draw a fresh share from each. The cut points sit at quantiles of the observed traffic. The picture is an EWMA with a 30s half-life, a model's plan is recomputed at most once every 5s, and one plan holds at most 16 affinity bands. A shared range needs a meaningful share of the model's traffic before it is split at all, and a range that cannot afford one band per needing roleset splits into as many bands as the budget left allows; an interval that is not split keeps every covering roleset a candidate.
 
 ```
-bucketServeBand()   (before selectMu, one call per request)
+bucketServeBand()   (before the model's selection lock, one call per request)
     ├─ observe promptLength for the model
     ├─ groups: one per eligible roleset, with the range its profile declares and its prefill replica count
     ├─ plan: shared ranges split at mode quantiles in replica proportion, light ones kept whole
@@ -706,13 +724,21 @@ Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
+| `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache`, `least_request`, `conductor`, `token_load` or `hybrid_cache_load`. Any other value logs a warning and falls back to `prefix_cache`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing`, `least_request`, `conductor` or `token_load`. Any other value logs a warning and falls back to `load_balancing`. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS), `nixl` (Neuron/NIXL), or `mooncake` (Mooncake) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds. Exceeding it is a terminal `timeout` prefill failure. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
 | `AIBRIX_BUCKET_SERVE` | `false` | Enable adaptive bucket serving on top of prompt-length bucketing |
 | `AIBRIX_BUCKET_SERVE_MODE` | `throughput` | The unit the adaptive cut points are measured in: `throughput` (prompt token mass) or `rps` (request counts) |
+
+### Token Load Estimation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AIBRIX_TOKEN_LOAD_IMAGE_TOKENS` | `1024` | Per-image token estimate for `token_load`, added after the image URL or inline payload is excluded from the body-byte count. `0` disables the surcharge. Environment-only. |
+| `AIBRIX_TOKEN_LOAD_AUDIO_TOKENS` | `1024` | Per-audio-part token estimate for `token_load`. `0` disables the surcharge. Environment-only. |
+| `AIBRIX_TOKEN_LOAD_VIDEO_TOKENS` | `2048` | Per-video-part token estimate for `token_load`. `0` disables the surcharge. Environment-only. |
 
 ### Prefill Load Balancing
 
@@ -830,7 +856,7 @@ NewPDRouter()
   │     load_balancing  → pd.LoadBalancingDecodePolicy
   │     (other)         → log warning, same as load_balancing
   ├─ create HTTP client with connection pool
-  │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
+  │     MaxIdleConns=1024, MaxIdleConnsPerHost=128, IdleConnTimeout=90s
   ├─ TRT handler from AIBRIX_TRT_SCHEDULE_STYLE (immutable, router-scoped)
   │     owns a lazily populated /server_info cache for generation_first
   ├─ NewPrefillRequestTracker()

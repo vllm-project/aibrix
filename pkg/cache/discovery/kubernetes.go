@@ -19,6 +19,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -43,7 +45,12 @@ type KubernetesProvider struct {
 	// watchModelClaims adds ModelClaim objects to what is watched.
 	watchModelClaims bool
 	modelListHealth  *ModelListHealth
+	// podInformer holds the Pod informer once Watch has created it, for
+	// PodWatchResourceVersion.
+	podInformer atomic.Pointer[podInformerRef]
 }
+
+type podInformerRef struct{ informer cache.SharedIndexInformer }
 
 // NewKubernetesProvider creates a new Kubernetes discovery provider.
 func NewKubernetesProvider(config *rest.Config) *KubernetesProvider {
@@ -75,6 +82,18 @@ func (p *KubernetesProvider) ModelListHealth() *ModelListHealth {
 	return p.modelListHealth
 }
 
+// PodWatchResourceVersion returns the resource version the Pod informer has
+// reached: the reflector updates it after every list and every watch event,
+// bookmarks included, so it stops moving when the watch stops delivering. It
+// is "" before Watch starts the informer. It makes no API request.
+func (p *KubernetesProvider) PodWatchResourceVersion() string {
+	ref := p.podInformer.Load()
+	if ref == nil {
+		return ""
+	}
+	return ref.informer.LastSyncResourceVersion()
+}
+
 // Type returns the provider type identifier.
 func (p *KubernetesProvider) Type() string {
 	return "kubernetes"
@@ -96,19 +115,19 @@ func (p *KubernetesProvider) WatchApplied(handler func(WatchEvent) bool, stopCh 
 	return p.watch(handler, stopCh)
 }
 
-func (p *KubernetesProvider) configureModelListHealth(k8sClientSet kubernetes.Interface, crdClientSet v1alpha1.Interface) {
+func (p *KubernetesProvider) configureModelListHealth(metadataClient metadata.Interface) {
 	health := p.modelListHealth
 	if health == nil {
 		return
 	}
 	health.snapshot = func(ctx context.Context) (sourceVersions, error) {
-		pods, err := listPodVersions(ctx, k8sClientSet)
+		pods, err := listPodVersions(ctx, metadataClient)
 		if err != nil {
 			return sourceVersions{}, err
 		}
 		adapters := make(map[string]objectVersion)
 		if p.watchModelAdapters {
-			adapters, err = listAdapterVersions(ctx, crdClientSet)
+			adapters, err = listAdapterVersions(ctx, metadataClient)
 			if err != nil {
 				return sourceVersions{}, err
 			}
@@ -131,6 +150,7 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
 
 	podInformer := factory.Core().V1().Pods().Informer()
+	p.podInformer.Store(&podInformerRef{informer: podInformer})
 	var modelInformer cache.SharedIndexInformer
 	var claimInformer cache.SharedIndexInformer
 	var crdFactory crdinformers.SharedInformerFactory
@@ -148,7 +168,16 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 			claimInformer = crdFactory.Model().V1alpha1().ModelClaims().Informer()
 		}
 	}
-	p.configureModelListHealth(k8sClientSet, crdClientSet)
+	if p.modelListHealth != nil {
+		// The metadata client has its own rate limiter, built from the same
+		// QPS and Burst, so verification LISTs don't compete with informer
+		// relists for tokens.
+		metadataClient, err := metadata.NewForConfig(p.config)
+		if err != nil {
+			return err
+		}
+		p.configureModelListHealth(metadataClient)
+	}
 
 	// Wire handler directly into informer callbacks.
 	// Events flow from the start — including during the initial list phase.

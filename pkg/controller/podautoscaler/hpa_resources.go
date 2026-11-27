@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	pav1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -122,7 +123,19 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 				})
 
 			default:
-				targetQuantity := resource.NewQuantity(int64(math.Ceil(targetValue)), resource.DecimalSI)
+				// AverageValue is a Quantity, so it can carry a fractional target exactly. A
+				// fraction such as gpu_cache_usage_perc's 0.5 must not round up to a whole
+				// number: a target of 1 for a 0-1 metric means the HPA never scales up.
+				// Whole numbers keep the exact int64 Quantity, which a decimal string can't
+				// carry near the int64 limit.
+				targetQuantity := resource.NewQuantity(int64(targetValue), resource.DecimalSI)
+				if targetValue != math.Trunc(targetValue) {
+					fractional, err := resource.ParseQuantity(strconv.FormatFloat(targetValue, 'f', -1, 64))
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert target value %v of metric %s to a quantity: %w", targetValue, source.TargetMetric, err)
+					}
+					targetQuantity = &fractional
+				}
 				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
 					Type: autoscalingv2.PodsMetricSourceType,
 					Pods: &autoscalingv2.PodsMetricSource{
@@ -171,6 +184,16 @@ func comparableHPASpec(spec autoscalingv2.HorizontalPodAutoscalerSpec) *autoscal
 	return out
 }
 
+// policyPercent converts the change a scale rate allows, as a fraction of the current
+// replicas, to an HPA percent policy value. It rounds down, so the policy never allows
+// more than the rate, after absorbing the float error in fractions such as 1.2-1, which is
+// 0.19999999999999996 and would otherwise truncate to 19. HPA policy values must be
+// positive, so a rate just above 1 still allows 1%, and an int32, so a huge rate is capped
+// at math.MaxInt32 instead of overflowing.
+func policyPercent(fraction float64) int32 {
+	return int32(min(max(math.Floor(fraction*100+1e-9), 1), math.MaxInt32))
+}
+
 // buildHPABehavior creates HPA behavior configuration from ScalingContext
 func buildHPABehavior(scalingContext scalingctx.ScalingContext) *autoscalingv2.HorizontalPodAutoscalerBehavior {
 	// Extract configuration from ScalingContext (single source of truth)
@@ -181,17 +204,21 @@ func buildHPABehavior(scalingContext scalingctx.ScalingContext) *autoscalingv2.H
 
 	// Convert rate to percent for K8s HPA
 	// max-scale-up-rate: 2.0 means "can double" -> 100% increase
-	scaleUpPercent := int32((maxScaleUpRate - 1.0) * 100)
-	if scaleUpPercent < 0 {
+	var scaleUpPercent int32
+	if maxScaleUpRate < 1 {
 		klog.Warningf("max-scale-up-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-up percentage to 100%%.", maxScaleUpRate)
 		scaleUpPercent = 100 // Minimum 100% to allow scaling
+	} else {
+		scaleUpPercent = policyPercent(maxScaleUpRate - 1.0)
 	}
 
 	// max-scale-down-rate: 2.0 means "can halve" -> 50% decrease
-	scaleDownPercent := int32((1.0 - 1.0/maxScaleDownRate) * 100)
-	if scaleDownPercent < 0 {
+	var scaleDownPercent int32
+	if maxScaleDownRate < 1 {
 		klog.Warningf("max-scale-down-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-down percentage to 100%%.", maxScaleDownRate)
 		scaleDownPercent = 100 // Minimum 100% to allow scaling
+	} else {
+		scaleDownPercent = policyPercent(1.0 - 1.0/maxScaleDownRate)
 	}
 
 	// Build behavior spec

@@ -21,14 +21,19 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
@@ -59,6 +64,119 @@ func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
 	assert.Equal(t, "pd", gotStrategy)
 }
 
+func TestExecuteHTTPClassifiesCallFailures(t *testing.T) {
+	newContext := func() *types.RoutingContext {
+		return &types.RoutingContext{Context: context.Background(), RequestID: "req-1"}
+	}
+
+	t.Run("connection failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		url := srv.URL
+		srv.Close()
+
+		exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+		_, err := exec.executeHTTP(url, newContext(), []byte(`{"model":"m"}`), 5*time.Second)
+
+		var transportErr *pd.PrefillTransportError
+		require.ErrorAs(t, err, &transportErr)
+	})
+
+	t.Run("response body read failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// Flush the headers first so the client fails while reading the body,
+			// not while waiting for the response.
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			_, _ = io.WriteString(w, `{"partial":`)
+			panic(http.ErrAbortHandler)
+		}))
+		defer srv.Close()
+
+		exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+		_, err := exec.executeHTTP(srv.URL, newContext(), []byte(`{"model":"m"}`), 5*time.Second)
+
+		var transportErr *pd.PrefillTransportError
+		require.ErrorAs(t, err, &transportErr)
+		assert.Contains(t, err.Error(), "failed to read prefill response body")
+	})
+}
+
+// Moving failure accounting out of executeHTTP must retain actual failures,
+// including a deadline after decode headers, on both dispatch paths.
+func TestPrefillFailureMetrics(t *testing.T) {
+	for _, engineName := range []string{sglangEngine, "vllm", pd.EngineTRTLLM} {
+		for _, tc := range []struct {
+			name, class, status, code string
+		}{
+			{"http_status", pd.PrefillFailureHTTPStatus, "http_error", "500"},
+			{"parent_deadline", pd.PrefillFailureTimeout, "deadline_exceeded", "504"},
+			{"truncated_body", pd.PrefillFailureTransport, "error", "502"},
+		} {
+			t.Run(engineName+"/"+tc.name, func(t *testing.T) {
+				counter, cleanup := metrics.SetupCounterMetricsForTest(metrics.GatewayPrefillRequestFailTotal, []string{"status", "status_code"})
+				defer cleanup()
+				release := make(chan struct{})
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					_, _ = io.Copy(io.Discard, req.Body)
+					switch tc.name {
+					case "http_status":
+						w.WriteHeader(http.StatusInternalServerError)
+					case "parent_deadline":
+						select {
+						case <-req.Context().Done():
+						case <-release:
+						}
+					case "truncated_body":
+						w.Header().Set("Content-Length", "100")
+						_, _ = io.WriteString(w, `{"partial":`)
+						w.(http.Flusher).Flush()
+						panic(http.ErrAbortHandler)
+					}
+				}))
+				defer srv.Close()
+				defer close(release)
+				ctx := failFastCtx("prefill-failure-metric", `{"messages":[{"role":"user","content":"hello"}],"stream":true}`, "127.0.0.1:1")
+				defer ctx.Delete()
+				ctx.Engine = engineName
+				ctx.MarkDecodeResponded()
+				if tc.name == "parent_deadline" {
+					parent, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					defer cancel()
+					ctx.Context = parent
+				}
+				exec := failFastExecutor()
+				handler := engine.Resolve(engineName)
+				if engineName == pd.EngineTRTLLM {
+					exec, handler = trtAsyncExecutor(t)
+				}
+				pod := failFastPod(t, "prefill-failure", strings.TrimPrefix(srv.URL, "http://"))
+				podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+				exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
+				err := exec.Execute(ctx, pod, handler, LogContext{})
+				if handler.IsAsync() {
+					require.NoError(t, err)
+					defer waitForDecodeAbort(t, ctx.PDLeg())
+					select {
+					case <-ctx.PDLeg().AbortDone():
+					case <-time.After(2 * time.Second):
+						t.Fatal("prefill failure handling did not finish")
+					}
+					require.NotNil(t, ctx.PrefillFailure())
+					assert.Equal(t, tc.class, ctx.PrefillFailure().Class)
+				} else {
+					require.Error(t, err)
+				}
+				require.Eventually(t, func() bool {
+					return exec.tracker.GetPrefillRequestCountsForPod(podKey) == 0
+				}, 2*time.Second, time.Millisecond)
+				assert.Equal(t, 1.0, testutil.ToFloat64(counter.WithLabelValues(tc.status, tc.code)))
+				assert.True(t, ctx.PrefillSucceededAt().IsZero())
+			})
+		}
+	}
+}
+
 func TestResponsePromptTokens(t *testing.T) {
 	assert.Equal(t, 42.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":42}}`)))
 	assert.Equal(t, 29.0, responsePromptTokens([]byte(`{"usage":{"input_tokens":29}}`)),
@@ -66,4 +184,28 @@ func TestResponsePromptTokens(t *testing.T) {
 	assert.Equal(t, 11.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":11,"input_tokens":22}}`)))
 	assert.Equal(t, 22.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":0,"input_tokens":22}}`)))
 	assert.Equal(t, 0.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":"11"}}`)))
+}
+
+func TestExecuteHTTPForwardsMockFaultHeaders(t *testing.T) {
+	headers := map[string]string{
+		"x-aibrix-mock-fail":                 "prefill",
+		"x-aibrix-mock-delay-ms":             "25",
+		"x-aibrix-mock-delay-role":           "prefill",
+		"x-aibrix-mock-stream-stall-ms":      "50",
+		"x-aibrix-mock-first-token-stall-ms": "75",
+	}
+	var received http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Header.Clone()
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+	executor := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+	_, err := executor.executeHTTP(srv.URL, &types.RoutingContext{
+		Context: context.Background(), RequestID: "mock-prefill", ReqHeaders: headers,
+	}, []byte(`{"model":"m"}`), time.Second)
+	require.NoError(t, err)
+	for key, value := range headers {
+		assert.Equal(t, value, received.Get(key), "outbound header %s", key)
+	}
 }

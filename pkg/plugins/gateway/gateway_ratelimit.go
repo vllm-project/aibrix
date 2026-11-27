@@ -24,6 +24,7 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -40,7 +41,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		if code == envoyTypePb.StatusCode_TooManyRequests {
 			errorHeader, errorCode = HeaderErrorRPMExceeded, ErrorCodeRateLimitExceeded
 		}
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: errorHeader, RawValue: []byte("true"),
@@ -58,7 +59,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		if code == envoyTypePb.StatusCode_TooManyRequests {
 			errorHeader, errorCode = HeaderErrorTPMExceeded, ErrorCodeRateLimitExceeded
 		}
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: errorHeader, RawValue: []byte("true"),
@@ -68,7 +69,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 
 	rpm, code, err := s.incrRPM(ctx, user.Name)
 	if err != nil {
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorIncrRPM, RawValue: []byte("true"),
@@ -83,7 +84,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 			klog.ErrorS(derr, "fail to refund rejected RPM increment for user", "user", user.Name)
 		}
 		exceeded := fmt.Errorf("user: %v has exceeded RPM: %v", user.Name, user.Rpm)
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			envoyTypePb.StatusCode_TooManyRequests,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
@@ -129,7 +130,7 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-// enforceModelRPS atomically increments the per-model RPS counter and rejects the request
+// enforceModelRPS atomically increments the per-profile RPS counter and rejects the request
 // if the new value exceeds the limit. A rejected increment never admitted a request, so it
 // is refunded immediately (rather than left for HandleRequestBody's needsRollback defer,
 // which is not registered until after this returns) -- otherwise every 429 would
@@ -140,24 +141,31 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
 	window := rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)
-	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1, window...)
+	key := modelRPSKey(model, routingCtx.ConfigProfile.ProfileName)
+	newVal, err := s.modelRateLimiter.Incr(ctx, key, 1, window...)
 	if err != nil {
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+		klog.ErrorS(err, "fail to increment RPS for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
 	if newVal > limit {
-		if _, derr := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, window...); derr != nil {
-			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model)
+		if _, derr := s.modelRateLimiter.Incr(ctx, key, -1, window...); derr != nil {
+			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
 		}
-		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
+		headers := []string{HeaderErrorModelRPSExceeded, "true"}
+		// Report the profile that config-profile auto selected, as a routed response does.
+		if profile, ok := routingCtx.RespHeaders[HeaderAIBrixConfigProfile]; ok {
+			headers = append(headers, HeaderAIBrixConfigProfile, profile)
+		}
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
-			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
+			ErrorCodeRateLimitExceeded, "", headers...)
 	}
 	return nil
 }
 
-// decrModelRPS decrements the per-model RPS counter by 1. Call this when a routing
+// decrModelRPS decrements the per-profile RPS counter by 1. Call this when a routing
 // failure occurs after enforceModelRPS has already incremented the counter, so that
 // requests which never reached the backend do not consume quota.
 // Note: if the 1-second window expires between the increment and this decrement, the
@@ -168,13 +176,19 @@ func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *typ
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return
 	}
-	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
-		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
+	key := modelRPSKey(model, routingCtx.ConfigProfile.ProfileName)
+	if _, err := s.modelRateLimiter.Incr(ctx, key, -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
+		klog.ErrorS(err, "fail to decrement RPS for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
 	}
 }
 
-func modelRPSKey(model string) string {
-	return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+// modelRPSKey returns the RPS counter key for model and profile. An empty profile
+// keeps the per-model key.
+func modelRPSKey(model, profile string) string {
+	if profile == "" {
+		return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+	}
+	return fmt.Sprintf("%v_MODEL_RPS_CURRENT:%v", model, profile)
 }
 
 // rateWindow converts RateWindowSeconds into the variadic window override accepted by

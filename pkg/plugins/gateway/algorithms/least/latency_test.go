@@ -392,3 +392,80 @@ func TestLeastLatencyReadsPromQLTokenAverages(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "1.1.1.1:8000", target)
 }
+
+// A pod that served many fast requests and then slowed down still has a low lifetime
+// mean queue time. least-latency must score it by its recent queue time instead (#3297).
+func TestLeastLatencyScoresRecentMean(t *testing.T) {
+	podMetrics := func(queue *metrics.HistogramMetricValue, recentQueue metrics.MetricValue) map[string]metrics.MetricValue {
+		podMetrics := map[string]metrics.MetricValue{
+			metrics.RequestQueueTimeSeconds:   queue,
+			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 0.2, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 2, Count: 1},
+		}
+		if recentQueue != nil {
+			podMetrics[cache.RecentMeanMetricName(metrics.RequestQueueTimeSeconds)] = recentQueue
+		}
+		return podMetrics
+	}
+	route := func(p1RecentQueue metrics.MetricValue) string {
+		readyPods := []*v1.Pod{
+			newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+			newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		}
+		c := cache.NewWithPodsModelMetricsForTest(readyPods, "m1", map[string]map[string]metrics.MetricValue{
+			// 100000 requests queued 0.05 s, then 300 queued 2 s in the last minute.
+			"p1": podMetrics(&metrics.HistogramMetricValue{Sum: 100000*0.05 + 300*2, Count: 100300}, p1RecentQueue),
+			"p2": podMetrics(&metrics.HistogramMetricValue{Sum: 1000 * 0.5, Count: 1000}, nil),
+		})
+		router := leastExpectedLatencyRouter{cache: c}
+		ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
+		target, err := router.Route(ctx, newMockPodList(readyPods, nil))
+		assert.NoError(t, err)
+		return target
+	}
+
+	// No recent mean yet (first minute of history): the lifetime mean (0.056 s) decides.
+	assert.Equal(t, "1.1.1.1:8000", route(nil))
+	// The recent mean shows p1 queueing 2 s against p2's 0.5 s.
+	assert.Equal(t, "2.2.2.2:8000", route(&metrics.SimpleMetricValue{Value: 2}))
+}
+
+// The prefill and decode terms are scored by the recent mean too, not only the queue term.
+func TestLeastLatencyScoresRecentPrefillAndDecodeMeans(t *testing.T) {
+	for _, recentMetric := range []string{metrics.RequestPrefillTimeSeconds, metrics.RequestDecodeTimeSeconds} {
+		t.Run(recentMetric, func(t *testing.T) {
+			podMetrics := func(prefillMean, decodeMean float64) map[string]metrics.MetricValue {
+				return map[string]metrics.MetricValue{
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 0.1, Count: 1},
+					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: prefillMean, Count: 1},
+					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: decodeMean, Count: 1},
+				}
+			}
+			route := func(p1Recent metrics.MetricValue) string {
+				readyPods := []*v1.Pod{
+					newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+				}
+				// p1 is faster than p2 over its lifetime.
+				p1, p2 := podMetrics(0.1, 1), podMetrics(0.2, 2)
+				if p1Recent != nil {
+					p1[cache.RecentMeanMetricName(recentMetric)] = p1Recent
+				}
+				c := cache.NewWithPodsModelMetricsForTest(readyPods, "m1", map[string]map[string]metrics.MetricValue{"p1": p1, "p2": p2})
+				router := leastExpectedLatencyRouter{cache: c}
+				ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
+				target, err := router.Route(ctx, newMockPodList(readyPods, nil))
+				assert.NoError(t, err)
+				return target
+			}
+
+			assert.Equal(t, "1.1.1.1:8000", route(nil), "lifetime means decide without a recent mean")
+			assert.Equal(t, "2.2.2.2:8000", route(&metrics.SimpleMetricValue{Value: 50}),
+				"p1 has slowed down in the last minute")
+		})
+	}
+}

@@ -31,6 +31,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/auth"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -465,8 +467,8 @@ func TestHandleRequestHeaders_PriorityTierIsTrimmed(t *testing.T) {
 func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 	t.Run("valid bearer token is accepted and preserved for upstream", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 
@@ -495,8 +497,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("missing bearer token is rejected", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 
@@ -523,8 +525,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("non-bearer authorization header is rejected", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 
@@ -551,8 +553,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("wrong bearer token is rejected", func(t *testing.T) {
 		server := &Server{
-			apiKeyAuth: &apiKeyAuthConfig{
-				token: "secret-1",
+			apiKeyAuth: &auth.APIKeyAuthConfig{
+				Token: "secret-1",
 			},
 		}
 
@@ -579,24 +581,40 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 	})
 }
 
-func TestHandleRequestHeadersPreservesMockPDFailureHeader(t *testing.T) {
-	server := &Server{}
-	req := &extProcPb.ProcessingRequest{
-		Request: &extProcPb.ProcessingRequest_RequestHeaders{
-			RequestHeaders: &extProcPb.HttpHeaders{
-				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
-					{Key: pathKey, RawValue: []byte(PathCompletions)},
-					{Key: HeaderMockPDFailure, RawValue: []byte("prefill")},
-				}},
-			},
-		},
+func TestHandleRequestHeadersPreservesMockHeaders(t *testing.T) {
+	for _, key := range []string{
+		HeaderMockPDFailure,
+		"x-aibrix-mock-delay-ms",
+		"x-aibrix-mock-delay-role",
+		"x-aibrix-mock-stream-stall-ms",
+		"x-aibrix-mock-first-token-stall-ms",
+		"x-aibrix-mock-future-fault",
+	} {
+		t.Run(key, func(t *testing.T) {
+			for _, incomingKey := range []string{key, strings.ToUpper(key)} {
+				req := &extProcPb.ProcessingRequest{
+					Request: &extProcPb.ProcessingRequest_RequestHeaders{
+						RequestHeaders: &extProcPb.HttpHeaders{
+							Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+								{Key: pathKey, RawValue: []byte(PathCompletions)},
+								{Key: incomingKey, RawValue: []byte("test-value")},
+								{Key: "x-unrelated-header", RawValue: []byte("ignored")},
+								{Key: "x-aibrix-mockish-header", RawValue: []byte("ignored")},
+								{Key: "x-forwarded-x-aibrix-mock-delay-ms", RawValue: []byte("ignored")},
+							}},
+						},
+					},
+				}
+				server := &Server{}
+				resp, _, _, routingCtx, _ := server.HandleRequestHeaders(
+					context.Background(), "request-id", trace.SpanFromContext(context.Background()), req,
+				)
+				require.NotNil(t, resp.GetRequestHeaders())
+				require.NotNil(t, routingCtx)
+				assert.Equal(t, map[string]string{key: "test-value"}, routingCtx.ReqHeaders)
+			}
+		})
 	}
-
-	_, _, _, routingCtx, _ := server.HandleRequestHeaders(
-		context.Background(), "request-id", trace.SpanFromContext(context.Background()), req,
-	)
-
-	assert.Equal(t, "prefill", routingCtx.ReqHeaders[HeaderMockPDFailure])
 }
 
 // TestHandleRequestHeaders_VideoCreateWithoutRoutingStrategyForcesRematch
@@ -642,8 +660,8 @@ func TestHandleRequestHeaders_VideoCreateWithoutRoutingStrategyForcesRematch(t *
 func TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	alice := registerTestVideoJob(t, registry, asyncJobOwnerFromUserName("alice"), "wan2.1-vace-1.3b", "video_gen_alice", pod)
-	shared := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_anon", pod)
+	alice := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerFromUserName("alice"), "wan2.1-vace-1.3b", "video_gen_alice", pod)
+	shared := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_anon", pod)
 
 	listRequest := func(username string) *extProcPb.ProcessingRequest {
 		headers := []*configPb.HeaderValue{
@@ -695,8 +713,8 @@ func TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser(t *testing.T) {
 func TestHandleRequestHeaders_VideoListDeletedCursorReturns400(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	cursor := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_cursor", pod)
-	require.NoError(t, registry.Delete(context.Background(), asyncJobOwnerShared, cursor.PublicJobID))
+	cursor := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1", "video_gen_cursor", pod)
+	require.NoError(t, registry.Delete(context.Background(), asyncjob.AsyncJobOwnerShared, cursor.PublicJobID))
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{

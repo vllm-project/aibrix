@@ -96,5 +96,5 @@ llm-d endpoint routing is a filter, scorer, and picker pipeline rather than a
 single `router-mode` value. In particular, `round-robin-fairness-policy`
 controls flow-control queue fairness and is not equivalent to Dynamo's
 `--router-mode round-robin`. See the [llm-d EPP scheduling
-reference](https://github.com/llm-d/llm-d/blob/main/docs/architecture/core/router/epp/scheduling.md)
+reference](https://github.com/llm-d/llm-d/blob/main/docs/architecture/router/scheduling.md)
 for supported filters, scorers, and pickers.

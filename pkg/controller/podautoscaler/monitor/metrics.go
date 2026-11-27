@@ -32,9 +32,27 @@ var (
 		},
 		[]string{"namespace", "name", "algorithm", "reason"},
 	)
+
+	autoscalerFailedMetricSources = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "autoscaler_failed_metric_sources",
+			Help:      "Number of metric sources a PodAutoscaler could not read in its latest reconcile",
+		},
+		[]string{"namespace", "name"},
+	)
+
+	autoscalerScaleDownHeld = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "autoscaler_scale_down_held",
+			Help:      "1 while hold-scale-down-on-metric-failure holds a PodAutoscaler's scale-down, 0 otherwise",
+		},
+		[]string{"namespace", "name"},
+	)
 )
 
 func init() {
 	// Register with controller-runtime metrics registry
-	metrics.Registry.MustRegister(autoscalerScaleAction)
+	metrics.Registry.MustRegister(autoscalerScaleAction, autoscalerFailedMetricSources, autoscalerScaleDownHeld)
 }

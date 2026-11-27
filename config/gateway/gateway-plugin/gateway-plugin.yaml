@@ -125,6 +125,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: AIBRIX_GATEWAY_NAMESPACE
+              value: $(AIBRIX_GATEWAY_NAMESPACE)
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -139,7 +141,7 @@ spec:
               port: 50052
             initialDelaySeconds: 5
             periodSeconds: 10
-      serviceAccountName: aibrix-gateway-plugins
+      serviceAccountName: gateway-plugins
 ---
 # this is a dummy route for incoming request to list models registered to aibrix-control-plane
 # TODO (varun): check if this dummy route can be removed in future
@@ -150,7 +152,7 @@ metadata:
   namespace: system
 spec:
   parentRefs:
-    - name: aibrix-eg
+    - name: eg
   rules:
     - matches:
         - path:
@@ -163,7 +165,7 @@ spec:
             type: PathPrefix
             value: /v1/batches
       backendRefs:
-        - name: aibrix-metadata-service
+        - name: metadata-service
           port: 8090
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -175,7 +177,7 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router-metadata-endpoint
+    name: reserved-router-metadata-endpoint
 ---
 # this is a dummy route for incoming request and,
 # then request is routed to httproute using model name OR
@@ -188,7 +190,7 @@ metadata:
   namespace: system
 spec:
   parentRefs:
-    - name: aibrix-eg
+    - name: eg
   rules:
     - matches:
         # Text generation
@@ -253,12 +255,15 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/audio/voices
+        - path:
+            type: PathPrefix
+            value: /v1/audio/generate
         # Video (the Videos API has routes of its own below)
         - path:
             type: PathPrefix
             value: /v1/video/generations
       backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: gateway-plugins
           port: 50052
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -270,10 +275,10 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router
+    name: reserved-router
   extProc:
     - backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: gateway-plugins
           port: 50052
       processingMode:
         request:
@@ -304,14 +309,14 @@ metadata:
   namespace: system
 spec:
   parentRefs:
-    - name: aibrix-eg
+    - name: eg
   rules:
     - matches:
         - path:
             type: PathPrefix
             value: /v1/videos
       backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: gateway-plugins
           port: 50052
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -323,10 +328,10 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router-videos
+    name: reserved-router-videos
   extProc:
     - backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: gateway-plugins
           port: 50052
       processingMode:
         request:
@@ -349,7 +354,7 @@ metadata:
   namespace: system
 spec:
   parentRefs:
-    - name: aibrix-eg
+    - name: eg
   rules:
     - matches:
         - path:
@@ -359,7 +364,7 @@ spec:
             type: RegularExpression
             value: /v1/videos/[^/]+/content
       backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: gateway-plugins
           port: 50052
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -371,10 +376,10 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router-videos-streaming
+    name: reserved-router-videos-streaming
   extProc:
     - backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: gateway-plugins
           port: 50052
       processingMode:
         request:

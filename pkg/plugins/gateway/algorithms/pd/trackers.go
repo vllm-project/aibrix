@@ -111,9 +111,25 @@ func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
 // active prefill request count for each pod in pods. Pods with no recorded
 // requests are included with a count of 0.
 func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
-	counts := make(map[string]int32)
+	counts := make(map[string]int32, len(pods))
 	for _, pod := range pods {
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		countInterface, exists := t.podRequestCounts.Load(podKey)
+		if !exists {
+			counts[podKey] = 0
+		} else {
+			counts[podKey] = countInterface.(*atomic.Int32).Load()
+		}
+	}
+	return counts
+}
+
+// GetPrefillRequestCountsForKeys returns a map of pod key → active prefill
+// request count for each precomputed pod key in keys. Callers that already
+// computed pod keys avoid repeated GeneratePodKey formatting on hot paths.
+func (t *PrefillRequestTracker) GetPrefillRequestCountsForKeys(keys []string) map[string]int32 {
+	counts := make(map[string]int32, len(keys))
+	for _, podKey := range keys {
 		countInterface, exists := t.podRequestCounts.Load(podKey)
 		if !exists {
 			counts[podKey] = 0
@@ -161,9 +177,11 @@ func NewPendingDecodeTracker() *PendingDecodeTracker {
 
 // AddPendingDecode records that requestID has been assigned to the pod
 // identified by podKey (see utils.GeneratePodKey) and increments that pod's pending-decode
-// counter. Called by the pod selector as soon as the decode pod is chosen,
-// under the same lock as the selection. RemovePendingDecode is deferred in
-// Route.
+// counter. For PD decode selections, the pod selector calls this under the same
+// lock as the selection; combined-pod spillover paths (which score from scraped
+// request-rate metrics and target combined pod keys disjoint from decodePods)
+// call it directly without the selection lock. RemovePendingDecode is deferred
+// in Route.
 func (t *PendingDecodeTracker) AddPendingDecode(requestID, podKey string) {
 	if t == nil {
 		return

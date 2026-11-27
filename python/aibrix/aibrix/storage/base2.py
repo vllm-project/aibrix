@@ -247,25 +247,26 @@ class BaseStorage2(BaseStorage):
         """Abort multipart upload with best-effort cleanup for base2 small parts."""
         prefix = self._multipart_upload_key(upload_id, "")
         no_multipart_data = True
+        objects_to_delete: list[str] = []
         try:
-            objects_to_delete, _ = await self.list_objects(prefix)
-
-            if objects_to_delete:
-                no_multipart_data = False
-                try:
-                    await self.delete_objects(objects_to_delete)
-                except Exception:
-                    for obj_key in objects_to_delete:
-                        try:
-                            await self.delete_object(obj_key)
-                        except Exception:
-                            pass
+            await self._collect_multipart_upload_objects(prefix, objects_to_delete)
         except Exception:
             try:
                 await self.delete_object(self._multipart_upload_key(upload_id))
                 no_multipart_data = False
             except Exception:
                 pass
+
+        if objects_to_delete:
+            no_multipart_data = False
+            try:
+                await self.delete_objects(objects_to_delete)
+            except Exception:
+                for obj_key in objects_to_delete:
+                    try:
+                        await self.delete_object(obj_key)
+                    except Exception:
+                        pass
 
         if no_multipart_data and self.is_native_multipart_supported():
             await self._native_abort_multipart_upload(key, upload_id)

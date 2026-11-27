@@ -230,7 +230,9 @@ func (s *SyncPrefixHashTable) Close() {
 }
 
 // MatchPrefix matches the input token prefix if already cached
-// returns map[podname]%prefixmatch along with all prefix hashes
+// returns map[podname]%prefixmatch along with all prefix hashes.
+// readyPods may be a shared read-only map (such as PodArray.KeySet) and must not
+// be modified.
 func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens []byte, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	ctx := ModelContext{
 		ModelName: modelName,
@@ -819,9 +821,9 @@ func tierBit(medium string, groupIdx int64) uint64 {
 	switch medium {
 	case "", MediumGPU:
 		tier = tierGPU
-	case MediumCPU:
+	case MediumCPU, "CPU_PINNED": // SGLang's name for host memory
 		tier = tierCPU
-	case MediumStorage:
+	case MediumStorage, "DISK": // SGLang's name for its disk tier
 		tier = tierStorage
 	}
 	var group int64

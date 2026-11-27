@@ -17,7 +17,11 @@ limitations under the License.
 package prefixcache
 
 import (
+	"bytes"
 	"context"
+	"flag"
+	"fmt"
+	"io"
 	"reflect"
 	"testing"
 	"time"
@@ -31,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 )
 
 // MockPodList implements types.PodList for testing
@@ -593,6 +598,73 @@ func TestPreble_RemovedPodHistoryDoesNotDoubleCount(t *testing.T) {
 		"only the surviving request should count toward pod-a")
 }
 
+// TestPreble_SharedPrefixCostIsSplitAcrossPods checks that a prefix node's prefill
+// cost is divided by the number of pods holding it, not charged in full to each of
+// them, following the Preble cost model. Four requests share a prefix held by
+// pod-a and pod-b, while pod-c holds three of its own; all pods share the decode
+// term, so the split determines which pod looks cheapest for an unrelated request.
+//
+// The scores are pinned to the decomposition of the cost model: every pod
+// carries the decode term (pinned to 45 tokens at the 0.15 ms/token default;
+// 6.75), the shared node's four-request prefill (4 x 0.062) is spread over its
+// two holders (0.124 each, 6.874 total), and pod-c pays its own node's
+// three-request prefill in full (3 x 0.062, 6.936 total). Pinning kills the
+// mutants a bare inequality admits: no split, splitting by len(modelPods)+1
+// or by len(modelPods)*2, and splitting the decode term across holders all
+// move the scores. A flat divisor over every pod the node lists is
+// indistinguishable in this fixture, because all three pods hold model m;
+// that distinction only shows on nodes shared by several models.
+func TestPreble_SharedPrefixCostIsSplitAcrossPods(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, nil)
+	podB := newPod("pod-b", "10.0.0.2", true, nil)
+	podC := newPod("pod-c", "10.0.0.3", true, nil)
+	pods := []*v1.Pod{podA, podB, podC}
+	all := newMockPodList(pods, nil)
+	router := newTestRouter(3, cache.NewWithPodsMetricsForTest(pods, "m", nil))
+
+	ownPrompt := "Translate the following technical manual section from German into plain English."
+	seed := func(prompt string, pod *v1.Pod, n int) {
+		for i := 0; i < n; i++ {
+			require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prompt, "seed"), all, pod))
+		}
+	}
+	// Four requests share a prefix held by pod-a and pod-b; pod-c holds three of its own.
+	seed(prebleSharedPrompt, podA, 2)
+	seed(prebleSharedPrompt, podB, 2)
+	seed(ownPrompt, podC, 3)
+
+	// PostRouteUpdate stores the per-request decode length on the node; its
+	// default is read from AIBRIX_ROUTER_PREBLE_DECODING_LENGTH once the
+	// process starts. Pin both nodes to that default so the pinned scores
+	// below do not depend on the environment running the test.
+	sharedTokens, err := utils.TokenizeInputText(prebleSharedPrompt)
+	require.NoError(t, err)
+	sharedNode, _ := router.cache.MatchPrefixNodeReadOnly(sharedTokens)
+	require.NotNil(t, sharedNode)
+	ownTokens, err := utils.TokenizeInputText(ownPrompt)
+	require.NoError(t, err)
+	ownNode, _ := router.cache.MatchPrefixNodeReadOnly(ownTokens)
+	require.NotNil(t, ownNode)
+	router.histogram.decodingSize[sharedNode] = 45
+	router.histogram.decodingSize[ownNode] = 45
+
+	costs := router.histogram.getCurrentAllocationCostPerPod("")
+	keyA := utils.GeneratePodKey(podA.Namespace, podA.Name)
+	keyB := utils.GeneratePodKey(podB.Namespace, podB.Name)
+	keyC := utils.GeneratePodKey(podC.Namespace, podC.Name)
+	assert.InDelta(t, 6.874, costs[keyA], 1e-9, "pod-a: half of the shared node's four-request prefill on top of the decode term")
+	assert.InDelta(t, 6.874, costs[keyB], 1e-9, "pod-b carries the other half")
+	assert.InDelta(t, 6.936, costs[keyC], 1e-9, "pod-c: its own node's three-request prefill, unsplit")
+	assert.Less(t, costs[keyA], costs[keyC], "pod-a carries half of four requests, pod-c all of three")
+
+	// An unrelated prompt matches no prefix, so Route picks the lowest-cost pod.
+	ctx := createTestRoutingContext("m", "zq", "route")
+	_, err = router.Route(ctx, all)
+	require.NoError(t, err)
+	require.NotNil(t, ctx.TargetPod())
+	assert.NotEqual(t, podC.Name, ctx.TargetPod().Name)
+}
+
 // cachedPodKeys returns the pods the prefix tree lists for model on the node that
 // matches prompt.
 func cachedPodKeys(t *testing.T, router *prefixCacheAndLoadRouter, model, prompt string) []string {
@@ -606,4 +678,61 @@ func cachedPodKeys(t *testing.T, router *prefixCacheAndLoadRouter, model, prompt
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+func capturePrebleKlog(t *testing.T, level string) func() string {
+	t.Helper()
+
+	fs := flag.NewFlagSet("klog-capture", flag.ContinueOnError)
+	klog.InitFlags(fs)
+	vFlag := fs.Lookup("v")
+	require.NotNil(t, vFlag)
+	previous := vFlag.Value.String()
+	require.NoError(t, vFlag.Value.Set(level))
+
+	var logs bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutput(&logs)
+	t.Cleanup(func() {
+		klog.Flush()
+		klog.SetOutput(io.Discard)
+		klog.LogToStderr(true)
+		require.NoError(t, vFlag.Value.Set(previous))
+	})
+
+	return func() string {
+		klog.Flush()
+		return logs.String()
+	}
+}
+
+func TestPrefixCachePreble_NoMatchedPods_LogsMetadataOnly(t *testing.T) {
+	const promptSecret = "SECRET-PREBLE-PROMPT-CANARY"
+	prompt := promptSecret + " shared prefix text across turns"
+
+	livePod := newPod("pod-live", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	readyPods := newMockPodList([]*v1.Pod{livePod}, nil)
+	router := newTestRouter(3, cache.NewWithPodsMetricsForTest([]*v1.Pod{livePod}, "m", nil))
+
+	tokens, err := utils.TokenizeInputText(prompt)
+	require.NoError(t, err)
+	node, _, _ := router.cache.AddPrefix(tokens, "m", "")
+	// Attach the cached prefix strictly to a pod that is no longer ready, so
+	// matchRatio exceeds the threshold while len(prefixMatches) stays empty.
+	node.AddOrUpdatePodForModel("m", prebleTestPodKey("pod-offline"), time.Now())
+
+	logs := capturePrebleKlog(t, "0")
+	ctx := createTestRoutingContext("m", prompt, "req-preble-log")
+	target, err := router.Route(ctx, readyPods)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.2:8000", target)
+
+	logged := logs()
+	assert.Contains(t, logged, "No matched pods found")
+	assert.Contains(t, logged, fmt.Sprintf("totalTokens=%d", len(tokens)))
+	assert.Contains(t, logged, fmt.Sprintf("matchedTokens=%d", len(tokens)))
+	assert.Contains(t, logged, `requestID="req-preble-log"`)
+	assert.Contains(t, logged, `model="m"`)
+	assert.NotContains(t, logged, promptSecret)
+	assert.NotContains(t, logged, "shared prefix text")
 }

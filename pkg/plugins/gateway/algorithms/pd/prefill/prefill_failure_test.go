@@ -70,12 +70,27 @@ func failFastCtx(requestID, body, decodeAddr string) *types.RoutingContext {
 	ctx.Engine = sglangEngine
 	ctx.ReqBody = []byte(body)
 	ctx.SetDecodeTarget(decodeAddr, "decode-1")
+	// These tests exercise abort dispatch, not its delayed retry policy.
+	overrides := *types.DefaultPDOverrides()
+	overrides.Abort.RetryDelay = 0
+	ctx.SetPDOverrides(&overrides)
 	return ctx
 }
 
 func failFastExecutor() *DefaultExecutor {
 	return NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(),
-		WithTokenLoadTracker(pd.NewTokenLoadTracker())).(*DefaultExecutor)
+		WithTokenLoadTracker(pd.NewTokenLoadTrackerWithConfig(pd.TokenLoadConfig{TTL: 0}))).(*DefaultExecutor)
+}
+
+// Join abort work before test teardown, including when a require assertion
+// exits early. Abort goroutines emit metrics even after their HTTP call ends.
+func waitForDecodeAbort(t *testing.T, leg *types.PDLegState) {
+	t.Helper()
+	select {
+	case <-leg.AbortDone():
+	case <-time.After(5 * time.Second):
+		t.Error("decode abort handling did not finish before test teardown")
+	}
 }
 
 // abortSink is an httptest handler standing in for a decode pod: it records
@@ -134,6 +149,7 @@ func TestAsyncPrefillFailureRecordsFailureAndAbortsDecodeLeg(t *testing.T) {
 
 	// The async leg is fire-and-forget: Execute returns before it finishes.
 	require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
+	defer waitForDecodeAbort(t, ctx.PDLeg())
 
 	body := sink.wait(t, 5*time.Second)
 	assert.Equal(t, ctx.PDRequestID(), gjson.Get(body, "rid").String(),
@@ -176,6 +192,7 @@ func TestAsyncPrefillBadResponseDoesNotAbortDecodeLeg(t *testing.T) {
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
 	require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
+	defer waitForDecodeAbort(t, ctx.PDLeg())
 
 	assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, pd.PrefillFailureBadResponse, ctx.PrefillFailure().Class)
@@ -202,6 +219,7 @@ func TestAsyncPrefillTransportFailureIsTerminal(t *testing.T) {
 	ctx := failFastCtx("req-dead", `{"messages":[{"role":"user","content":"hi"}]}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 
 	require.NoError(t, exec.Execute(ctx, failFastPod(t, "prefill-1", deadAddr), engine.Resolve(sglangEngine), LogContext{}))
+	defer waitForDecodeAbort(t, ctx.PDLeg())
 
 	assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 5*time.Second, 10*time.Millisecond)
 	assert.Equal(t, pd.PrefillFailureTransport, ctx.PrefillFailure().Class)
@@ -251,6 +269,10 @@ func TestPrefillGoroutineFailureAfterContextReuseDoesNotTouchNewRequest(t *testi
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
 	require.NoError(t, exec.Execute(ctx1, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
+	defer func(leg *types.PDLegState) {
+		releasePrefill()
+		waitForDecodeAbort(t, leg)
+	}(ctx1.PDLeg())
 
 	select {
 	case <-arrived:
@@ -329,10 +351,12 @@ func TestAsyncPrefillFailureReleasesDecodeCharge(t *testing.T) {
 			if tc.decodeStarted {
 				ctx.MarkDecodeResponded()
 			}
-			exec.tokenLoad.AcquireDecodeWithTTL(ctx.RequestID, decodeKey, 100, 0)
+			exec.tokenLoad.AcquireDecodeWithTTL(ctx.TrackerKey(), decodeKey, 100, 0)
 
 			prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 			require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
+			defer waitForDecodeAbort(t, ctx.PDLeg())
 			assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 2*time.Second, 10*time.Millisecond)
 			assert.Equal(t, tc.wantFailureCls, ctx.PrefillFailure().Class)
 			// The goroutine has run prefillDone once the prefill request count is back to 0.

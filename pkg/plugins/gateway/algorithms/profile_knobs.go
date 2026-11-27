@@ -79,6 +79,9 @@ func processRoutingOverrides() *types.RoutingOverrides {
 			PrefixCacheLoadBalanceWeight: autoBlendPrefixCacheLoadBalanceWeight,
 		},
 		PD: pdrouter.EnvOverrides(),
+		Candidate: types.CandidateOverrides{
+			K: routingCandidateK,
+		},
 	}
 }
 
@@ -144,6 +147,9 @@ func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
 		set(apply(&ov.AutoBlend.LeastRequestWeight, "autoBlend.leastRequestWeight", ab.LeastRequestWeight, inRange(0, maxWeightCoefficient)))
 		set(apply(&ov.AutoBlend.PrefixCacheWeight, "autoBlend.prefixCacheWeight", ab.PrefixCacheWeight, inRange(1, maxWeightCoefficient)))
 		set(apply(&ov.AutoBlend.PrefixCacheLoadBalanceWeight, "autoBlend.prefixCacheLoadBalanceWeight", ab.PrefixCacheLoadBalanceWeight, inRange(0, maxWeightCoefficient)))
+	}
+	if c := cfg.Candidate; c != nil {
+		set(apply(&ov.Candidate.K, "candidate.k", c.K, nonNegative[int]))
 	}
 	set(applyAny(&ov.PD.PromptLengthBucketing, cfg.PromptLengthBucketing))
 	set(applyAny(&ov.PD.BucketServe, cfg.BucketServe))

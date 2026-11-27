@@ -19,6 +19,7 @@ package least
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"sort"
 	"sync"
@@ -259,6 +260,32 @@ func TestApplyRampAdjustment_NegativeElapsedClampsToZero(t *testing.T) {
 	adjusted := applyRampAdjustment(fake, t0.Add(-5*time.Second), pods, counts)
 
 	assert.Equal(t, 32, adjusted[po2PodKey("podA")])
+}
+
+func TestApplyRampAdjustment_SaturatesLargeCounts(t *testing.T) {
+	withRamp(t, 300*time.Second)
+	for _, tt := range []struct {
+		name         string
+		rampingCount int
+		warmFloor    int
+		want         int
+	}{
+		{"sum below limit", math.MaxInt - 33, 32, math.MaxInt - 1},
+		{"count at limit", math.MaxInt, 32, math.MaxInt},
+		{"warm floor at limit", 1, math.MaxInt, math.MaxInt},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pods, counts, t0, readySince := rampTestFixture()
+			counts[po2PodKey("podA")] = tt.rampingCount
+			counts[po2PodKey("podB")] = tt.warmFloor
+			counts[po2PodKey("podC")] = tt.warmFloor
+			fake := &po2FakeCache{ReadySince: readySince}
+
+			adjusted := applyRampAdjustment(fake, t0, pods, counts)
+
+			require.Equal(t, tt.want, adjusted[po2PodKey("podA")])
+		})
+	}
 }
 
 // applyRampAdjustment's LatestPodReadySince short-circuit must actually skip the per-pod
@@ -861,4 +888,44 @@ func TestLeastRequestTopKScoreAll_EmptyPodList(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, scores)
 	assert.Empty(t, scored)
+}
+
+// approxFakeCache answers the candidate stage's in-memory counts from Approx, and its exact
+// counts and ramp state from the embedded fake.
+type approxFakeCache struct {
+	*po2FakeCache
+	Approx map[string]int64 // by pod name
+}
+
+func (c *approxFakeCache) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
+	counts := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if n, ok := c.Approx[pod.Name]; ok {
+			counts[utils.GeneratePodKey(pod.Namespace, pod.Name)] = n
+		}
+	}
+	return counts
+}
+
+// CandidateScores applies the same ramp adjustment as ScoreAll, to the in-memory counts: a pod
+// that just became ready looks about as loaded as the warm pods, not idle. It reads no exact
+// counts.
+func TestLeastRequestTopKRouter_CandidateScoresAppliesRampAdjustment(t *testing.T) {
+	withTopK(t, 5, 4)
+	withRamp(t, 300*time.Second)
+	clock := newFakeClock()
+	fake := &approxFakeCache{
+		po2FakeCache: &po2FakeCache{ReadySince: map[string]int64{"podA": clock.Now().UnixNano()}},
+		Approx:       map[string]int64{"podA": 0, "podB": 32},
+	}
+	router := newLeastRequestTopKRouterWithCacheAndClock(fake, clock.Now)
+	pods := po2TestPods("podA", "podB")
+
+	scores, scored, err := router.CandidateScores(newLrtkCtx("req-estimate"), newPo2PodList(pods, nil))
+
+	require.NoError(t, err)
+	require.Equal(t, []bool{true, true}, scored)
+	assert.InDelta(t, 32, scores[0], 1, "the ramping pod is charged the warm floor, not 0: %v", scores)
+	assert.Equal(t, float64(32), scores[1])
+	assert.Empty(t, fake.Batches, "the estimate reads no exact counts")
 }

@@ -22,8 +22,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/types"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -272,4 +275,145 @@ func zipLabels(names, values []string) map[string]string {
 		out[n] = values[i]
 	}
 	return out
+}
+
+// podQuantileSeries counts the series of the custom gauge name that belong to pod.
+func podQuantileSeries(t *testing.T, name, pod string) int {
+	customGaugesMu.RLock()
+	gauge := customGauges[name]
+	customGaugesMu.RUnlock()
+	if gauge == nil {
+		return 0
+	}
+	ch := make(chan prometheus.Metric)
+	go func() {
+		gauge.Collect(ch)
+		close(ch)
+	}()
+	n := 0
+	for m := range ch {
+		var out dto.Metric
+		assert.NoError(t, m.Write(&out))
+		for _, l := range out.Label {
+			if l.GetName() == "pod" && l.GetValue() == pod {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestEmitHistogramWithoutObservationsExportsNoQuantiles(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	ctx := &types.RoutingContext{}
+	quantiles := []string{"_p50", "_p90", "_p99"}
+	empty := func() *HistogramMetricValue {
+		return &HistogramMetricValue{Buckets: map[string]float64{"0.300000": 0, "0.800000": 0, "+Inf": 0}}
+	}
+
+	// A pod that has not served a request yet.
+	fresh := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "quantile-fresh-pod", Namespace: "ns1"}}
+	EmitMetricToPrometheus(ctx, fresh, TimeToFirstTokenSeconds, empty(), nil)
+	for _, q := range quantiles {
+		assert.Equal(t, 0, podQuantileSeries(t, TimeToFirstTokenSeconds+q, fresh.Name), q)
+	}
+
+	// A pod with observations, then the same pod after its engine restarted.
+	served := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "quantile-served-pod", Namespace: "ns1"}}
+	withData := &HistogramMetricValue{Sum: 1.2, Count: 2, Buckets: map[string]float64{"0.300000": 0, "0.800000": 2, "+Inf": 2}}
+	EmitMetricToPrometheus(ctx, served, TimeToFirstTokenSeconds, withData, nil)
+	for _, q := range quantiles {
+		assert.Equal(t, 1, podQuantileSeries(t, TimeToFirstTokenSeconds+q, served.Name), q)
+	}
+	EmitMetricToPrometheus(ctx, served, TimeToFirstTokenSeconds, empty(), nil)
+	for _, q := range quantiles {
+		assert.Equal(t, 0, podQuantileSeries(t, TimeToFirstTokenSeconds+q, served.Name), q)
+	}
+}
+
+func TestEngineHistogramsWithDifferentLabelsExportAndRetireIndependently(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	previousRegisterer := prometheus.DefaultRegisterer
+	previousHistograms := customHistograms
+	prometheus.DefaultRegisterer = registry
+	customHistograms = make(map[string]*histogramCollector)
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer = previousRegisterer
+		customHistograms = previousHistograms
+	})
+
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "warm", Namespace: "test"}}
+	first := &types.RoutingContext{Model: "first"}
+	second := &types.RoutingContext{Model: "second"}
+	firstLabels := map[string]string{"model_name": "first", "engine": "0"}
+	secondLabels := map[string]string{"model_name": "second"}
+	value := &HistogramMetricValue{Count: 1, Sum: 0.1, Buckets: map[string]float64{"1": 1}}
+	EmitMetricToPrometheus(first, pod, TimeToFirstTokenSeconds, value, firstLabels)
+	EmitMetricToPrometheus(second, pod, TimeToFirstTokenSeconds, value, secondLabels)
+
+	readModels := func() []string {
+		families, err := registry.Gather()
+		assert.NoError(t, err)
+		var models []string
+		for _, family := range families {
+			if family.GetName() != TimeToFirstTokenSeconds {
+				continue
+			}
+			for _, sample := range family.Metric {
+				for _, label := range sample.Label {
+					if label.GetName() == "model" {
+						models = append(models, label.GetValue())
+					}
+				}
+			}
+		}
+		return models
+	}
+	assert.ElementsMatch(t, []string{"first", "second"}, readModels())
+	DeleteEngineMetricFromPrometheus(second, pod, TimeToFirstTokenSeconds, secondLabels)
+	assert.Equal(t, []string{"first"}, readModels())
+}
+
+// A metric name without a definition entry must not vanish silently: the emit is
+// counted on aibrix_metrics_emit_dropped_total with the dropped name as the
+// metric label, while a registered name emits normally and never touches the
+// drop counter (#3506).
+func TestEmitMetricToPrometheus_DroppedEmitCounted(t *testing.T) {
+	droppedName := "test_emit_without_definition"
+	_, registered := Metrics[droppedName]
+	assert.False(t, registered, "fixture metric must not have a definition entry")
+
+	type counterCall struct {
+		name        string
+		value       float64
+		labelNames  []string
+		labelValues []string
+	}
+	var counterCalls []counterCall
+	originalCounterFn := IncrementCounterMetricFnForTest
+	defer func() { IncrementCounterMetricFnForTest = originalCounterFn }()
+	IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		counterCalls = append(counterCalls, counterCall{name: name, value: value, labelNames: labelNames, labelValues: labelValues})
+	}
+
+	var gaugeCalls []string
+	originalGaugeFn := SetGaugeMetricFnForTest
+	defer func() { SetGaugeMetricFnForTest = originalGaugeFn }()
+	SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		gaugeCalls = append(gaugeCalls, name)
+	}
+
+	// A registered name emits its gauge and never touches the drop counter.
+	EmitMetricToPrometheus(nil, nil, NumRequestsRunning, &SimpleMetricValue{Value: 3}, nil)
+	assert.Equal(t, []string{NumRequestsRunning}, gaugeCalls)
+	assert.Empty(t, counterCalls)
+
+	// A name without a definition entry is dropped, and the drop is counted.
+	EmitMetricToPrometheus(nil, nil, droppedName, &SimpleMetricValue{Value: 3}, nil)
+	assert.Len(t, counterCalls, 1)
+	assert.Equal(t, MetricsEmitDroppedTotal, counterCalls[0].name)
+	assert.Equal(t, 1.0, counterCalls[0].value)
+	assert.Equal(t, []string{"metric"}, counterCalls[0].labelNames)
+	assert.Equal(t, []string{droppedName}, counterCalls[0].labelValues)
+	assert.Len(t, gaugeCalls, 1, "the dropped emit must not reach any metric path")
 }

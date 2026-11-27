@@ -431,7 +431,7 @@ func TestEnforceModelRPS(t *testing.T) {
 			require.NotNil(t, imm)
 			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
 			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
-			assert.Contains(t, imm.GetBody(), "exceeded RPS")
+			assert.Contains(t, imm.GetBody(), "model: llama has exceeded RPS: 2")
 			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
 				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
 				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
@@ -466,6 +466,19 @@ func TestEnforceModelRPS(t *testing.T) {
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("profile name selects the profile's counter", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:batch", int64(1)).Return(int64(3), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:batch", int64(-1)).Return(int64(2), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{ProfileName: "batch", RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		assert.NotNil(t, resp)
 		rl.AssertExpectations(t)
 	})
 }
@@ -521,6 +534,17 @@ func TestDecrModelRPS(t *testing.T) {
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		s.decrModelRPS(context.Background(), "llama", rc)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("decrement uses the profile's counter", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:batch", int64(-1)).Return(int64(0), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{ProfileName: "batch", RequestsPerSecond: 2}}
 
 		s.decrModelRPS(context.Background(), "llama", rc)
 		rl.AssertExpectations(t)

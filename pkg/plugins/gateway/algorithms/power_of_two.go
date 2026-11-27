@@ -86,7 +86,7 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 		}
 		pod1, pod2 := readyPods[idx1], readyPods[idx2]
 
-		count1, count2 := p.getRequestCounts(pod1, pod2)
+		count1, count2 := p.getRequestCounts(ctx, pod1, pod2)
 		klog.V(4).InfoS("power_of_two_selection",
 			"request_id", ctx.RequestID,
 			"candidate1", pod1.Name,
@@ -120,8 +120,8 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 // read. A pod without a count, or a failed read, counts as 0, so the comparison ties and Route
 // keeps the first sampled pod. That pod is itself a uniform sample of the ready pods, so the
 // request still lands on a random ready pod rather than failing.
-func (p *PowerOfTwoRouter) getRequestCounts(pod1, pod2 *v1.Pod) (count1, count2 int64) {
-	counts, err := p.cache.GetPodsRunningRequests([]*v1.Pod{pod1, pod2})
+func (p *PowerOfTwoRouter) getRequestCounts(ctx *types.RoutingContext, pod1, pod2 *v1.Pod) (count1, count2 int64) {
+	counts, err := ctx.RunningRequests([]*v1.Pod{pod1, pod2}, p.cache.GetPodsRunningRequests)
 	if err != nil || counts == nil {
 		klog.V(4).ErrorS(err, "failed to get running requests, treating candidates as idle",
 			"candidate1", pod1.Name, "candidate2", pod2.Name)

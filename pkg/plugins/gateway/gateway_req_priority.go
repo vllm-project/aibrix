@@ -48,7 +48,8 @@ func priorityForTier(tier string) (int, bool) {
 
 // applyPriorityTier rewrites routingCtx.ReqBody in place when the deployment
 // opted in, the request declares a tier this gateway maps, and the caller did
-// not set the priority itself.
+// not set the priority itself. A /v1/decisions request is never rewritten,
+// because neither engine accepts a priority there.
 //
 // The rewrite happens before a pod is selected, so every reader of the routing
 // context sees the same body: the body that is forwarded upstream, and the
@@ -63,6 +64,14 @@ func (s *Server) applyPriorityTier(routingCtx *types.RoutingContext) {
 	tier := routingCtx.ReqHeaders[HeaderPriorityTier]
 	priority, ok := priorityForTier(tier)
 	if !ok {
+		return
+	}
+
+	// The /v1/decisions request models of vLLM and SGLang declare no priority
+	// and forbid unknown fields, so a tier written there fails the request with
+	// 400. /v1/systemone is different: vLLM declares a priority and schedules by
+	// it, and SGLang ignores unknown fields.
+	if pathWithoutQuery(routingCtx.ReqPath) == PathDecisions {
 		return
 	}
 

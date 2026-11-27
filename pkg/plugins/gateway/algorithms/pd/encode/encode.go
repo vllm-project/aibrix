@@ -36,6 +36,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -54,6 +55,12 @@ var mediaTypes = map[string]struct{}{
 // passthroughFields change how media is loaded or processed, so the encoder
 // has to see them to produce the same output the prefill instance expects.
 var passthroughFields = []string{"mm_processor_kwargs", "media_io_kwargs"}
+
+// ECTransferParamsField holds the encoder's handles on its outputs, keyed by
+// mm_hash. ECCPUConnector with NIXL needs it to pull them.
+const ECTransferParamsField = "ec_transfer_params"
+
+const maxEncodeResponseBytes = 1 << 20
 
 // MediaItems returns the raw JSON of every media item in a chat completions
 // request body, in message order.
@@ -109,51 +116,209 @@ func requestBody(body []byte, item string) ([]byte, error) {
 	return out, nil
 }
 
+// Encoder selection policies, set with AIBRIX_ENCODE_SELECTION_POLICY.
+const (
+	// PolicyRoundRobin spreads items over the encoders in turn.
+	PolicyRoundRobin = "round_robin"
+	// PolicyLeastRequest sends each item to the encoder with the fewest items
+	// this executor has in flight.
+	PolicyLeastRequest = "least_request"
+)
+
 // Executor sends media items to encoder pods.
 type Executor struct {
 	httpClient *http.Client
 	// next spreads items over the encoders across requests, so single-item
-	// requests don't all land on the first encoder.
+	// requests don't all land on the first encoder. Under least_request it
+	// picks which of the least loaded encoders gets an item.
 	next atomic.Uint64
+
+	leastRequest bool
+	mu           sync.Mutex
+	// inflight counts, per encoder pod key, the items sent and not yet
+	// answered. Used under least_request only.
+	inflight map[string]int
 }
 
 func NewExecutor(httpClient *http.Client) *Executor {
-	return &Executor{httpClient: httpClient}
+	e := &Executor{httpClient: httpClient, inflight: make(map[string]int)}
+	switch policy := utils.LoadEnv("AIBRIX_ENCODE_SELECTION_POLICY", PolicyRoundRobin); policy {
+	case PolicyLeastRequest:
+		e.leastRequest = true
+	case PolicyRoundRobin:
+	default:
+		klog.InfoS("unknown AIBRIX_ENCODE_SELECTION_POLICY, using round_robin", "policy", policy)
+	}
+	return e
+}
+
+// assign picks an encoder for each of n items. Under least_request it charges
+// each pick to the encoder's in-flight count; release takes it off.
+func (e *Executor) assign(encoders []*v1.Pod, n int) []*v1.Pod {
+	start := e.next.Add(uint64(n)) - uint64(n)
+	picks := make([]*v1.Pod, n)
+	if !e.leastRequest {
+		for i := range picks {
+			picks[i] = encoders[(start+uint64(i))%uint64(len(encoders))]
+		}
+		return picks
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i := range picks {
+		var best *v1.Pod
+		bestCount := 0
+		// Start the scan at the round-robin position so ties rotate.
+		for j := range encoders {
+			pod := encoders[(start+uint64(i)+uint64(j))%uint64(len(encoders))]
+			if pod == nil {
+				continue
+			}
+			if count := e.inflight[podKey(pod)]; best == nil || count < bestCount {
+				best, bestCount = pod, count
+			}
+		}
+		if best == nil {
+			// Only nil pods: keep the round-robin pick, which encode rejects.
+			picks[i] = encoders[(start+uint64(i))%uint64(len(encoders))]
+			continue
+		}
+		picks[i] = best
+		e.inflight[podKey(best)]++
+	}
+	return picks
+}
+
+func (e *Executor) release(pod *v1.Pod) {
+	if !e.leastRequest || pod == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	key := podKey(pod)
+	if e.inflight[key] <= 1 {
+		delete(e.inflight, key)
+		return
+	}
+	e.inflight[key]--
+}
+
+func podKey(pod *v1.Pod) string {
+	return utils.GeneratePodKey(pod.Namespace, pod.Name)
 }
 
 // Execute sends each item to one of encoders, all at once, and waits for every
-// response. It returns the failures joined, or nil when every item was encoded.
-func (e *Executor) Execute(routingCtx *types.RoutingContext, encoders []*v1.Pod, items []string, timeout time.Duration) error {
+// response. It returns the merged ec_transfer_params (nil if none) and the
+// failures joined.
+func (e *Executor) Execute(routingCtx *types.RoutingContext, encoders []*v1.Pod, items []string, timeout time.Duration) ([]byte, error) {
 	if len(encoders) == 0 || len(items) == 0 {
-		return nil
+		return nil, nil
 	}
-	start := e.next.Add(uint64(len(items))) - uint64(len(items))
+	picks := e.assign(encoders, len(items))
 	errs := make([]error, len(items))
+	params := make([]gjson.Result, len(items))
 	var wg sync.WaitGroup
 	for i, item := range items {
-		pod := encoders[(start+uint64(i))%uint64(len(encoders))]
+		pod := picks[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := e.encode(routingCtx, pod, i, item, timeout); err != nil {
-				errs[i] = fmt.Errorf("encode item %d on pod %s: %w", i, pod.Name, err)
+			defer e.release(pod)
+			p, err := e.encode(routingCtx, pod, i, item, timeout)
+			if err != nil {
+				name := "<nil>"
+				if pod != nil {
+					name = pod.Name
+				}
+				errs[i] = fmt.Errorf("encode item %d on pod %s: %w", i, name, err)
 			}
+			params[i] = p
 		}()
 	}
 	wg.Wait()
-	return errors.Join(errs...)
+	return mergeTransferParams(params), errors.Join(errs...)
 }
 
-func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index int, item string, timeout time.Duration) error {
+// A repeated item has the same mm_hash, so the first entry wins.
+func mergeTransferParams(params []gjson.Result) []byte {
+	var out []byte
+	seen := map[string]struct{}{}
+	for _, p := range params {
+		if !p.IsObject() {
+			continue
+		}
+		p.ForEach(func(key, value gjson.Result) bool {
+			if _, ok := seen[key.String()]; ok {
+				return true
+			}
+			seen[key.String()] = struct{}{}
+			if out == nil {
+				out = []byte{'{'}
+			} else {
+				out = append(out, ',')
+			}
+			out = append(out, key.Raw...)
+			out = append(out, ':')
+			out = append(out, value.Raw...)
+			return true
+		})
+	}
+	if out == nil {
+		return nil
+	}
+	return append(out, '}')
+}
+
+// Drops every copy the client sent, in one pass: sjson only edits the first,
+// and with a repeated key vLLM takes the last one.
+func setTransferParams(body, params []byte) ([]byte, error) {
+	if !gjson.ValidBytes(body) {
+		return nil, errors.New("request body is not valid JSON")
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return nil, errors.New("request body is not a JSON object")
+	}
+	if !root.Get(ECTransferParamsField).Exists() {
+		if params == nil {
+			return body, nil
+		}
+		return sjson.SetRawBytes(body, ECTransferParamsField, params)
+	}
+	out := make([]byte, 0, len(body)+len(params))
+	out = append(out, '{')
+	root.ForEach(func(key, value gjson.Result) bool {
+		if key.String() == ECTransferParamsField {
+			return true
+		}
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+		out = append(out, key.Raw...)
+		out = append(out, ':')
+		out = append(out, value.Raw...)
+		return true
+	})
+	if params != nil {
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+		out = append(out, `"`+ECTransferParamsField+`":`...)
+		out = append(out, params...)
+	}
+	return append(out, '}'), nil
+}
+
+func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index int, item string, timeout time.Duration) (gjson.Result, error) {
 	if pod == nil {
-		return errors.New("encode pod is nil")
+		return gjson.Result{}, errors.New("encode pod is nil")
 	}
 	if pod.Status.PodIP == "" {
-		return fmt.Errorf("encode pod %s has no IP address", pod.Name)
+		return gjson.Result{}, fmt.Errorf("encode pod %s has no IP address", pod.Name)
 	}
 	payload, err := requestBody(routingCtx.ReqBody, item)
 	if err != nil {
-		return fmt.Errorf("build encode request: %w", err)
+		return gjson.Result{}, fmt.Errorf("build encode request: %w", err)
 	}
 	url := "http://" + net.JoinHostPort(
 		pod.Status.PodIP,
@@ -164,7 +329,7 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("create encode request: %w", err)
+		return gjson.Result{}, fmt.Errorf("create encode request: %w", err)
 	}
 	for key, value := range routingCtx.ReqHeaders {
 		// Envoy pseudo-headers are not valid HTTP/1 field names.
@@ -180,7 +345,7 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 	if err != nil {
 		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
 		emit(routingCtx, status, code)
-		return err
+		return gjson.Result{}, err
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -189,15 +354,22 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		emit(routingCtx, status, code)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("encoder returned %d: %s", resp.StatusCode, body)
+		return gjson.Result{}, fmt.Errorf("encoder returned %d: %s", resp.StatusCode, body)
 	}
-	// Only the status matters; drain the body so the connection is reused.
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEncodeResponseBytes+1))
+	if err == nil && len(body) > maxEncodeResponseBytes {
+		err = fmt.Errorf("larger than %d bytes", maxEncodeResponseBytes)
+	}
+	if err != nil {
 		emit(routingCtx, "read_error", "200")
-		return fmt.Errorf("read encode response: %w", err)
+		return gjson.Result{}, fmt.Errorf("read encode response: %w", err)
+	}
+	if !gjson.ValidBytes(body) {
+		emit(routingCtx, "invalid_response", "200")
+		return gjson.Result{}, errors.New("encode response is not valid JSON")
 	}
 	emit(routingCtx, "success", "200")
-	return nil
+	return gjson.GetBytes(body, ECTransferParamsField), nil
 }
 
 func emit(routingCtx *types.RoutingContext, status, code string) {

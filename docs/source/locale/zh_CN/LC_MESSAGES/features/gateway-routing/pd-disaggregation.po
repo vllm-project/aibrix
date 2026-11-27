@@ -180,7 +180,63 @@ msgstr ""
 "roleset 因 decode Pod 宕机而不完整——则在已配置且 prompt 长度范围匹配时，请求会回退到本地同时运行两个阶段的 "
 "**标准推理 Pod** （``combined: true`` ）。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:93
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:91
+msgid "Prefill Engine Errors"
+msgstr "prefill 引擎错误"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:94
+msgid ""
+"With vLLM and TensorRT-LLM, the prefill request is synchronous: the gateway "
+"sends it to the prefill pod before any decode pod runs. A request the "
+"prefill engine refuses therefore never reaches the decode pod, and its "
+"rejection is not a routing failure: the prefill pod was selected and "
+"reachable, and the engine rejected the request body itself — a sampling "
+"parameter outside its range, or media the model cannot accept."
+msgstr ""
+"使用 vLLM 与 TensorRT-LLM 时，prefill 请求是同步的：网关先把请求发给 prefill Pod，之后才轮到 decode "
+"Pod。因此被 prefill 引擎拒绝的请求不会到达 decode Pod；这种拒绝并非路由失败：prefill Pod "
+"已成功选中且可访问，真正被拒绝的是请求体本身——例如采样参数超出引擎允许范围，或模型无法接受的媒体内容。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:101
+msgid ""
+"Such a rejection is returned to the client unchanged: the prefill pod's HTTP "
+"status and its error payload (``message``, ``type``, ``param``, ``code``) "
+"reach the client as they were sent. No ``x-error-pd-prefill`` marker is "
+"added: the payload is the engine's own answer, so a disaggregated request "
+"fails with the same error and status a standard inference pod would have "
+"returned."
+msgstr ""
+"这类拒绝会原样返回给客户端：prefill Pod 的 HTTP "
+"状态码及其错误载荷（``message``、``type``、``param``、``code``）保持不变。不会附加 "
+"``x-error-pd-prefill`` 标记：这是引擎自身的应答，因此同一个请求体在 PD 部署下会以与标准推理 Pod "
+"相同的状态码和错误失败。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:107
+msgid ""
+"A ``5xx`` from the prefill engine keeps the engine's status and message and "
+"carries the ``x-error-pd-prefill: true`` marker, because a server-side error "
+"says nothing about the request and the status alone cannot tell which leg "
+"failed. A standard inference pod instead answers an engine ``500`` with a "
+"fixed ``Internal server error`` body."
+msgstr ""
+"prefill 引擎返回的 ``5xx`` 会保留引擎的状态码和消息，并携带 ``x-error-pd-prefill: true`` "
+"标记：服务端错误并不说明请求本身有问题，仅凭状态码也无法判断是哪条腿失败。标准推理 Pod "
+"则对引擎的 ``500`` 回复固定的 ``Internal server error`` 响应体。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:113
+msgid ""
+"A prefill pod the gateway cannot reach (connection refused or reset, or a "
+"timeout on the call) keeps the ``503`` status but carries the marker and the "
+"transport error in its message. This describes the HTTP call only: a KV "
+"transfer failing inside the engine, as with a push-based connector such as "
+"NIXL or Mooncake, surfaces as the engine's own ``5xx``, and a pull-based "
+"handoff such as SGLang fails on the decode side."
+msgstr ""
+"网关无法连通的 prefill Pod（连接被拒绝或重置，或调用超时）仍返回 ``503`` 状态，但会附加该标记，"
+"并在消息中给出传输错误。这只描述 HTTP 调用本身：引擎内部的 KV 传输失败（例如 NIXL、Mooncake "
+"这类 push 型连接器）会体现为引擎自身的 ``5xx``，而 pull 型交接（如 SGLang）则在 decode 侧失败。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:121
 msgid "Supported Engines"
 msgstr "支持的引擎"
 
@@ -315,7 +371,7 @@ msgid ""
 "``pkg/plugins/gateway/algorithms/pd_readme.md`` for the request sequence "
 "and failure handling."
 msgstr ""
-"网关惰性加载所选 CTX worker 的 ``/server_info``（查找超时 3 秒，TTL 1 分钟），在两段上准备共享的 "
+"网关惰性加载所选 CTX worker 的 ``/server_info`` （查找超时 3 秒，TTL 1 分钟），在两段上准备共享的 "
 "``disagg_request_id`` 和 ``schedule_style=1``，在 goroutine 中发送 CTX，并立即让 Envoy "
 "转发 GEN。KV 传输仍在引擎之间完成；网关既不传输 KV，也不发送重复的 GEN HTTP "
 "请求。元数据缺失或无效会在发送任何推理请求之前使路由失败。请求序列和失败处理见 "
@@ -367,7 +423,7 @@ msgid ""
 "response headers of a stream before the first token, so the headers alone"
 " do not stop this timer."
 msgstr ""
-"``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``（默认 ``60``）：流式请求在 prefill 成功后，等待 "
+"``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT`` （默认 ``60``）：流式请求在 prefill 成功后，等待 "
 "decode Pod 首个 token（第一个响应体分片）的秒数。SGLang 会在首 token 之前发送流的响应头，因此仅有响应头不会停止该计时器。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:180
@@ -377,7 +433,7 @@ msgid ""
 "request when the whole generation is done, so a safe value depends on "
 "``max_tokens`` and decode throughput."
 msgstr ""
-"``AIBRIX_DECODE_RESPONSE_TIMEOUT``（默认 ``0``，关闭）：非流式请求的同样上限。decode Pod "
+"``AIBRIX_DECODE_RESPONSE_TIMEOUT`` （默认 ``0``，关闭）：非流式请求的同样上限。decode Pod "
 "只在整段生成完成后才应答此类请求，因此安全取值取决于 ``max_tokens`` 和 decode 吞吐。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:183
@@ -387,7 +443,7 @@ msgid ""
 "between two chunks before the gateway cuts the stream short and aborts "
 "the decode request."
 msgstr ""
-"``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT``（默认 ``120``）：仅用于流式请求。首 token "
+"``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT`` （默认 ``120``）：仅用于流式请求。首 token "
 "到达后，两个分片之间允许的最长间隔；超时则网关截断流并中止 decode 请求。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:187
@@ -613,18 +669,36 @@ msgstr ""
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:334
 msgid ""
-"The request body is not changed. The encode pods store their output "
+"The media items stay on the request. The encode pods store their output "
 "through vLLM's EC connector, keyed by the hash of each media item, and "
-"the prefill pod finds it under the same hash. If an item's output is not "
+"the prefill pod finds it under the same hash. The gateway drops any "
+"``ec_transfer_params`` the client sent and sets the ones the encode "
+"responses carry, if any, on the prefill request. If an item's output is not "
 "there, for example because its encode request failed, the prefill pod "
 "encodes the item itself, so a failed encode costs latency but not the "
 "request. Each encode request uses the prefill request timeout, and "
 "``gateway_pd_encode_request_total`` counts them by ``status``."
 msgstr ""
-"请求体不会被修改。Encode Pod 通过 vLLM 的 EC connector 保存输出，以每个媒体项的哈希为键，prefill Pod "
-"用同一哈希找到它。如果某一项的输出不存在（例如其 encode 请求失败），prefill Pod 会自行编码该项，因此 encode "
+"媒体项保留在请求中。Encode Pod 通过 vLLM 的 EC connector 保存输出，以每个媒体项的哈希为键，prefill Pod "
+"用同一哈希找到它。网关会丢弃客户端发送的 ``ec_transfer_params`` ，如果 encode 响应带有 ``ec_transfer_params`` ，"
+"则将其设置到 prefill 请求上。如果某一项的输出不存在（例如其 encode 请求失败），prefill Pod 会自行编码该项，因此 encode "
 "失败只会增加延迟，不会导致请求失败。每个 encode 请求使用 prefill 请求超时， ``gateway_pd_encode_request_total`` "
 "按 ``status`` 统计这些请求。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:351
+msgid ""
+"By default the gateway sends the items to the selected roleset's encode "
+"pods in turn. With ``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` it "
+"sends each item to the encode pod with the fewest items it has in flight, "
+"so an encode pod that is still working on large images does not receive "
+"the next ones while others are idle. Each gateway replica counts "
+"separately, and within a replica the ``pd`` routing strategy and the other"
+" strategies keep separate counts."
+msgstr ""
+"默认情况下，网关把各媒体项依次发给所选 roleset 的 encode Pod。设置 "
+"``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` 后，网关会把每一项发给在途项最少的 encode "
+"Pod，这样仍在处理大图的 encode Pod 不会在其他 Pod 空闲时继续接收新的项。每个网关副本分别计数，同一副本内 ``pd`` "
+"路由策略与其他策略也各自计数。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:336
 msgid ""
@@ -641,6 +715,22 @@ msgstr ""
 "``samples/disaggregation/vllm/1e1p1d.yaml`` ："
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:349
+msgid ""
+"With ``ECCPUConnector`` and ``\"ec_enable_nixl\": true``, the prefill pod "
+"pulls each output from the encode pod over NIXL instead, so no shared "
+"volume is needed. Set ``VLLM_EC_SIDE_CHANNEL_HOST`` on the encode pods to"
+" the pod IP, since that is the address they hand out in "
+"``ec_transfer_params``. ``ECCPUConnector`` needs vLLM 0.32.0 or later and"
+" ``VLLM_USE_V2_MODEL_RUNNER=1`` on both sides. "
+"``samples/disaggregation/vllm/1e1p1d-ec-nixl.yaml`` is an example."
+msgstr ""
+"使用 ``ECCPUConnector`` 并设置 ``\"ec_enable_nixl\": true`` 时，prefill Pod 会通过 NIXL "
+"直接从 encode Pod 拉取每个输出，因此不需要共享卷。请将 encode Pod 的 ``VLLM_EC_SIDE_CHANNEL_HOST`` "
+"设置为 Pod IP，因为 encode Pod 会在 ``ec_transfer_params`` 中提供这个地址。 ``ECCPUConnector`` 需要 "
+"vLLM 0.32.0 或更高版本，并且两端都要设置 ``VLLM_USE_V2_MODEL_RUNNER=1`` 。示例见 "
+"``samples/disaggregation/vllm/1e1p1d-ec-nixl.yaml`` 。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:351
 msgid ""
 "Encode pods can also sit in front of pods that serve the whole request, "
 "with no prefill/decode split (E+PD). With any routing strategy other than"
@@ -660,18 +750,19 @@ msgstr ""
 "就是 EC 消费者。encode 阶段在转发请求之前执行，因此如果 encode Pod 停止响应，每个多模态请求最多会被延迟 prefill "
 "请求超时时间（ ``AIBRIX_PREFILL_REQUEST_TIMEOUT`` ，默认 30 秒）。示例见 ``samples/disaggregation/vllm/1e1pd.yaml`` 。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:349
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:353
 msgid ""
 "See vLLM's `disaggregated encoder "
 "<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ documentation"
-" for the encoder flags. Connectors that need per-request transfer handles"
-" from the gateway are not supported yet."
+" for the encoder flags. Connectors that need the gateway to pick the "
+"consumer before encoding, such as ``ECMooncakeConnector``, are not "
+"supported yet."
 msgstr ""
 "编码器相关参数请参阅 vLLM 的 `disaggregated encoder "
-"<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ 文档。需要网关逐请求传递传输句柄的 "
-"connector 暂不支持。"
+"<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ 文档。需要网关在编码前选定消费者的 "
+"connector（例如 ``ECMooncakeConnector`` ）暂不支持。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:352
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:356
 msgid "Prompt-Length Bucketing"
 msgstr "Prompt 长度分桶"
 
@@ -986,16 +1077,26 @@ msgstr ""
 msgid ""
 "Each request is charged ``request_cost + new_tokens``, where "
 "``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) "
-"models the fixed scheduling and KV-transfer work that does not scale with"
-" prompt length, and ``new_tokens`` is the part of the prompt the pod "
-"actually has to compute. ``prompt_tokens`` is estimated as one token per "
-"four bytes of request body; ``new_tokens`` is derived from it by the "
-"first rule that applies:"
+"models the fixed scheduling and KV-transfer work that does not scale with "
+"prompt length, and ``new_tokens`` is the part of the prompt the pod "
+"actually has to compute. For text-only requests, ``prompt_tokens`` is "
+"estimated as one token per four bytes of request body. For chat content "
+"parts, the media URL or inline payload is removed from that byte count "
+"and a configurable per-part estimate is added instead: "
+"``AIBRIX_TOKEN_LOAD_IMAGE_TOKENS`` (default ``1024``) per image, "
+"``AIBRIX_TOKEN_LOAD_AUDIO_TOKENS`` (default ``1024``) per audio part, and "
+"``AIBRIX_TOKEN_LOAD_VIDEO_TOKENS`` (default ``2048``) per video part. "
+"``new_tokens`` is derived from it by the first rule that applies:"
 msgstr ""
 "每个请求计费为 ``request_cost + new_tokens`` ，其中 ``request_cost`` "
 "（``AIBRIX_TOKEN_LOAD_REQUEST_COST`` ，默认 ``3500`` ）建模不随 prompt 长度变化的固定调度和 "
-"KV 传输开销，``new_tokens`` 是该 Pod 实际必须计算的 prompt 部分。``prompt_tokens`` "
-"按请求体每四字节一个 token 估计；``new_tokens`` 按第一条适用规则从中推导："
+"KV 传输开销，``new_tokens`` 是该 Pod 实际必须计算的 prompt 部分。对于纯文本请求，"
+"``prompt_tokens`` 按请求体每四字节一个 token 估计。对于聊天内容中的媒体部分，会先从字节计数中"
+"移除媒体 URL 或内联载荷，再加上可配置的每部分估计：每张图片使用 "
+"``AIBRIX_TOKEN_LOAD_IMAGE_TOKENS`` （默认 ``1024``），每段音频使用 "
+"``AIBRIX_TOKEN_LOAD_AUDIO_TOKENS`` （默认 ``1024``），每段视频使用 "
+"``AIBRIX_TOKEN_LOAD_VIDEO_TOKENS`` （默认 ``2048``）。``new_tokens`` "
+"按第一条适用规则从中推导："
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:484
 msgid ""
@@ -1048,6 +1149,18 @@ msgid ""
 msgstr ""
 "**整个 prompt。** 否则对整个 prompt 计费。``token_load`` 本身不查询 prefix "
 "cache，因此没有会话头时就按这种方式计费。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:561
+msgid ""
+"The media-aware estimate recognizes the chat content-part types "
+"``image_url``, ``audio_url``, ``input_audio``, and ``video_url``. Other "
+"media shapes, such as vLLM's ``image_embeds`` / ``image_pil`` or "
+"Responses-style ``input_image``, keep the original body-byte estimate "
+"until explicit support is added."
+msgstr ""
+"媒体感知估计支持聊天内容部分类型 ``image_url``、``audio_url``、``input_audio`` "
+"和 ``video_url``。其他媒体形式，例如 vLLM 的 ``image_embeds`` / ``image_pil`` "
+"或 Responses 风格的 ``input_image``，在显式支持之前仍按原始请求体字节数估计。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:488
 msgid "**Charge lifecycle**"
@@ -1135,7 +1248,7 @@ msgid ""
 "refresh sees the same value. ``token_load`` keeps a gateway-side ledger "
 "instead, and scores each decode pod as (lower is better):"
 msgstr ""
-"将 ``decodeScorePolicy``（或 ``AIBRIX_DECODE_SCORE_POLICY``）设为 "
+"将 ``decodeScorePolicy`` （或 ``AIBRIX_DECODE_SCORE_POLICY``）设为 "
 "``token_load``，会对 decode Pod 应用同样的思路。decode Pod 从 prefill Pod 接收整段 prompt 的 "
 "KV 并一直持有到请求结束，但其他 decode 策略按请求计数，并从抓取的引擎指标读取 KV 用量，这些指标每 "
 "``AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS`` "
@@ -1148,9 +1261,10 @@ msgid ""
 "whole prompt, not the prefix-matched remainder, since the decode pod "
 "receives all of the prompt's KV. When the prefill response reports "
 "``usage.prompt_tokens``, the decode charge is replaced with that count "
-"once prefill returns; the estimate from the request body is far off for "
-"requests with media, which count inline images as their base64 text and "
-"images given by URL not at all. There is no fixed per-request cost; "
+"once prefill returns. Before that response arrives, the body estimate "
+"excludes media payloads and adds the per-part estimates above, so inline "
+"images are no longer charged by their base64 size and URL-referenced "
+"media is not treated as free. There is no fixed per-request cost; "
 "``AIBRIX_TOKEN_LOAD_REQUEST_COST`` applies to the prefill charge only. "
 "The charge is made in the same critical section as the selection and "
 "released when the request completes or its prefill call fails terminally,"
@@ -1164,13 +1278,13 @@ msgid ""
 msgstr ""
 "每个请求按其 ``prompt_tokens`` 计入所选 decode Pod：整段 prompt，而不是前缀匹配后的剩余，因为 decode "
 "Pod 会收到全部 prompt KV。prefill 响应带有 ``usage.prompt_tokens`` 时，prefill 返回后 decode "
-"计费会替换为该值；对带媒体的请求，按请求体估算偏差很大：内联图片按其 base64 文本计，通过 URL "
-"给出的图片则完全不计。没有固定的每请求成本；``AIBRIX_TOKEN_LOAD_REQUEST_COST`` 只作用于 "
-"prefill 计费。计费与选择在同一临界区内完成，并在请求完成或其 prefill 调用最终失败时释放，TTL、清理器和 "
-"``namespace/name`` 键与 prefill 账本相同。尚未到达指标的 decode Pod "
-"也按账本计分，而不是给冷启动分。``token_load`` 下会跳过 decode "
-"负载不均衡快路径：它按请求数、吞吐或排空速率挑选，而这正是本策略要取代的，持有一条长 prompt 的 Pod 请求数最少。其他 decode "
-"策略仍保留该快路径。"
+"计费会替换为该值。在该响应到达之前，请求体估算会排除媒体载荷并加上上述每部分估计，因此内联图片不再按 "
+"base64 大小计费，通过 URL 引用的媒体也不会被当作零成本。没有固定的每请求成本；"
+"``AIBRIX_TOKEN_LOAD_REQUEST_COST`` 只作用于 prefill 计费。计费与选择在同一临界区内完成，并在请求完成或其 "
+"prefill 调用最终失败时释放，TTL、清理器和 ``namespace/name`` 键与 prefill 账本相同。尚未到达指标的 "
+"decode Pod 也按账本计分，而不是给冷启动分。``token_load`` 下会跳过 decode "
+"负载不均衡快路径：它按请求数、吞吐或排空速率挑选，而这正是本策略要取代的，持有一条长 prompt 的 Pod "
+"请求数最少。其他 decode 策略仍保留该快路径。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:519
 msgid ""
@@ -1288,6 +1402,37 @@ msgstr "``3500``"
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:556
 msgid "Fixed per-request cost added to every charge, in tokens."
 msgstr "每次计费都加上的固定每请求成本，单位为 token。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:632
+msgid "``AIBRIX_TOKEN_LOAD_IMAGE_TOKENS``"
+msgstr "``AIBRIX_TOKEN_LOAD_IMAGE_TOKENS``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:633
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:636
+msgid "``1024``"
+msgstr "``1024``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:634
+msgid ""
+"Per-image token estimate added after the image URL or inline payload is "
+"excluded from the body-byte count. ``0`` disables the surcharge."
+msgstr "排除图片 URL 或内联载荷后，每张图片额外计入的 token 估计。``0`` 关闭该附加项。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:635
+msgid "``AIBRIX_TOKEN_LOAD_AUDIO_TOKENS``"
+msgstr "``AIBRIX_TOKEN_LOAD_AUDIO_TOKENS``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:637
+msgid "Per-audio-part token estimate. ``0`` disables the surcharge."
+msgstr "每段音频的 token 估计。``0`` 关闭该附加项。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:638
+msgid "``AIBRIX_TOKEN_LOAD_VIDEO_TOKENS``"
+msgstr "``AIBRIX_TOKEN_LOAD_VIDEO_TOKENS``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:640
+msgid "Per-video-part token estimate. ``0`` disables the surcharge."
+msgstr "每段视频的 token 估计。``0`` 关闭该附加项。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:557
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:818
@@ -1820,6 +1965,23 @@ msgid ""
 "Objective of the adaptive cut points: ``throughput`` (prompt token mass) "
 "or ``rps`` (request counts). An unknown value keeps the default."
 msgstr "自适应切分点的目标：``throughput`` （prompt token 质量）或 ``rps`` （请求数）。无法识别的值保持默认。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:835
+msgid "``AIBRIX_ENCODE_SELECTION_POLICY``"
+msgstr "``AIBRIX_ENCODE_SELECTION_POLICY``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:836
+msgid "``round_robin``"
+msgstr "``round_robin``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:852
+msgid ""
+"How the encode stage picks an encode pod for each media item: "
+"``round_robin``, or ``least_request`` for the encode pod with the fewest "
+"items in flight. Environment only."
+msgstr ""
+"encode 阶段为每个媒体项选择 encode Pod 时，可使用 ``round_robin`` 轮流选择，或使用 "
+"``least_request`` 选择在途项最少的 encode Pod。此策略只能通过环境变量设置。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:806
 msgid "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"

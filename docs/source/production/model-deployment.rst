@@ -113,9 +113,9 @@ Capping Model Throughput (RPS Limiting)
 What it is
 ~~~~~~~~~~
 
-``requestsPerSecond`` sets a hard cap on how many requests per second the gateway will forward to a given model. Requests that exceed the limit are rejected immediately with HTTP ``429 Too Many Requests`` before any routing or inference work is done.
+``requestsPerSecond`` sets a hard cap on how many requests per second the gateway will forward to a model under one config profile. Requests that exceed the limit are rejected immediately with HTTP ``429 Too Many Requests`` before any routing or inference work is done.
 
-This is a **model-level** cap (all users combined), distinct from the per-user RPM/TPM limits. Use it to:
+This is a **per-profile** cap (all users combined), distinct from the per-user RPM/TPM limits. Use it to:
 
 - Protect a model from accidental traffic spikes.
 - Enforce a cost budget (GPU-hours) for a model in a shared cluster.
@@ -159,12 +159,12 @@ To apply different limits per traffic class, set it per profile:
           }
         }
 
-Here, interactive traffic (``default`` profile) is capped at 100 RPS while batch traffic is limited to 20 RPS.
+Here, interactive traffic (``default`` profile) is capped at 100 RPS while batch traffic is limited to 20 RPS. Each profile counts only its own requests, so the model can receive up to 120 RPS in total. Clients choose the profile with the ``config-profile`` header; when ``authoritativeRoutingPolicy`` is ``true``, the gateway ignores the header and counts every request against the default profile.
 
 What clients see when the limit is hit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The gateway returns:
+The gateway returns the response below. When ``config-profile`` is ``auto``, the response also carries ``x-aibrix-config-profile``, set to the profile whose limit was hit:
 
 .. code-block:: text
 
@@ -176,10 +176,10 @@ The gateway returns:
 How it works internally
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-The counter is stored in Redis and incremented atomically on each request. The 1-second window resets automatically. If routing fails after the counter is incremented (e.g. no ready pods), the increment is rolled back so failed requests do not consume quota.
+Each model and profile has its own counter in Redis, incremented atomically on each request. The 1-second window resets automatically. If routing fails after the counter is incremented (e.g. no ready pods), the increment is rolled back so failed requests do not consume quota.
 
 .. note::
-    ``requestsPerSecond`` requires Redis to be enabled on the gateway plugin. Without Redis, the counter is in-process and is not shared across gateway replicas. See the `Deploying Gateway <gateway.html>`_ guide — Enabling Redis for Multi-Replica Deployments.
+    ``requestsPerSecond`` requires Redis to be enabled on the gateway plugin. All gateway replicas share the counters in Redis; a gateway running without Redis does not enforce the limit. See the `Deploying Gateway <gateway.html>`_ guide — Enabling Redis for Multi-Replica Deployments.
 
 Omit ``requestsPerSecond`` or set it to ``0`` to disable the limit.
 
@@ -190,7 +190,7 @@ Scaling RPS Limits with Replica Count
 What it is
 ~~~~~~~~~~
 
-``requestsPerSecondPerReplica`` sets a **per-replica** RPS cap instead of a fixed model-wide one. The gateway multiplies it by the model's current routable replica count to derive the effective aggregate limit, so the cap scales automatically as the model is scaled up or down. When set, it takes precedence over ``requestsPerSecond`` on the same profile.
+``requestsPerSecondPerReplica`` sets a **per-replica** RPS cap instead of a fixed total for the profile. The gateway multiplies it by the model's current routable replica count to derive the effective aggregate limit, so the cap scales automatically as the model is scaled up or down. When set, it takes precedence over ``requestsPerSecond`` on the same profile.
 
 Setting ``requestsPerSecondPerReplica`` also forces the profile's routing strategy to ``least-request`` (overriding whatever ``routingStrategy`` the profile specifies), because the per-replica figure only holds in aggregate if traffic is balanced evenly across replicas.
 
@@ -254,7 +254,7 @@ How to configure it
 What clients see when the limit is hit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Once every routable replica is at its inflight cap, the gateway returns:
+Once every routable replica is at its inflight cap, the gateway returns the response below. When ``config-profile`` is ``auto``, the response also carries ``x-aibrix-config-profile``, set to the profile whose cap was hit:
 
 .. code-block:: text
 

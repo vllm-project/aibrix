@@ -19,6 +19,7 @@ package cache
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,6 +141,9 @@ func TestDecodeLedger_WithoutRedis(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, ledger)
 	assert.EqualValues(t, 4, counts[testLedgerPodKey])
+
+	ledgerOnly := store.GetPodsDecodeLedger([]*v1.Pod{pod.Pod})
+	assert.Nil(t, ledgerOnly)
 }
 
 func TestLedgerValueFormatAndParse(t *testing.T) {
@@ -262,6 +266,111 @@ func TestGetPodsRunningRequestsAndDecodeLedger_NeverPrunesSelf(t *testing.T) {
 	require.NoError(t, err)
 	pending, ok := store.runningRequestsPendingPrunes.Load(decodeLedgerKey(testLedgerPodKey))
 	assert.Falsef(t, ok && len(pending) > 0, "own field queued for pruning: %v", pending)
+}
+
+type pipelineCommandRecorder struct {
+	mu   sync.Mutex
+	cmds [][]string
+}
+
+func (r *pipelineCommandRecorder) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (r *pipelineCommandRecorder) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+func (r *pipelineCommandRecorder) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		r.mu.Lock()
+		for _, cmd := range cmds {
+			args := cmd.Args()
+			row := make([]string, len(args))
+			for i, a := range args {
+				if s, ok := a.(string); ok {
+					row[i] = s
+				}
+			}
+			r.cmds = append(r.cmds, row)
+		}
+		r.mu.Unlock()
+		return next(ctx, cmds)
+	}
+}
+
+// GetPodsDecodeLedger reads only the live gateway set and decode-ledger hashes
+// (aibrix:dtl:*), issuing no HGETALL on aibrix:rrq:*, while preserving live/dead
+// gateway filtering, zero-token charges, and dead-ledger pruning.
+func TestGetPodsDecodeLedger_LedgerOnlyPipelineAndSemantics(t *testing.T) {
+	ctx := context.Background()
+	client := newTestRunningRequestsClient(t)
+	recorder := &pipelineCommandRecorder{}
+	client.AddHook(recorder)
+
+	store := &Store{redisClient: client}
+	pod := newTestPod(2)
+	store.metaPods.Store(testLedgerPodKey, pod)
+	markLive(t, client, "gw-a", "gw-b")
+	require.NoError(t, client.HSet(ctx, runningRequestsKey(testNamespace, testPodName), "gw-a", "3", "gw-dead", "9").Err())
+
+	nowSeconds := float64(time.Now().UnixMilli()) / 1000
+	sum := func(ages ...float64) float64 {
+		s := 0.0
+		for _, a := range ages {
+			s += nowSeconds - a
+		}
+		return s
+	}
+	setLedgerFields(t, client, map[string]string{
+		"gw-a":                           formatLedgerValue(1000, 2, sum(10, 20)),
+		"gw-b":                           formatLedgerValue(0, 1, sum(5)),
+		"gw-dead":                        formatLedgerValue(9999, 5, sum(1, 1, 1, 1, 1)),
+		runningRequestsGatewayInstanceID: formatLedgerValue(777, 1, sum(1)),
+	})
+
+	// Empty or all-nil pod slices issue no Redis commands.
+	for _, empty := range [][]*v1.Pod{nil, {}, {nil}} {
+		assert.Nil(t, store.GetPodsDecodeLedger(empty))
+	}
+	assert.Empty(t, recorder.cmds, "empty/nil pod list must not touch Redis")
+
+	ledger := store.GetPodsDecodeLedger([]*v1.Pod{nil, pod.Pod})
+	remote, ok := ledger[testLedgerPodKey]
+	require.True(t, ok)
+	assert.Equal(t, 1000.0, remote.Tokens)
+	assert.InDelta(t, 35.0, remote.Elapsed, 1.0, "gw-a (10+20) + zero-token gw-b (5)")
+
+	// Dead ledger field is queued for pruning; running-requests hash was never read or pruned.
+	pendingLedger, ok := store.runningRequestsPendingPrunes.Load(decodeLedgerKey(testLedgerPodKey))
+	require.True(t, ok, "dead gateway ledger field must be queued for pruning")
+	assert.Equal(t, []string{"gw-dead"}, pendingLedger)
+	_, prunedRRQ := store.runningRequestsPendingPrunes.Load(runningRequestsKey(testNamespace, testPodName))
+	assert.False(t, prunedRRQ, "ledger-only read must not touch aibrix:rrq:*")
+
+	// Verify exact pipeline commands: 1 ZRANGEBYSCORE + 1 HGETALL on aibrix:dtl:*, 0 on aibrix:rrq:*.
+	var zrangeCount, dtlHGetAlls, rrqHGetAlls int
+	for _, cmd := range recorder.cmds {
+		if len(cmd) == 0 {
+			continue
+		}
+		switch strings.ToLower(cmd[0]) {
+		case "zrangebyscore":
+			zrangeCount++
+		case "hgetall":
+			if len(cmd) > 1 && strings.HasPrefix(cmd[1], decodeLedgerKeyPrefix+":") {
+				dtlHGetAlls++
+			}
+			if len(cmd) > 1 && strings.HasPrefix(cmd[1], runningRequestsKeyPrefix+":") {
+				rrqHGetAlls++
+			}
+		}
+	}
+	assert.Equal(t, 1, zrangeCount)
+	assert.Equal(t, 1, dtlHGetAlls)
+	assert.Zero(t, rrqHGetAlls, "GetPodsDecodeLedger must not read aibrix:rrq:* hashes")
+
+	// A Redis failure degrades to nil, matching GetPodsRunningRequestsAndDecodeLedger.
+	deadClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond})
+	t.Cleanup(func() { _ = deadClient.Close() })
+	deadStore := &Store{redisClient: deadClient}
+	assert.Nil(t, deadStore.GetPodsDecodeLedger([]*v1.Pod{pod.Pod}))
 }
 
 // Close stops the writer goroutine and returns only after it has.

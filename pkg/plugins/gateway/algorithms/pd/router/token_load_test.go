@@ -38,8 +38,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-// tokenLoadTestConfig has no fixed per-request cost, so a request's charge is
-// exactly len(body)/4 and the assertions below can be read off the bodies.
+// tokenLoadTestConfig has no fixed per-request cost, so a text-only request's
+// charge is exactly len(body)/4 and the assertions below can be read off the bodies.
 var tokenLoadTestConfig = pd.TokenLoadConfig{KVWeight: 0.5, RequestCost: 0, TTL: 0}
 
 // newTokenLoadTestRouter builds a pd router on the token_load policy whose
@@ -103,6 +103,29 @@ func tokenLoadRequest(t *testing.T, requestID string, bodyBytes int) *types.Rout
 	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(body)
 	return ctx
+}
+
+// TestPDRouter_TokenLoadChargesMediaAwareEstimate pins the call site: the
+// prefill ledger must use the media-aware prompt estimate rather than charging
+// an inline image by its base64 size (#3092).
+func TestPDRouter_TokenLoadChargesMediaAwareEstimate(t *testing.T) {
+	r, tokenLoad := newTokenLoadTestRouter(t, &http.Client{})
+	payload := "data:image/png;base64," + strings.Repeat("A", 64*1024)
+	body := []byte(`{"model":"token-load-model","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"` + payload + `"}}]}],"stream":true}`)
+
+	ctx := types.NewRoutingContext(context.Background(), "pd", "token-load-model", "hi", "media", "user")
+	t.Cleanup(ctx.Delete)
+	ctx.Engine = "vllm"
+	ctx.ReqPath = testChatCompletionsPath
+	ctx.ReqBody = body
+	pod := burstPod("prefill-media", "prefill", "127.0.0.1")
+
+	r.chargeTokenLoad(ctx, pod, r.prefillPolicy, nil)
+
+	want := float64(pd.EstimatePromptTokens(body))
+	active, _ := tokenLoad.GetLoad(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	assert.Equal(t, want, active)
+	assert.Less(t, active, float64(len(body)/4), "base64 payload must not dominate the charge")
 }
 
 // waitForActiveTokens polls until the sum of active tokens over pods equals
@@ -191,17 +214,18 @@ func TestPDRouter_TokenLoadSpreadsByPromptCost(t *testing.T) {
 	}
 	assert.Equal(t, float64(0.5*longBytes/4), tokenLoad.GetPriority(burstPodKey(longPod)), "only weighted KV is left")
 
-	// Request completion via the cache.RequestTracker callbacks clears the
-	// KV charge; unknown request IDs and a nil context are harmless.
-	r.DoneRequestCount(nil, "long", longCtx.Model, 0)
-	r.DoneRequestTrace(nil, "short-0", longCtx.Model, 0, 0, 0)
+	// Request completion via the cache.RequestTracker callbacks clears the KV charge. Completion
+	// carries the request's routing context (as the gateway does) so the release matches the
+	// charge's TrackerKey; an unknown request id with a nil context is still a harmless no-op.
+	r.DoneRequestCount(longCtx, longCtx.RequestID, longCtx.Model, 0)
+	r.DoneRequestTrace(shortCtxs[0], shortCtxs[0].RequestID, longCtx.Model, 0, 0, 0)
 	r.DoneRequestCount(nil, "never-routed", longCtx.Model, 0)
 	_, kv = tokenLoad.GetLoad(burstPodKey(longPod))
 	assert.Equal(t, float64(0), kv)
 	_, kv = tokenLoad.GetLoad(burstPodKey(shortPod))
 	assert.Equal(t, float64(shortBytes/4), kv, "short-1 has not completed yet")
 
-	r.DoneRequestCount(nil, "short-1", longCtx.Model, 0)
+	r.DoneRequestCount(shortCtxs[1], shortCtxs[1].RequestID, longCtx.Model, 0)
 	_, kv = tokenLoad.GetLoad(burstPodKey(shortPod))
 	assert.Equal(t, float64(0), kv)
 	assert.Equal(t, int64(0), r.AddRequestCount(longCtx, "long", longCtx.Model))

@@ -80,13 +80,13 @@ func TestExecuteCorrectsDecodeChargeFromPrefillUsage(t *testing.T) {
 			ctx.Engine = tc.engine
 			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
 			ctx.SetDecodeTarget(strings.TrimPrefix(decodeSrv.URL, "http://"), "decode-1")
-			exec.tokenLoad.AcquireDecodeWithTTL(ctx.RequestID, decodeKey, estimate, 0)
+			exec.tokenLoad.AcquireDecodeWithTTL(ctx.TrackerKey(), decodeKey, estimate, 0)
 
 			prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 			prefillKey := utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)
 			// Registered as the router's Select does, so the count below drops
 			// to 0 only once prefillDone has run (sync, or the async goroutine).
-			exec.tracker.AddPrefillRequest(ctx.RequestID, prefillKey)
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), prefillKey)
 			_ = exec.Execute(ctx, prefillPod, engine.Resolve(tc.engine), LogContext{})
 			require.Eventually(t, func() bool {
 				return exec.tracker.GetPrefillRequestCountsForPod(prefillKey) == 0

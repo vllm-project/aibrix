@@ -64,7 +64,8 @@ services:
       REDIS_PORT: "6379"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       INFERENCE_ENGINE_ENDPOINT: "http://vllm:8000"
-    command: ["sh", "-c", "aibrix_metadata --host 0.0.0.0 --port 8090"]
+    entrypoint: ["aibrix_metadata"]
+    command: ["--host", "0.0.0.0", "--port", "8090"]
     depends_on:
       redis:
         condition: service_healthy
@@ -95,7 +96,7 @@ services:
       gateway:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9901/ready"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9901 && printf 'GET /ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q 'HTTP/1.1 200' <&3"]
       <<: *healthcheck-defaults
       start_period: 5s
     networks:
@@ -226,8 +227,8 @@ services:
       # Redis connection
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      # Routing algorithm: random, least_request, prefix_cache_aware, pd (for P/D mode)
-      AIBRIX_ROUTING_ALGORITHM: ${ROUTING_ALGORITHM:-least_request}
+      # Routing algorithm: random, least-request, load-balance, prefix-cache (pd is set by --pd)
+      ROUTING_ALGORITHM: ${ROUTING_ALGORITHM:-least-request}
       # Prefix cache settings
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: tiktoken
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"

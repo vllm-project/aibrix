@@ -18,8 +18,11 @@ package routingalgorithms
 
 import (
 	"math"
+	"math/big"
+	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -130,6 +133,10 @@ func NewLoadBalanceRouterWithCache(c cache.Cache) (types.Router, error) {
 	return &loadBalanceRouter{cache: c}, nil
 }
 
+// Cache returns the cache this router reads running-request counts from, so a multi-strategy
+// blend can break score ties with the same counts (see tieBreakCache in router.go).
+func (r *loadBalanceRouter) Cache() cache.Cache { return r.cache }
+
 // ScoreAll returns the effective load of each pod (see loadBalanceScore):
 //
 //	(running + λ·queued) / EWMA(output tokens/sec) × (1 + α·(1−kvFree)²)
@@ -142,10 +149,28 @@ func NewLoadBalanceRouterWithCache(c cache.Cache) (types.Router, error) {
 // synced cache and, between scrape ticks, only reflects this gateway's local view.
 func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
+	counts, err := ctx.RunningRequests(pods, r.cache.GetPodsRunningRequests)
+	scores, scored := r.scoreWithCounts(ctx, pods, counts, err)
+	return scores, scored, nil
+}
+
+// CandidateScores implements types.CandidateScorer: the ScoreAll formula with the running
+// counts taken from memory (this gateway's own counts plus the last gateway snapshot) instead
+// of Redis. The capacity and KV inputs are scraped metrics either way. It does not go through
+// ctx.RunningRequests, so these estimates never stand in for the exact counts later readers of
+// the same decision ask for.
+func (r *loadBalanceRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	counts, ok := routeutil.ApproxRunningRequests(r.cache, readyPodList.All())
+	if !ok {
+		return nil, nil, routeutil.ErrNoRunningRequestsEstimate
+	}
+	scores, scored := r.scoreWithCounts(ctx, readyPodList.All(), counts, nil)
+	return scores, scored, nil
+}
+
+func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v1.Pod, counts map[string]int64, err error) ([]float64, []bool) {
 	scores := make([]float64, len(pods))
 	scored := make([]bool, len(pods))
-
-	counts, err := r.cache.GetPodsRunningRequests(pods)
 	capacities := r.capacities(pods)
 
 	// The request's resolved overrides carry the profile's values on top of
@@ -166,7 +191,11 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 			load += queuedWeight * queued
 		}
 		kvFree := r.kvFreeFraction(ctx, pod)
-		scores[i] = loadBalanceScore(load, capacities[i], kvFree, kvPressureAlpha, kvCriticalFree)
+		if math.IsNaN(kvFree) {
+			scores[i] = math.Inf(1)
+		} else {
+			scores[i] = loadBalanceScore(load, capacities[i], kvFree, kvPressureAlpha, kvCriticalFree)
+		}
 		scored[i] = true
 
 		if klog.V(4).Enabled() {
@@ -175,12 +204,12 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 				"pod", pod.Name,
 				"running_requests", running,
 				"capacity", capacities[i],
-				"kv_free", kvFree,
+				"kv_free", formatLoadBalanceScore(kvFree),
 				"score", formatLoadBalanceScore(scores[i]))
 		}
 	}
 
-	return scores, scored, nil
+	return scores, scored
 }
 
 // loadBalanceScore is the effective load of a replica: the work already committed to it, divided by
@@ -283,8 +312,18 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 // fixed fallback such as 1.0 would be off by the tokens/sec scale (thousands) against measured pods
 // and shut the new pod out of the traffic it needs to be measured. With no estimate anywhere every
 // pod gets 1.0, which makes the score plain load × KV penalty.
+//
+// The same uniform 1.0 applies while any candidate is still warming up (see
+// capacityWarmingUp): its estimate covers less than one rate window, so it is not yet comparable
+// with the other pods' estimates.
 func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 	caps := make([]float64, len(pods))
+	if r.capacityWarmingUp(pods, time.Now()) {
+		for i := range caps {
+			caps[i] = 1.0
+		}
+		return caps
+	}
 	sum, known := 0.0, 0
 	for i, pod := range pods {
 		v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokenRateEWMA)
@@ -310,17 +349,84 @@ func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 	return caps
 }
 
-// kvFreeFraction returns the pod's free KV-cache fraction in [0, 1]. A pod whose engine does not
-// report KV usage is treated as fully free: no penalty and no guardrail, rather than penalizing
-// engines that simply lack the metric. A NaN reading (e.g. 0/0 in the engine) is treated the same
-// way: math.Min/Max propagate NaN, and a NaN free fraction would compare false against the
-// guardrail and turn the pod's score into NaN, which never wins a comparison in Route.
+const (
+	loadBalanceCapacityWarmupEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP"
+	// One full window of the rate behind RealtimeOutputTokenRateEWMA (window1mTarget in
+	// pkg/cache/utils.go). Keep the two in step.
+	loadBalanceCapacityWarmupDefault = time.Minute
+)
+
+// loadBalanceCapacityWarmup is how long after a pod becomes routable its capacity estimate is
+// not trusted. Until a pod has a full window of history, its output-token rate is divided by the
+// time since its own first snapshot, not by the window. Pods that became routable at different
+// times therefore divide the same traffic by different lengths of time, and the pod with the
+// shorter history looks faster, attracts more traffic, and its estimate then grows with the
+// traffic it gets. In #3450 a split set in the first ~10 s after a rollout held at 73:27. Once
+// every candidate has a full window the estimates are comparable. On by default; 0 disables it.
+var loadBalanceCapacityWarmup = loadLoadBalanceCapacityWarmup()
+
+// loadLoadBalanceCapacityWarmup reads loadBalanceCapacityWarmupEnv. utils.LoadEnvDuration rejects
+// non-positive values and falls back to the (positive) default, so an explicit "0" has to be
+// handled here for it to be an off switch (same as least-request's ramp window).
+func loadLoadBalanceCapacityWarmup() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(loadBalanceCapacityWarmupEnv)); err == nil && d == 0 {
+		klog.Infof("set %s: 0, load-balance capacity warm-up disabled", loadBalanceCapacityWarmupEnv)
+		return 0
+	}
+	return utils.LoadEnvDuration(loadBalanceCapacityWarmupEnv, loadBalanceCapacityWarmupDefault)
+}
+
+// capacityWarmingUp reports whether any of pods became routable less than
+// loadBalanceCapacityWarmup ago. It uses the readySince the cache keeps for
+// LeastRequestTopKRouter's ramp, so a cache without it (cache.PodReadySinceProvider), or a pod it
+// has no time for, counts as warm.
+//
+// The window lasts while any candidate is younger than it, so across a rolling update or a
+// scale-up ramp that is the whole rollout plus one window, and a mixed-hardware pool routes
+// without the capacity term for that long.
+//
+// LatestPodReadySince keeps the per-pod read off the hot path once the whole fleet is warm. It
+// is the newest stamp in the whole cache, so a pod becoming routable for any model sends every
+// call down the per-pod read for one window.
+func (r *loadBalanceRouter) capacityWarmingUp(pods []*v1.Pod, now time.Time) bool {
+	window := loadBalanceCapacityWarmup
+	if window <= 0 {
+		return false
+	}
+	provider, ok := r.cache.(cache.PodReadySinceProvider)
+	if !ok {
+		return false
+	}
+	nowNanos := now.UnixNano()
+	if latest := provider.LatestPodReadySince(); latest == 0 || time.Duration(nowNanos-latest) >= window {
+		return false
+	}
+	readySince, err := provider.GetPodsReadySince(pods)
+	if err != nil {
+		return false
+	}
+	for _, pod := range pods {
+		rs := readySince[utils.GeneratePodKey(pod.Namespace, pod.Name)]
+		if rs != 0 && time.Duration(nowNanos-rs) < window {
+			return true
+		}
+	}
+	return false
+}
+
+// kvFreeFraction returns free KV in [0, 1], or NaN as the internal stale-record
+// sentinel. Never-reported KV and invalid NaN readings remain neutral (fully free).
+// ScoreAll converts the stale sentinel to +Inf, preferring fresh peers while retaining
+// the existing all-candidates fallback.
 func (r *loadBalanceRouter) kvFreeFraction(ctx *types.RoutingContext, pod *v1.Pod) float64 {
-	v, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
-	if err != nil || v == nil {
+	usage, ok, reason := routeutil.ReadKVUsage(r.cache, pod, ctx.Model, metrics.KVCacheUsagePerc, time.Now(), cache.RoutingMetricStaleThreshold())
+	if reason == "stale" {
+		// NaN is an internal sentinel; ScoreAll emits +Inf, including when the guardrail is disabled.
+		return math.NaN()
+	}
+	if !ok {
 		return 1.0
 	}
-	usage := v.GetSimpleValue()
 	if math.IsNaN(usage) {
 		return 1.0
 	}
@@ -348,7 +454,7 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 	imbalanceFactor := lb.ImbalanceFactor
 	imbalanceMinGap := lb.ImbalanceMinGap
 
-	podRequestCount := routeutil.GetRequestCounts(c, readyPods)
+	podRequestCount := routeutil.RequestCounts(ctx, c, readyPods)
 	leastPods, minValue, maxValue, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods, imbalanceFactor, imbalanceMinGap)
 	if !imbalanced {
 		return readyPods
@@ -385,15 +491,11 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 }
 
 // getTargetPodListOnLoadImbalance returns the least-loaded pods when load is severely skewed.
-// The absolute gap must be at least podRunningRequestImbalanceMinGap. For 3+ pods the busiest
-// pod must also exceed podRunningRequestImbalanceFactor*(meanOfOthers+1), where meanOfOthers
-// excludes the busiest pod itself. Excluding it matters: folding the busiest pod's own count
-// into the baseline it's compared against makes the baseline rise in lockstep as that pod gets
-// busier, so the check keeps almost-but-not-quite firing (the busiest pod would need to reach
-// roughly factor times the *combined* load of every other pod before triggering, not factor
-// times a typical pod's load) — silently permitting severe, worsening imbalance. Two pods skip
-// the factor check: with the default factor of 2, max > 2*(mean+1) reduces to max > max+2 and
-// never fires, which would disable hotspot protection on the common 2-replica deployment.
+// The absolute gap must be at least podRunningRequestImbalanceMinGap. With two pods, the
+// absolute gap alone determines whether the gate triggers. With three or more pods, the
+// busiest count must also exceed podRunningRequestImbalanceFactor*(meanOfOthers+1), where
+// meanOfOthers excludes one busiest pod. This keeps the relative threshold tied
+// to peer load as that pod's own count rises.
 //
 // TODO: "load" here is raw running-request count, with no notion of each pod's capacity. In a
 // heterogeneous pool this conflates "carrying a lot of work" with "overloaded": a pod that is
@@ -410,14 +512,21 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 	}
 
 	minValue = -1
-	sum := 0
+	var sumOfOthers uint64
+	needsWideSum := false
 	for _, v := range podRequestCount {
-		sum += v
 		if minValue < 0 || v < minValue {
 			minValue = v
 		}
-		if v > maxValue {
-			maxValue = v
+		// Keep one maximum out of the sum and round only at the final comparison.
+		other := min(v, maxValue)
+		maxValue = max(v, maxValue)
+		// Routing expects non-negative running-request counts.
+		// Guard the uint64 conversion if a caller supplies a negative count.
+		if other < 0 || uint64(other) > math.MaxUint64-sumOfOthers {
+			needsWideSum = true
+		} else {
+			sumOfOthers += uint64(other)
 		}
 	}
 
@@ -425,7 +534,16 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 		return nil, minValue, maxValue, false
 	}
 	if n > 2 {
-		meanOfOthers := float64(sum-maxValue) / float64(n-1)
+		otherTotal := float64(sumOfOthers)
+		if needsWideSum {
+			var sum, term big.Int
+			for _, v := range podRequestCount {
+				sum.Add(&sum, term.SetInt64(int64(v)))
+			}
+			sum.Sub(&sum, term.SetInt64(int64(maxValue)))
+			otherTotal, _ = sum.Float64()
+		}
+		meanOfOthers := otherTotal / float64(n-1)
 		if float64(maxValue) <= imbalanceFactor*(meanOfOthers+1) {
 			return nil, minValue, maxValue, false
 		}

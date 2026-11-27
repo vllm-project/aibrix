@@ -23,16 +23,22 @@ import (
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"go.opentelemetry.io/otel/attribute"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// errReplicaInflightExceeded is returned by selectTargetPod when every routable
-// replica is already at its config profile's requestsInflight cap.
-var errReplicaInflightExceeded = errors.New("all replicas have reached inflight limit")
+// errReplicaInflightExceeded is returned by selectTargetPod when every pod it considered is
+// already at its config profile's requestsInflight cap. The considered set is the candidate set
+// when the candidate stage narrowed it, and the ready set otherwise.
+var errReplicaInflightExceeded = errors.New("all considered replicas have reached inflight limit")
 
 func replicaInflightLimit(routingCtx *types.RoutingContext) int64 {
 	if routingCtx == nil || routingCtx.ConfigProfile == nil {
@@ -73,7 +79,7 @@ func (s *Server) enforceReplicaInflight(ctx context.Context, model string, routi
 	if !s.admitReplicaInflight(routingCtx, pod, limit) {
 		klog.InfoS("replica_inflight_exceeded", "requestID", routingCtx.RequestID, "model", model,
 			"targetPod", pod.Name, "limit", limit, "reason", "replica_at_capacity")
-		return replicaInflightExceededResponse(model, limit)
+		return withRoutingResponseHeaders(replicaInflightExceededResponse(model, limit), routingCtx, routingCtx.RequestID)
 	}
 	return nil
 }
@@ -135,17 +141,18 @@ func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router 
 }
 
 func replicaInflightExceededResponse(model string, limit int64) *extProcPb.ProcessingResponse {
-	return buildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
+	return errresp.BuildErrorResponseWithType(envoyTypePb.StatusCode_TooManyRequests,
 		fmt.Sprintf("model: %v has exceeded replica inflight limit: %v", model, limit),
-		ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
+		errresp.ErrorTypeOverloaded, ErrorCodeReplicaInflightExceeded, "",
 		HeaderErrorReplicaInflightExceeded, "true")
 }
 
 // filterSaturatedReplicaInflight drops pods whose current running-request count is
 // already at the cap. A pod missing from the batch result (not yet scraped, or not
 // found in the cache) is kept so enforceReplicaInflight can fail-open on it later.
-// Uses GetPodsRunningRequests (one Redis round trip for every candidate) rather than
-// looping a single-pod read.
+// Reads the counts through routeCtx.RunningRequests (one Redis round trip for every
+// candidate, shared with the rest of the routing decision) rather than looping a
+// single-pod read.
 //
 // This is only a best-effort pre-filter to steer selection away from saturated
 // replicas -- the actual hard cap is enforced later by enforceReplicaInflight's atomic
@@ -153,11 +160,11 @@ func replicaInflightExceededResponse(model string, limit int64) *extProcPb.Proce
 // failing open here (returning every candidate unfiltered) can at worst route to an
 // already-saturated pod, which enforceReplicaInflight will then reject; it does not
 // bypass the cap itself.
-func (s *Server) filterSaturatedReplicaInflight(pods []*v1.Pod, limit int64) []*v1.Pod {
+func (s *Server) filterSaturatedReplicaInflight(routeCtx *types.RoutingContext, pods []*v1.Pod, limit int64) []*v1.Pod {
 	if limit <= 0 || len(pods) == 0 {
 		return pods
 	}
-	running, err := s.cache.GetPodsRunningRequests(pods)
+	running, err := routeCtx.RunningRequests(pods, s.cache.GetPodsRunningRequests)
 	if err != nil {
 		return pods
 	}
@@ -172,4 +179,148 @@ func (s *Server) filterSaturatedReplicaInflight(pods []*v1.Pod, limit int64) []*
 		}
 	}
 	return kept
+}
+
+// narrowToInflightCapacity drops the pods already at the per-replica cap and reports
+// errReplicaInflightExceeded when none is left. scope names the set being filtered
+// (inflight.InflightScopeFleet or inflight.InflightScopeCandidates).
+//
+// For non-exclusive strategies selectTargetPod runs it on the candidate set, so the read it
+// performs is the bounded one; it is the first reader of the per-decision snapshot, so whatever
+// the candidate stage kept is what the rest of the decision reuses. Filtering before
+// SelectCandidates reads every ready pod and leaves the stage nothing to save (#3463).
+func (s *Server) narrowToInflightCapacity(routeCtx *types.RoutingContext, pods []*v1.Pod, scope string) ([]*v1.Pod, error) {
+	limit := replicaInflightLimit(routeCtx)
+	if limit <= 0 {
+		return pods, nil
+	}
+	kept := s.filterSaturatedReplicaInflight(routeCtx, pods, limit)
+	if len(kept) > 0 {
+		return kept, nil
+	}
+	// Every pod considered is at the cap. A full-fleet fallback would read every ready
+	// pod at the load where Redis is hottest, and a second K-pod sample would miss this
+	// decision's snapshot, so keep the existing 429 (#3463). The span records how many
+	// pods were considered, and the counter records which set that was, so a sampled-set
+	// rejection can be told from a fleet-wide one after the fact: ready_pods, set at the
+	// top of selectTargetPod, is the fleet.
+	inflight.RecordInflightRejection(routeCtx.Model, scope)
+	if routeCtx.Span != nil {
+		routeCtx.Span.SetAttributes(
+			attribute.Int("inflight_cap", int(limit)),
+			attribute.Int("inflight_considered_pods", len(pods)),
+		)
+	}
+	return nil, errReplicaInflightExceeded
+}
+
+// narrowPDToInflightCapacity applies the per-replica inflight cap to the pods PD routing can
+// actually admit and track in aibrix:rrq:* -- routable decode pods in rolesets that also have
+// a routable prefill pod, plus routable combined pods when prompt-length bucketing is enabled.
+//
+// Prefill pods, encoders, non-HTTP multi-node TP workers (pod-group-index != "0"), and orphan
+// decode pods without a prefill peer are never passed to AdmitTarget or AddRequestCount, so
+// their running-request counts stay 0. Filtering them in Redis both wastes HGETALL commands
+// and leaves non-empty leftovers when every routable decode pod is saturated, masking the 429
+// behind a downstream PD "not ready" 503.
+//
+// When pods carry no PD role/roleset labels (e.g. legacy or synthetic fixtures), this falls
+// back to narrowToInflightCapacity over the full slice. When pods are PD-labeled but have no
+// admissible target candidates (e.g. all decode or all prefill pods are unready), this returns
+// pods unchanged without a Redis read so pdRouter reports its not-ready error instead of a
+// false 429.
+func (s *Server) narrowPDToInflightCapacity(routeCtx *types.RoutingContext, pods []*v1.Pod, scope string) ([]*v1.Pod, error) {
+	if replicaInflightLimit(routeCtx) <= 0 || len(pods) == 0 {
+		return pods, nil
+	}
+	targets, passthrough, hasLabeledPD := partitionPDInflightTargets(routeCtx, pods)
+	if !hasLabeledPD {
+		return s.narrowToInflightCapacity(routeCtx, pods, scope)
+	}
+	if len(targets) == 0 {
+		return pods, nil
+	}
+	keptTargets, err := s.narrowToInflightCapacity(routeCtx, targets, scope)
+	if err != nil {
+		return nil, err
+	}
+	if len(passthrough) == 0 {
+		return keptTargets, nil
+	}
+	out := make([]*v1.Pod, 0, len(keptTargets)+len(passthrough))
+	out = append(out, keptTargets...)
+	out = append(out, passthrough...)
+	return out, nil
+}
+
+// partitionPDInflightTargets splits PD readyPods into inflight-checked target candidates
+// (routable decode pods in prefill-backed rolesets, plus combined spillover pods when
+// prompt-length bucketing is enabled) and non-target passthrough pods (prefill, encode,
+// non-HTTP TP workers, and pods in incomplete or non-matching-bucket rolesets).
+// hasLabeledPD is false when no pod carries both PD roleset and role labels.
+func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) (targets, passthrough []*v1.Pod, hasLabeledPD bool) {
+	bucketing := routeCtx != nil && routeCtx.RoutingOverrides().PD.PromptLengthBucketing
+	var promptLength int
+	if bucketing {
+		promptLength, _ = routeCtx.PromptLength()
+	}
+	var cfgCache map[string]*types.RoutingConfig
+
+	var prefillRolesets map[string]struct{}
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		roleSetID, hasRoleset := pod.Labels[pd.RoleSetLabel]
+		roleID, hasRole := pod.Labels[pd.RoleLabel]
+		if !hasRoleset || !hasRole {
+			continue
+		}
+		hasLabeledPD = true
+		if roleID == pd.RolePrefill && pd.IsPodWithHTTPServer(pod) {
+			if bucketing && !pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache), promptLength) {
+				continue
+			}
+			if prefillRolesets == nil {
+				prefillRolesets = make(map[string]struct{})
+			}
+			prefillRolesets[roleSetID] = struct{}{}
+		}
+	}
+	if !hasLabeledPD {
+		return nil, nil, false
+	}
+
+	targets = make([]*v1.Pod, 0, len(pods)/2+1)
+	passthrough = make([]*v1.Pod, 0, len(pods)/2+1)
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		if roleSetID, roleID, ok := pd.RoutablePDLabels(pod); ok {
+			switch roleID {
+			case pd.RoleDecode:
+				if _, ok := prefillRolesets[roleSetID]; ok {
+					if !bucketing || pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache), promptLength) {
+						targets = append(targets, pod)
+						continue
+					}
+				}
+			case pd.RolePrefill:
+				// Never admitted via AdmitTarget / aibrix:rrq:*.
+			default:
+				// Covers combined spillover pods and any future non-prefill/decode roles
+				// (excluding encoders, which never run through AdmitTarget).
+				if bucketing && !encode.IsEncoder(pod) {
+					cfg := pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache)
+					if pd.IsCombinedRoutingConfig(cfg) && pd.IsPromptLengthInBucket(cfg, promptLength) {
+						targets = append(targets, pod)
+						continue
+					}
+				}
+			}
+		}
+		passthrough = append(passthrough, pod)
+	}
+	return targets, passthrough, true
 }

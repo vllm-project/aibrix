@@ -35,7 +35,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -104,8 +106,10 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		}
 	}
 
-	// Resolve model config profile from annotation and apply overrides
-	applyConfigProfile(routingCtx, podsArr.All())
+	// Resolve the model config profile and apply overrides. A config that
+	// discovery supplied for the model is used ahead of pod annotations.
+	routingCtx.ModelConfig = modelConfigFromCache(s.cache, model)
+	applyConfigProfileFromPodList(routingCtx, podsArr)
 
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
@@ -118,7 +122,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		}
 		if routingAlgorithm, ok = s.routerManager.Validate(strategy); !ok {
 			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
+			return errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		routingCtx.Algorithm = routingAlgorithm
 	}
@@ -139,7 +143,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	if err := validateRoutingStrategyForPath(requestPath, routingAlgorithm, routingCtx.Engine); err != nil {
 		klog.ErrorS(err, "unsupported routing strategy for endpoint", "requestID", requestID, "requestPath", requestPath, "routingStrategy", routingAlgorithm)
-		return buildErrorResponseWithType(envoyTypePb.StatusCode_BadRequest, err.Error(), ErrorTypeInvalidRequest, ErrorCodeUnsupportedRoutingStrategy, "", HeaderErrorRouting, "true"), model, stream, term
+		return errresp.BuildErrorResponseWithType(envoyTypePb.StatusCode_BadRequest, err.Error(), errresp.ErrorTypeInvalidRequest, ErrorCodeUnsupportedRoutingStrategy, "", HeaderErrorRouting, "true"), model, stream, term
 	}
 
 	// The tier the caller declared is mapped onto the body that is forwarded
@@ -156,7 +160,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	// xdit engine uses /generate and /generatevideo endpoints
 	// vllm/vllm-omni uses OpenAI-compatible /v1/images/generations
 	if rewritePath := getEngineBasedPathRewrite(requestPath, podsArr.All()); rewritePath != "" {
-		headers = buildEnvoyProxyHeaders(headers, ":path", rewritePath)
+		headers = errresp.BuildEnvoyProxyHeaders(headers, ":path", rewritePath)
 	}
 
 	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
@@ -171,14 +175,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	if routingAlgorithm == routing.RouterNotSet {
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
-			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
+			return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		// The response replaces the upstream body with routingCtx.ReqBody, and
 		// routing as well as the priority mapping above may have changed its
 		// size. Envoy validates the upstream request against this header, so it
 		// always describes the body that is actually forwarded rather than the
 		// one that arrived.
-		headers = buildEnvoyProxyHeaders(headers,
+		headers = errresp.BuildEnvoyProxyHeaders(headers,
 			HeaderModel, model,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
@@ -196,7 +200,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
 			return errRes, model, stream, term
 		}
-		headers = buildEnvoyProxyHeaders(headers,
+		headers = errresp.BuildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
 			HeaderTargetPod, targetPodIP,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
@@ -267,21 +271,78 @@ func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, request
 		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
 			invalidReqErr.Error(), "", "", HeaderErrorRouting, "true")
 	}
+	if prefillResponse, ok := buildPrefillErrorResponse(routingCtx, requestID, err); ok {
+		return prefillResponse
+	}
 	if errors.Is(err, types.ErrTargetReplicaInflightExceeded) {
 		limit := replicaInflightLimit(routingCtx)
 		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "replica_at_capacity")
-		return replicaInflightExceededResponse(model, limit)
+		return withRoutingResponseHeaders(replicaInflightExceededResponse(model, limit), routingCtx, requestID)
 	}
 	if errors.Is(err, errReplicaInflightExceeded) {
 		limit := replicaInflightLimit(routingCtx)
 		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
-		return replicaInflightExceededResponse(model, limit)
+		return withRoutingResponseHeaders(replicaInflightExceededResponse(model, limit), routingCtx, requestID)
 	}
 	if externalResponse, ok := buildExternalRouterErrorResponse(routingCtx, requestID, err); ok {
 		klog.ErrorS(err, "external routing decision failed", "requestID", requestID, "model", model)
 		return externalResponse
 	}
 	return nil
+}
+
+// buildPrefillErrorResponse forwards an error the synchronous prefill leg
+// returned for the request: a 4xx the engine raised while judging it (bad
+// sampling parameter, unsupported media) or a 5xx from the engine itself. The
+// prefill pod was selected and reachable, so this is the engine's answer, not a
+// routing failure: the body is normalized like a non-PD upstream error and sent
+// with the engine's status.
+//
+// A 5xx carries x-error-pd-prefill because the status alone does not say which
+// leg failed; a 4xx does not, being the engine's verdict on the request and
+// matching what a non-PD pod returns. A transport failure (unreachable pod,
+// reset, unreadable response, timeout) keeps the 503 and carries the same marker
+// and underlying error. Statuses Envoy cannot emit keep the caller's 503.
+func buildPrefillErrorResponse(routingCtx *types.RoutingContext, requestID string, err error) (*extProcPb.ProcessingResponse, bool) {
+	var transportErr *pd.PrefillTransportError
+	if errors.As(err, &transportErr) {
+		klog.InfoS("prefill_transport_error", "requestID", requestID)
+		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
+			truncatePrefillMessage(fmt.Sprintf("prefill request failed (transport): %v", transportErr.Err)), "", "",
+			HeaderErrorPDPrefill, "true"), true
+	}
+
+	var prefillErr *pd.PrefillHTTPError
+	if !errors.As(err, &prefillErr) || prefillErr == nil || prefillErr.StatusCode < 400 {
+		return nil, false
+	}
+	// Envoy validates ImmediateResponse status as defined_only, so a code the enum
+	// has no name for cannot be sent and keeps the generic 503 instead. This also
+	// rejects anything above 599.
+	if _, ok := envoyTypePb.StatusCode_name[int32(prefillErr.StatusCode)]; !ok {
+		return nil, false
+	}
+	statusCode := envoyTypePb.StatusCode(prefillErr.StatusCode)
+	var marker []string
+	if prefillErr.StatusCode >= 500 {
+		marker = []string{HeaderErrorPDPrefill, "true"}
+	}
+	klog.InfoS("prefill_engine_error", "requestID", requestID, "status_code", prefillErr.StatusCode)
+
+	// The response status is the engine's status from PrefillHTTPError, so no header
+	// status is passed: the body is rendered from the engine payload alone, and an
+	// explicit "code" in it stays the engine's own, as on the non-PD path.
+	body, _, ok := normalizeUpstreamErrorBody([]byte(prefillErr.Body), 0)
+	if !ok {
+		// A non-JSON body (plain text, a proxy page) is the engine's answer too:
+		// pass it through as the message, bounded like the transport message.
+		message := truncatePrefillMessage(prefillErr.Body)
+		if message == "" {
+			message = fmt.Sprintf("prefill request failed with status %d", prefillErr.StatusCode)
+		}
+		return buildRoutingErrorResponse(routingCtx, requestID, statusCode, message, "", "", marker...), true
+	}
+	return buildRoutingErrorResponseWithBody(routingCtx, requestID, statusCode, body, marker...), true
 }
 
 func buildExternalRouterErrorResponse(routingCtx *types.RoutingContext, requestID string, err error) (*extProcPb.ProcessingResponse, bool) {
@@ -303,12 +364,35 @@ func buildRoutingErrorResponse(
 	errBody, errorCode, param string,
 	headers ...string,
 ) *extProcPb.ProcessingResponse {
-	response := buildErrorResponse(statusCode, errBody, errorCode, param, headers...)
+	return withRoutingResponseHeaders(
+		errresp.BuildErrorResponse(statusCode, errBody, errorCode, param, headers...), routingCtx, requestID)
+}
+
+// buildRoutingErrorResponseWithBody is buildRoutingErrorResponse for a body that is
+// already an OpenAI-shaped error payload and must reach the client verbatim.
+func buildRoutingErrorResponseWithBody(
+	routingCtx *types.RoutingContext,
+	requestID string,
+	statusCode envoyTypePb.StatusCode,
+	body string,
+	headers ...string,
+) *extProcPb.ProcessingResponse {
+	return withRoutingResponseHeaders(
+		errresp.BuildErrorResponseWithBody(statusCode, body, errresp.BuildEnvoyProxyHeaders(nil, headers...)), routingCtx, requestID)
+}
+
+// withRoutingResponseHeaders adds the request id and the target-pod headers the
+// routing context recorded to an immediate error response. It copies RespHeaders
+// unfiltered, unlike HandleResponseHeaders under authoritativeRoutingPolicy. So under a
+// requestsInflight cap, a router must add its headers only after the target is admitted:
+// by AdmitTarget in Route, or by the gateway before PostRouteUpdate. A header added
+// earlier would reach the 429 for a pod that was refused.
+func withRoutingResponseHeaders(response *extProcPb.ProcessingResponse, routingCtx *types.RoutingContext, requestID string) *extProcPb.ProcessingResponse {
 	setHeaders := response.GetImmediateResponse().GetHeaders().GetSetHeaders()
-	setHeaders = buildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
+	setHeaders = errresp.BuildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
 	if routingCtx != nil {
 		for key, value := range routingCtx.RespHeaders {
-			setHeaders = buildEnvoyProxyHeaders(setHeaders, key, value)
+			setHeaders = errresp.BuildEnvoyProxyHeaders(setHeaders, key, value)
 		}
 	}
 	response.GetImmediateResponse().GetHeaders().SetHeaders = setHeaders
@@ -373,16 +457,16 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 			}
 		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
-		return nil, generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
+		return nil, errresp.GenerateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}}},
 			fmt.Sprintf("model %s does not exist", model), ErrorCodeModelNotFound, "model")
 	}
 
 	podsArr, err := s.cache.ListPodsByModel(model)
-	if err != nil || podsArr == nil || utils.CountRoutablePods(podsArr.All()) == 0 {
+	if err != nil || podsArr == nil || countRoutablePodsFromList(podsArr) == 0 {
 		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
-		return nil, generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		return nil, errresp.GenerateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorNoModelBackends, RawValue: []byte("true")}}},
 			fmt.Sprintf("error on getting pods for model %s", model), ErrorCodeServiceUnavailable, "")
@@ -410,7 +494,7 @@ func modelClaimRetryResponse(model, state, reason string, retry, wakeRequested b
 		})
 		message += "; retry shortly"
 	}
-	return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
+	return errresp.GenerateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
 		message,
 		ErrorCodeServiceUnavailable, "model")
 }
@@ -425,6 +509,14 @@ var modelClaimReasonsNotRetried = map[string]struct{}{
 	"InvalidEngineConfig":                        {},
 	"InvalidPerGPU":                              {},
 }
+
+const (
+	modelClaimRetryAfterSeconds = 10
+	// A sleeping model gets an earlier chance to be retried than one that starts
+	// from scratch. Whether it is ready is still up to the controller and the
+	// gateway cache.
+	modelClaimWakeRetryAfterSeconds = 3
+)
 
 // modelClaimRetryAfterByReason is how long a client is asked to wait, by the
 // reason the controller gives, when that is longer than a wake or a start

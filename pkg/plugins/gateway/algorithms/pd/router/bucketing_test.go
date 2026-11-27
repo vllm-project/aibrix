@@ -195,6 +195,57 @@ func TestIsCombinedPod_TrueInAnnotation(t *testing.T) {
 	assert.True(t, isCombinedPod(ctx, pod))
 }
 
+// A model-level config (local mode's endpoints file) is read ahead of the pod
+// annotation by both per-pod profile lookups.
+func TestPodProfile_ModelConfig(t *testing.T) {
+	r := newRouterForBucketingTests()
+	modelConfig := `{"defaultProfile":"pd","profiles":{` +
+		`"pd":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":10,"promptLenBucketMaxLength":50,"combined":true}},` +
+		`"long":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":1000,"promptLenBucketMaxLength":2000,"combined":false}}}}`
+	tests := []struct {
+		name          string
+		modelConfig   string
+		configProfile string
+		pod           *v1.Pod
+		wantSuitable  bool
+		wantCombined  bool
+	}{
+		{
+			name:         "model config applies to a pod without annotation",
+			modelConfig:  modelConfig,
+			pod:          makePDPod("p", "rs", "prefill", nil),
+			wantSuitable: true,
+			wantCombined: true,
+		},
+		{
+			name:          "config-profile picks a model config profile",
+			modelConfig:   modelConfig,
+			configProfile: "long",
+			pod:           makePDPod("p", "rs", "prefill", nil),
+		},
+		{
+			name:         "model config wins over the pod annotation",
+			modelConfig:  modelConfig,
+			pod:          podWithBucketAnnotation("p", "rs", "prefill", 100, 200, false),
+			wantSuitable: true,
+			wantCombined: true,
+		},
+		{
+			name: "no model config keeps the pod annotation",
+			pod:  podWithBucketAnnotation("p", "rs", "prefill", 100, 200, false),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "pd", "model", "msg", "req", "user")
+			ctx.ModelConfig = tt.modelConfig
+			ctx.ReqConfigProfile = tt.configProfile
+			assert.Equal(t, tt.wantSuitable, r.isPodSuitableForPromptLength(ctx, tt.pod, 30))
+			assert.Equal(t, tt.wantCombined, isCombinedPod(ctx, tt.pod))
+		})
+	}
+}
+
 // --- shouldPickCombined ---
 
 // makePodWithRequestRateMetrics creates a pod with the given model label and

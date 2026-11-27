@@ -78,6 +78,9 @@ type ReplicaComputeResult struct {
 	Reason                    string
 	Valid                     bool
 	PendingReplicaGuardActive bool
+	// FailedMetrics names the metric sources that failed while the others
+	// produced this recommendation, so callers can say it rests on partial data.
+	FailedMetrics []string
 }
 
 // DefaultAutoScaler implements the complete scaling pipeline
@@ -216,6 +219,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 
 	var validResults []*ReplicaComputeResult // to record the recommended result calculated in the current round
 	var anyValid bool
+	var failedMetrics []string
 
 	for _, metricSource := range metricsSources {
 		// Extract per-request configuration
@@ -234,11 +238,15 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 				"metric", metricSource.TargetMetric,
 				"metricSourceType", metricSource.MetricSourceType)
 			// Continue processing other metrics — one failure shouldn't block all
+			failedMetrics = append(failedMetrics, metricSource.TargetMetric)
 			continue
 		}
 
 		if result.Valid {
 			anyValid = true
+			// Guard each metric before taking the max, so trimming the winner for pending
+			// replicas never drops the result below what another metric asks for.
+			result = applyPendingReplicaGuard(request, result)
 			validResults = append(validResults, result)
 			klog.V(4).InfoS("Computed replicas for metric",
 				"PodAutoscaler", klog.KObj(&pa),
@@ -252,7 +260,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 	}
 
 	if !anyValid {
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("all %d metric sources failed for "+
+		return &ReplicaComputeResult{Valid: false, FailedMetrics: failedMetrics}, fmt.Errorf("all %d metric sources failed for "+
 			"PodAutoscaler %s/%s", len(metricsSources), pa.Namespace, pa.Name)
 	}
 
@@ -277,8 +285,6 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		"currentReplicas", request.CurrentReplicas,
 	)
 
-	bestResult = applyPendingReplicaGuard(request, bestResult)
-
 	return &ReplicaComputeResult{
 		DesiredReplicas:           bestResult.DesiredReplicas,
 		Algorithm:                 bestResult.Algorithm,
@@ -288,6 +294,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		Reason:                    bestResult.Reason,
 		Valid:                     true,
 		PendingReplicaGuardActive: bestResult.PendingReplicaGuardActive,
+		FailedMetrics:             failedMetrics,
 	}, nil
 }
 
@@ -382,15 +389,15 @@ func computePendingAdjustedReplicas(
 ) int32 {
 	switch request.PodAutoscaler.Spec.ScalingStrategy {
 	case autoscalingv1alpha1.APA:
-		return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
+		return int32(algorithm.CeilPodCount(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
 	case autoscalingv1alpha1.KPA:
 		if result.DesiredReplicas < request.CurrentReplicas {
-			return int32(math.Ceil((result.MetricValue*float64(readyReplicas) + targetValue*float64(pendingReplicas)) / targetValue))
+			return int32(algorithm.CeilPodCount((result.MetricValue*float64(readyReplicas) + targetValue*float64(pendingReplicas)) / targetValue))
 		}
 		if algorithm.IsPerPodSource(result.MetricSourceType) {
-			return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
+			return int32(algorithm.CeilPodCount(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
 		}
-		return int32(math.Ceil(adjustedMetricValue / targetValue))
+		return int32(algorithm.CeilPodCount(adjustedMetricValue / targetValue))
 	default:
 		return result.DesiredReplicas
 	}

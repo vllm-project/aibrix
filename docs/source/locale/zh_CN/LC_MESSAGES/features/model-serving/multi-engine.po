@@ -989,160 +989,229 @@ msgstr ""
 "、``enable_iter_perf_stats: true`` 和 ``enable_iter_req_stats: true`` "
 "时才会发出性能指标。"
 
-#: ../../source/features/model-serving/multi-engine.rst:379
-msgid "SGLang Decisions API"
-msgstr "SGLang Decisions API"
+#: ../../source/features/model-serving/multi-engine.rst:394
+msgid "Decisions API"
+msgstr "Decisions API"
 
-#: ../../source/features/model-serving/multi-engine.rst:381
+#: ../../source/features/model-serving/multi-engine.rst:396
 msgid ""
-"SGLang serves ``POST /v1/decisions``, which answers typed ``choice``, "
-"``score`` and ``yes_no`` questions about an input by scoring answer "
-"labels, without generating text. The gateway routes it to the pods of the"
-" requested model, like the other model endpoints:"
+"``POST /v1/decisions`` answers typed questions about an input by scoring "
+"answer labels, without generating text. vLLM and SGLang both serve it, "
+"but in different request formats. The gateway routes it to the pods of "
+"the requested model, like the other model endpoints."
 msgstr ""
-"SGLang 提供 ``POST /v1/decisions``。它通过对答案标签打分来回答关于一段输入的 "
-"``choice``、``score`` 和 ``yes_no`` 问题，而不生成文本。网关像其他模型端点一样，把它路由到所请求模型的 Pod："
+"``POST /v1/decisions`` 通过对答案标签打分来回答关于一段输入的带类型问题，而不生成文本。vLLM 和 SGLang "
+"都提供该接口，但请求格式不同。网关像其他模型端点一样，把它路由到所请求模型的 Pod。"
 
-#: ../../source/features/model-serving/multi-engine.rst:401
+#: ../../source/features/model-serving/multi-engine.rst:400
+msgid "vLLM serves OpenAI's Decisions API:"
+msgstr "vLLM 提供 OpenAI 的 Decisions API："
+
+#: ../../source/features/model-serving/multi-engine.rst:421
+msgid ""
+"SGLang serves its own format, an SGLang extension that is not part of the"
+" OpenAI API:"
+msgstr "SGLang 提供它自己的格式。这是 SGLang 的扩展，不属于 OpenAI API："
+
+#: ../../source/features/model-serving/multi-engine.rst:439
 msgid "What differs from the other endpoints:"
 msgstr "与其他端点的不同之处："
 
-#: ../../source/features/model-serving/multi-engine.rst:403
+#: ../../source/features/model-serving/multi-engine.rst:441
 msgid ""
 "``model`` is required. SGLang treats it as optional and echoes a default,"
 " but the gateway needs it to select a pod, so a request without one is "
 "rejected with ``400``."
 msgstr "``model`` 必填。SGLang 把它当作可选并回显一个默认值，但网关需要它来选择 Pod，因此缺少该字段的请求会以 ``400`` 拒绝。"
 
-#: ../../source/features/model-serving/multi-engine.rst:405
+#: ../../source/features/model-serving/multi-engine.rst:443
 msgid ""
-"``input`` is required and may be a string, an object or an array. The "
-"gateway uses it, with objects and arrays compacted to JSON text, as the "
-"routing text for prefix-cache-aware routing. ``questions`` must be a non-"
-"empty array. The question schema itself is validated by SGLang."
+"``input`` is required. In SGLang's format it may be a string, an object "
+"or an array; in OpenAI's format it is a string or an array of user "
+"messages. The gateway accepts both, and uses it, with objects and arrays "
+"compacted to JSON text, as the routing text for prefix-cache-aware "
+"routing. For user messages that text is the JSON of the array, not the "
+"prompt the engine renders, so the cache-affinity estimate is only "
+"approximate. ``questions`` must be a non-empty array in both formats. The"
+" question schema itself is validated by the engine."
 msgstr ""
-"``input`` 必填，可以是字符串、对象或数组。网关把它（对象和数组会压缩成 JSON "
-"文本）用作前缀缓存感知路由的路由文本。``questions`` 必须是非空数组。问题结构本身由 SGLang 校验。"
+"``input`` 必填。在 SGLang 的格式中，它可以是字符串、对象或数组；在 OpenAI "
+"的格式中，它是字符串或用户消息数组。网关两种都接受，并把它（对象和数组会压缩成 JSON "
+"文本）用作前缀缓存感知路由的路由文本。对于用户消息，该文本是数组的 JSON，而不是引擎渲染出的 "
+"prompt，因此缓存亲和性的估计只是近似值。两种格式中 ``questions`` 都必须是非空数组。问题结构本身由引擎校验。"
 
-#: ../../source/features/model-serving/multi-engine.rst:408
+#: ../../source/features/model-serving/multi-engine.rst:449
 msgid ""
-"There is no streaming and no generation. Usage reports ``prompt_tokens`` "
-"and ``total_tokens`` only, with ``completion_tokens`` at ``0``."
+"There is no streaming and no generation. SGLang reports ``prompt_tokens``"
+" and ``total_tokens`` only, with ``completion_tokens`` at ``0``. vLLM "
+"reports ``input_tokens``, ``output_tokens`` and ``total_tokens``. The "
+"gateway meters both."
 msgstr ""
-"没有流式输出，也不生成文本。用量只报告 ``prompt_tokens`` 和 "
-"``total_tokens``，``completion_tokens`` 为 ``0``。"
+"没有流式输出，也不生成文本。SGLang 只报告 ``prompt_tokens`` 和 "
+"``total_tokens``，``completion_tokens`` 为 ``0``。vLLM 报告 "
+"``input_tokens``、``output_tokens`` 和 ``total_tokens``。网关对两者都进行计量。"
 
-#: ../../source/features/model-serving/multi-engine.rst:410
+#: ../../source/features/model-serving/multi-engine.rst:452
 msgid ""
-"``images`` are forwarded as sent. The gateway buffers the whole request "
-"body, so large base64 images count against the ``bufferLimit`` of the "
-"gateway's ``ClientTrafficPolicy`` (4 MiB by default). Raise it, together "
-"with ``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``, if you send big images."
+"Neither engine accepts a ``priority`` field here, and both reject unknown"
+" fields with ``400``. The gateway therefore never applies the "
+":ref:`priority tier <request_priority_tier>` to this endpoint, and a "
+"``priority`` the client sends is rejected by the engine."
 msgstr ""
-"``images`` 会按原样转发。网关会缓冲整个请求体，因此较大的 base64 图片计入网关 ``ClientTrafficPolicy`` "
-"的 ``bufferLimit``（默认 4 MiB）。发送大图片时，请同时提高该限制和 "
-"``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``。"
+"两个引擎在这里都不接受 ``priority`` 字段，并且都会以 ``400`` 拒绝未知字段。因此网关从不对该端点应用 :ref:`优先级层级"
+" <request_priority_tier>`，客户端自己发送的 ``priority`` 会被引擎拒绝。"
 
-#: ../../source/features/model-serving/multi-engine.rst:414
+#: ../../source/features/model-serving/multi-engine.rst:455
 msgid ""
-"The gateway does not check the engine, so a decisions request for a model"
-" served by another engine is forwarded and fails at the pod. Only route "
-"it to ``model.aibrix.ai/engine: sglang`` models."
+"SGLang's ``images`` are forwarded as sent. The gateway buffers the whole "
+"request body, so large base64 images count against the ``bufferLimit`` of"
+" the gateway's ``ClientTrafficPolicy`` (4 MiB by default). Raise it, "
+"together with ``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``, if you send big "
+"images. vLLM serves text only and rejects image input."
 msgstr ""
-"网关不检查引擎，因此发给其他引擎所服务模型的 decisions 请求会被转发，并在 Pod 上失败。请只把它路由到 "
-"``model.aibrix.ai/engine: sglang`` 的模型。"
+"SGLang 的 ``images`` 会按原样转发。网关会缓冲整个请求体，因此较大的 base64 图片计入网关 "
+"``ClientTrafficPolicy`` 的 ``bufferLimit``（默认 4 MiB）。发送大图片时，请同时提高该限制和 "
+"``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``。vLLM 只提供文本服务，会拒绝图片输入。"
 
-#: ../../source/features/model-serving/multi-engine.rst:418
-msgid "SGLang System One API"
-msgstr "SGLang System One API"
-
-#: ../../source/features/model-serving/multi-engine.rst:420
+#: ../../source/features/model-serving/multi-engine.rst:460
 msgid ""
-"SGLang's ``POST /v1/systemone`` serves the same decisions in the System "
-"One request shape: a ``state`` and a map of ``noul``, ``choice`` and "
-"``score`` questions keyed by your own ids. The gateway routes it to the "
-"pods of the requested model, like ``/v1/decisions``:"
+"The gateway does not translate between the two formats and does not check"
+" the engine, so a request for a model served by an engine that expects "
+"the other format is forwarded and fails at the pod. Route OpenAI's format"
+" only to ``model.aibrix.ai/engine: vllm`` models and SGLang's format only"
+" to ``model.aibrix.ai/engine: sglang`` models, and run a single engine "
+"across all the pods of a model that serves ``/v1/decisions``. vLLM "
+"answers ``501`` for a model without a supported read strategy."
 msgstr ""
-"SGLang 的 ``POST /v1/systemone`` 用 System One 的请求形状提供同样的决策：一个 "
-"``state``，以及由你自己的 id 作为键的 ``noul``、``choice`` 和 ``score`` 问题映射。网关像 "
+"网关不在两种格式之间转换，也不检查引擎，因此发给期望另一种格式的引擎所服务模型的请求会被转发，并在 Pod 上失败。请只把 OpenAI "
+"格式路由到 ``model.aibrix.ai/engine: vllm`` 的模型，只把 SGLang 格式路由到 "
+"``model.aibrix.ai/engine: sglang`` 的模型，并让提供 ``/v1/decisions`` 的模型的所有 Pod "
+"只运行同一种引擎。对于没有受支持读取策略的模型，vLLM 会返回 ``501``。"
+
+#: ../../source/features/model-serving/multi-engine.rst:467
+msgid "System One API"
+msgstr "System One API"
+
+#: ../../source/features/model-serving/multi-engine.rst:469
+msgid ""
+"``POST /v1/systemone`` serves the same decisions in the System One "
+"request shape: a ``state`` and a map of ``noul``, ``choice`` and "
+"``score`` questions keyed by your own ids. vLLM and SGLang both serve it "
+"in that shape. The gateway routes it to the pods of the requested model, "
+"like ``/v1/decisions``:"
+msgstr ""
+"``POST /v1/systemone`` 用 System One 的请求形状提供同样的决策：一个 ``state``，以及由你自己的 id "
+"作为键的 ``noul``、``choice`` 和 ``score`` 问题映射。vLLM 和 SGLang 都以该形状提供它。网关像 "
 "``/v1/decisions`` 一样，把它路由到所请求模型的 Pod："
 
-#: ../../source/features/model-serving/multi-engine.rst:442
+#: ../../source/features/model-serving/multi-engine.rst:492
 msgid "What differs from ``/v1/decisions``:"
 msgstr "与 ``/v1/decisions`` 的不同之处："
 
-#: ../../source/features/model-serving/multi-engine.rst:444
+#: ../../source/features/model-serving/multi-engine.rst:494
 msgid ""
-"``model`` is required and must be a model the gateway serves. SGLang "
-"accepts any name, but the gateway selects a pod with it, so a model that "
-"is not deployed is rejected with ``400`` ``model_not_found``. A client "
-"library that sends a default model name, such as the TypeSafe SDKs' "
-"``jev-latest``, has to be told to send your model's name instead."
+"``model`` is required and must be a model the gateway serves. vLLM "
+"accepts a request without one and SGLang accepts any name, but the "
+"gateway selects a pod with it, so a request without one is rejected with "
+"``400``, and so is a model that is not deployed (``model_not_found``). A "
+"client library that sends a default model name, such as the TypeSafe "
+"SDKs' ``jev-latest``, has to be told to send your model's name instead."
 msgstr ""
-"``model`` 必填，且必须是网关正在服务的模型。SGLang 接受任意名称，但网关用它选择 Pod，因此未部署的模型会以 ``400`` "
-"``model_not_found`` 拒绝。会发送默认模型名的客户端库（例如 TypeSafe SDK 的 ``jev-"
-"latest``）必须改成发送你的模型名。"
+"``model`` 必填，且必须是网关正在服务的模型。vLLM 接受不带该字段的请求，SGLang 接受任意名称，但网关用它选择 "
+"Pod，因此缺少该字段的请求会以 ``400`` "
+"拒绝，未部署的模型也会被拒绝（``model_not_found``）。会发送默认模型名的客户端库（例如 TypeSafe SDK 的 "
+"``jev-latest``）必须改成发送你的模型名。"
 
-#: ../../source/features/model-serving/multi-engine.rst:448
+#: ../../source/features/model-serving/multi-engine.rst:499
 msgid ""
 "``state`` is required and may be a string, an object or an array. Unlike "
 "a decisions ``input`` it may be empty, because SGLang accepts an empty "
 "state. The gateway uses it, with objects and arrays compacted to JSON "
-"text, as the routing text for prefix-cache-aware routing: SGLang puts the"
-" state at the head of every question's prompt, so it is the part the "
-"questions share. A pod serving a decision checkpoint renders an object "
-"state with spaces after the JSON separators, so the routing text then "
-"differs from the prompt by whitespace; this only affects the cache-"
-"affinity estimate."
+"text, as the routing text for prefix-cache-aware routing: both engines "
+"put the state at the head of every question's prompt, so it is the part "
+"the questions share. An SGLang pod serving a decision checkpoint renders "
+"an object state with spaces after the JSON separators, so the routing "
+"text then differs from the prompt by whitespace; this only affects the "
+"cache-affinity estimate."
 msgstr ""
 "``state`` 必填，可以是字符串、对象或数组。与 decisions 的 ``input`` 不同，它可以是空的，因为 SGLang 接受空"
-" state。网关把它（对象和数组会压缩成 JSON 文本）用作前缀缓存感知路由的路由文本：SGLang 把 state 放在每个问题 "
-"prompt 的开头，因此它是各问题共享的部分。提供 decision checkpoint 的 Pod 在渲染对象 state 时会在 JSON"
+" state。网关把它（对象和数组会压缩成 JSON 文本）用作前缀缓存感知路由的路由文本：两个引擎都把 state 放在每个问题 prompt "
+"的开头，因此它是各问题共享的部分。提供 decision checkpoint 的 SGLang Pod 在渲染对象 state 时会在 JSON"
 " 分隔符后加空格，于是路由文本与 prompt 只在空白上不同；这只影响缓存亲和性的估计。"
 
-#: ../../source/features/model-serving/multi-engine.rst:454
+#: ../../source/features/model-serving/multi-engine.rst:506
 msgid ""
 "``questions`` must be a non-empty object keyed by your ids. An array, the"
 " ``/v1/decisions`` shape, is rejected with ``400``. The question schema "
-"itself is validated by SGLang."
+"itself is validated by the engine."
 msgstr ""
 "``questions`` 必须是以你的 id 为键的非空对象。数组（即 ``/v1/decisions`` 的形状）会以 ``400`` "
-"拒绝。问题结构本身由 SGLang 校验。"
+"拒绝。问题结构本身由引擎校验。"
 
-#: ../../source/features/model-serving/multi-engine.rst:456
+#: ../../source/features/model-serving/multi-engine.rst:508
 msgid ""
-"There is no streaming and no generation. Usage reports ``input_tokens``, "
-"which counts the prompt of every question, so the state is counted once "
-"per question, and ``output_tokens`` at ``0``. There is no "
-"``total_tokens``: the gateway counts input plus output as the total for "
-"rate-limit and request metrics, and forwards the usage block unchanged."
+"There is no streaming and no generation. Usage reports ``input_tokens`` "
+"and ``output_tokens``. On SGLang, ``input_tokens`` counts the prompt of "
+"every question, so the state is counted once per question, and "
+"``output_tokens`` is ``0``; vLLM reports its own counts, with a non-zero "
+"``output_tokens``. Neither engine sends ``total_tokens``: the gateway "
+"counts input plus output as the total for rate-limit and request metrics,"
+" and forwards the usage block unchanged."
 msgstr ""
-"没有流式输出，也不生成文本。用量报告 ``input_tokens``，它计入每个问题的 prompt，因此 state "
-"会按问题重复计算，``output_tokens`` 为 ``0``。没有 "
+"没有流式输出，也不生成文本。用量报告 ``input_tokens`` 和 ``output_tokens``。在 SGLang "
+"上，``input_tokens`` 计入每个问题的 prompt，因此 state 会按问题重复计算，``output_tokens`` 为 "
+"``0``；vLLM 报告它自己的计数，``output_tokens`` 不为 ``0``。两个引擎都不发送 "
 "``total_tokens``：网关把输入加输出作为限流和请求指标的总量，并原样转发 usage 块。"
 
-#: ../../source/features/model-serving/multi-engine.rst:460
+#: ../../source/features/model-serving/multi-engine.rst:513
 msgid ""
-"``images`` are forwarded as sent, with the same ``bufferLimit`` caveat as"
-" for ``/v1/decisions``."
-msgstr "``images`` 会按原样转发，``bufferLimit`` 的限制与 ``/v1/decisions`` 相同。"
+"vLLM declares a top-level ``priority`` here and schedules each question's"
+" read by it; SGLang ignores the field. When the :ref:`priority tier "
+"<request_priority_tier>` is enabled, the gateway writes the tier's "
+"priority into the request body, unless the caller set one. vLLM also "
+"reads ``cache_salt``, which the gateway forwards as sent."
+msgstr ""
+"vLLM 在这里声明了顶层的 ``priority`` 字段，并按它调度每个问题的读取；SGLang 会忽略该字段。启用 :ref:`优先级层级 "
+"<request_priority_tier>` 后，网关会把该层级的优先级写入请求体，除非调用方已自行设置。vLLM 还会读取 "
+"``cache_salt``，网关按原样转发。"
 
-#: ../../source/features/model-serving/multi-engine.rst:461
+#: ../../source/features/model-serving/multi-engine.rst:517
+msgid ""
+"``images`` are forwarded as sent, and so are the ``audio`` and ``videos``"
+" that vLLM accepts, with the same ``bufferLimit`` caveat as for "
+"``/v1/decisions``."
+msgstr ""
+"``images`` 会按原样转发，vLLM 接受的 ``audio`` 和 ``videos`` 也是如此，``bufferLimit`` "
+"的限制与 ``/v1/decisions`` 相同。"
+
+#: ../../source/features/model-serving/multi-engine.rst:519
+msgid ""
+"vLLM rejects any top-level field it does not declare with ``400``, where "
+"SGLang ignores unknown fields. Other request errors the engine finds come"
+" back as ``400`` from vLLM and ``422`` from SGLang."
+msgstr ""
+"vLLM 会以 ``400`` 拒绝它未声明的任何顶层字段，而 SGLang 会忽略未知字段。引擎发现的其他请求错误，vLLM 返回 "
+"``400``，SGLang 返回 ``422``。"
+
+#: ../../source/features/model-serving/multi-engine.rst:522
 msgid ""
 "The TypeSafe SDKs time out after 10 seconds and retry. Each retry reaches"
 " the gateway as a separate request, so request counts and token usage "
 "include the retries."
 msgstr "TypeSafe SDK 在 10 秒后超时并重试。每次重试都会作为单独请求到达网关，因此请求计数和 token 用量包含这些重试。"
 
-#: ../../source/features/model-serving/multi-engine.rst:464
+#: ../../source/features/model-serving/multi-engine.rst:525
 msgid ""
-"The same engine caveat applies: a request for a model served by another "
-"engine is forwarded and fails at the pod. SGLang also serves the route "
-"only for models with a Jinja chat template; its decision-models "
-"documentation lists what it refuses."
+"Both engines read the same request shape, so a model may run either one. "
+"Send only fields the engine serving the model accepts: ``temperature``, "
+"for example, is refused by SGLang on this endpoint. SGLang also serves "
+"the route only for models with a Jinja chat template (its decision-models"
+" documentation lists what it refuses), and vLLM answers ``501`` for a "
+"model without a supported read strategy."
 msgstr ""
-"同样的引擎限制也适用：发给其他引擎所服务模型的请求会被转发，并在 Pod 上失败。SGLang 也只对带有 Jinja "
-"聊天模板的模型提供该路由；它的 decision-models 文档列出了会拒绝的情况。"
+"两个引擎读取相同的请求形状，因此一个模型可以运行其中任意一个。请只发送服务该模型的引擎所接受的字段：例如 ``temperature`` 会被 "
+"SGLang 在该端点上拒绝。SGLang 也只对带有 Jinja 聊天模板的模型提供该路由（它的 decision-models "
+"文档列出了会拒绝的情况），而对于没有受支持读取策略的模型，vLLM 会返回 ``501``。"
 
 #: ../../source/features/model-serving/multi-engine.rst:468
 msgid "SGLang Score API"

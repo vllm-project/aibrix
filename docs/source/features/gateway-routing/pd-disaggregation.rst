@@ -88,6 +88,35 @@ How PD Disaggregation Works
 
 If no complete prefill/decode pair is available for the request's prompt length — for example the prompt is outside all configured buckets, or the matching roleset is incomplete because a decode pod is down — the request falls back to a **standard inference pod** (``combined: true``) that runs both phases locally, when one is configured and its prompt-length range matches.
 
+Prefill Engine Errors
+---------------------
+
+With vLLM and TensorRT-LLM, the prefill request is synchronous: the gateway
+sends it to the prefill pod before any decode pod runs. A request the prefill
+engine refuses therefore never reaches the decode pod, and its rejection is not
+a routing failure: the prefill pod was selected and reachable, and the engine
+rejected the request body itself — a sampling parameter outside its range, or
+media the model cannot accept.
+
+Such a rejection is returned to the client unchanged: the prefill pod's HTTP
+status and its error payload (``message``, ``type``, ``param``, ``code``) reach
+the client as they were sent. No ``x-error-pd-prefill`` marker is added: the
+payload is the engine's own answer, so a disaggregated request fails with the
+same error and status a standard inference pod would have returned.
+
+A ``5xx`` from the prefill engine keeps the engine's status and message and
+carries the ``x-error-pd-prefill: true`` marker, because a server-side error
+says nothing about the request and the status alone cannot tell which leg
+failed. A standard inference pod instead answers an engine ``500`` with a
+fixed ``Internal server error`` body.
+
+A prefill pod the gateway cannot reach (connection refused or reset, or a
+timeout on the call) keeps the ``503`` status but carries the marker and the
+transport error in its message. This describes the HTTP call only: a KV
+transfer failing inside the engine, as with a push-based connector such as
+NIXL or Mooncake, surfaces as the engine's own ``5xx``, and a pull-based
+handoff such as SGLang fails on the decode side.
+
 
 Supported Engines
 -----------------
@@ -346,7 +375,9 @@ Encode Pods for Multimodal Requests (EPD)
 
 With vLLM, a roleset can also run the vision or audio encoder on its own pods, labeled ``role-name: encode`` with the same ``roleset-name`` as the prefill and decode pods. For a ``/v1/chat/completions`` request that carries ``image_url``, ``audio_url``, ``input_audio`` or ``video_url`` items, the gateway first sends each item to one of the selected roleset's encode pods, in parallel, and waits for them before the prefill request. Text-only requests, other endpoints and rolesets without encode pods route exactly as before. Encode pods are never picked as prefill, decode or standard inference pods.
 
-The request body is not changed. The encode pods store their output through vLLM's EC connector, keyed by the hash of each media item, and the prefill pod finds it under the same hash. If an item's output is not there, for example because its encode request failed, the prefill pod encodes the item itself, so a failed encode costs latency but not the request. Each encode request uses the prefill request timeout, and ``gateway_pd_encode_request_total`` counts them by ``status``.
+The media items stay on the request. The encode pods store their output through vLLM's EC connector, keyed by the hash of each media item, and the prefill pod finds it under the same hash. The gateway drops any ``ec_transfer_params`` the client sent and sets the ones the encode responses carry, if any, on the prefill request. If an item's output is not there, for example because its encode request failed, the prefill pod encodes the item itself, so a failed encode costs latency but not the request. Each encode request uses the prefill request timeout, and ``gateway_pd_encode_request_total`` counts them by ``status``.
+
+By default the gateway sends the items to the selected roleset's encode pods in turn. With ``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` it sends each item to the encode pod with the fewest items it has in flight, so an encode pod that is still working on large images does not receive the next ones while others are idle. Each gateway replica counts separately, and within a replica the ``pd`` routing strategy and the other strategies keep separate counts.
 
 Start the encode pods as encoder-only producers and the prefill pods as consumers of the same EC connector. With ``ECExampleConnector``, the encode and prefill pods must mount the same volume, such as a ``ReadWriteMany`` PVC or a ``hostPath`` on one node. Otherwise the prefill pod never finds the encoder output and encodes every item itself. ``samples/disaggregation/vllm/1e1p1d.yaml`` is a complete example:
 
@@ -361,9 +392,11 @@ Start the encode pods as encoder-only producers and the prefill pods as consumer
       --ec-transfer-config '{"ec_connector": "ECExampleConnector", "ec_role": "ec_consumer",
         "ec_connector_extra_config": {"shared_storage_path": "/ec-cache"}}'
 
+With ``ECCPUConnector`` and ``"ec_enable_nixl": true``, the prefill pod pulls each output from the encode pod over NIXL instead, so no shared volume is needed. Set ``VLLM_EC_SIDE_CHANNEL_HOST`` on the encode pods to the pod IP, since that is the address they hand out in ``ec_transfer_params``. ``ECCPUConnector`` needs vLLM 0.32.0 or later and ``VLLM_USE_V2_MODEL_RUNNER=1`` on both sides. ``samples/disaggregation/vllm/1e1p1d-ec-nixl.yaml`` is an example.
+
 Encode pods can also sit in front of pods that serve the whole request, with no prefill/decode split (E+PD). With any routing strategy other than ``pd``, the gateway never routes a request to an encode pod, and when the pod it picks has encode pods in its roleset, it runs the same encode stage before forwarding the request. With ``pd`` routing, the same happens when the router picks a standard inference pod instead of a prefill/decode pair. That pod is then the EC consumer. The encode stage runs before the request is forwarded, so an encode pod that stops responding delays each multimodal request by up to the prefill request timeout (``AIBRIX_PREFILL_REQUEST_TIMEOUT``, 30 seconds by default). ``samples/disaggregation/vllm/1e1pd.yaml`` is an example.
 
-See vLLM's `disaggregated encoder <https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ documentation for the encoder flags. Connectors that need per-request transfer handles from the gateway are not supported yet.
+See vLLM's `disaggregated encoder <https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ documentation for the encoder flags. Connectors that need the gateway to pick the consumer before encoding, such as ``ECMooncakeConnector``, are not supported yet.
 
 
 Prompt-Length Bucketing
@@ -519,11 +552,13 @@ The router keeps two per-pod counters and scores each prefill pod as (lower is b
 - ``active_tokens`` — prompt tokens of the prefill requests the pod is computing right now.
 - ``kv_tokens`` — prompt tokens whose KV cache is still resident on the pod because the decode pod has not finished with the request yet. Weighted by ``kv_weight`` (``AIBRIX_TOKEN_LOAD_KV_WEIGHT``, default ``0.3``) since resident KV costs the pod less than active compute.
 
-Each request is charged ``request_cost + new_tokens``, where ``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) models the fixed scheduling and KV-transfer work that does not scale with prompt length, and ``new_tokens`` is the part of the prompt the pod actually has to compute. ``prompt_tokens`` is estimated as one token per four bytes of request body; ``new_tokens`` is derived from it by the first rule that applies:
+Each request is charged ``request_cost + new_tokens``, where ``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) models the fixed scheduling and KV-transfer work that does not scale with prompt length, and ``new_tokens`` is the part of the prompt the pod actually has to compute. For text-only requests, ``prompt_tokens`` is estimated as one token per four bytes of request body. For chat content parts, the media URL or inline payload is removed from that byte count and a configurable per-part estimate is added instead: ``AIBRIX_TOKEN_LOAD_IMAGE_TOKENS`` (default ``1024``) per image, ``AIBRIX_TOKEN_LOAD_AUDIO_TOKENS`` (default ``1024``) per audio part, and ``AIBRIX_TOKEN_LOAD_VIDEO_TOKENS`` (default ``2048``) per video part. ``new_tokens`` is derived from it by the first rule that applies:
 
 1. **Session delta.** If the request carries an ``x-aibrix-session-key`` header (the caller-owned opaque key also used by ``session-affinity`` routing; not the gateway-issued ``x-session-id``) and the gateway has seen a shorter prompt for that key (and model) recently, the charge is the growth since that prompt. Each turn of a chat resends the whole history, but an engine that still holds the conversation's KV cache only computes the new turn: charging the whole prompt again would make a long conversation look several times more expensive than it is. The rule assumes the earlier turns are reachable from whichever prefill pod is selected, through a shared or tiered KV store, sticky routing or the pod's own prefix cache; if your prefill pods only have a local prefix cache and the router may move a conversation between them, do not send the key, or set ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS=0`` to turn the rule off, and rely on rule 2. The last prompt size of a key is kept for ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS`` (default ``1800``); keys longer than 256 bytes are ignored, and at most ``AIBRIX_TOKEN_LOAD_MAX_SESSIONS`` (default ``100000``) keys are remembered at once, so a client cannot grow the table without bound. Once the table is full, new keys are charged by rules 2 and 3 until the janitor forgets idle ones.
 2. **Prefix match.** If the scoring policy looked the prompt up in the prefix cache (``hybrid_cache_load``), the charge is ``prompt_tokens × (1 − match_percent / 100)``.
 3. **Whole prompt.** Otherwise the whole prompt is charged. ``token_load`` itself does not consult the prefix cache, so without a session header this is what it charges.
+
+The media-aware estimate recognizes the chat content-part types ``image_url``, ``audio_url``, ``input_audio``, and ``video_url``. Other media shapes, such as vLLM's ``image_embeds`` / ``image_pil`` or Responses-style ``input_image``, keep the original body-byte estimate until explicit support is added.
 
 **Charge lifecycle**
 
@@ -554,7 +589,7 @@ Setting ``decodeScorePolicy`` (or ``AIBRIX_DECODE_SCORE_POLICY``) to ``token_loa
 
     score = decode_tokens + generated_tokens
 
-Each request is charged its ``prompt_tokens`` to its decode pod: the whole prompt, not the prefix-matched remainder, since the decode pod receives all of the prompt's KV. When the prefill response reports ``usage.prompt_tokens``, the decode charge is replaced with that count once prefill returns; the estimate from the request body is far off for requests with media, which count inline images as their base64 text and images given by URL not at all. There is no fixed per-request cost; ``AIBRIX_TOKEN_LOAD_REQUEST_COST`` applies to the prefill charge only. The charge is made in the same critical section as the selection and released when the request completes or its prefill call fails terminally, with the same TTL, janitor and ``namespace/name`` keying as the prefill ledger. Decode pods whose metrics have not arrived yet are scored from the ledger like any other rather than given the cold-start score. The decode load-imbalance fast path is skipped under ``token_load``: it picks by request count, throughput or drain rate, which is what this policy replaces, and a pod holding one long prompt has the fewest requests. Other decode policies keep it.
+Each request is charged its ``prompt_tokens`` to its decode pod: the whole prompt, not the prefix-matched remainder, since the decode pod receives all of the prompt's KV. When the prefill response reports ``usage.prompt_tokens``, the decode charge is replaced with that count once prefill returns. Before that response arrives, the body estimate excludes media payloads and adds the per-part estimates above, so inline images are no longer charged by their base64 size and URL-referenced media is not treated as free. There is no fixed per-request cost; ``AIBRIX_TOKEN_LOAD_REQUEST_COST`` applies to the prefill charge only. The charge is made in the same critical section as the selection and released when the request completes or its prefill call fails terminally, with the same TTL, janitor and ``namespace/name`` keying as the prefill ledger. Decode pods whose metrics have not arrived yet are scored from the ledger like any other rather than given the cold-start score. The decode load-imbalance fast path is skipped under ``token_load``: it picks by request count, throughput or drain rate, which is what this policy replaces, and a pod holding one long prompt has the fewest requests. Other decode policies keep it.
 
 ``generated_tokens`` estimates the output the pod's outstanding requests have produced so far, which also sits in its KV cache: every outstanding request adds ``rate × (now − routed_at)``, where ``rate`` is the pod's scraped generation throughput divided by its running requests, or the mean of the other decode pods' rates when the pod has none yet. The router does not need to know a request's output length; the term grows while the request decodes and goes away when it completes. Without it the score counts prompts only, which suits short outputs but undercounts decode pods serving long outputs (reasoning models, long-form generation), where most of the KV is output. Set ``AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false`` to score prompts only. A decode pod's own prefix reuse is not modelled.
 
@@ -596,6 +631,15 @@ Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=token_load``. The tunables
    * - ``AIBRIX_TOKEN_LOAD_REQUEST_COST``
      - ``3500``
      - Fixed per-request cost added to every charge, in tokens.
+   * - ``AIBRIX_TOKEN_LOAD_IMAGE_TOKENS``
+     - ``1024``
+     - Per-image token estimate added after the image URL or inline payload is excluded from the body-byte count. ``0`` disables the surcharge.
+   * - ``AIBRIX_TOKEN_LOAD_AUDIO_TOKENS``
+     - ``1024``
+     - Per-audio-part token estimate. ``0`` disables the surcharge.
+   * - ``AIBRIX_TOKEN_LOAD_VIDEO_TOKENS``
+     - ``2048``
+     - Per-video-part token estimate. ``0`` disables the surcharge.
    * - ``AIBRIX_TOKEN_LOAD_TTL_SECONDS``
      - ``3600``
      - Maximum age of an outstanding charge before it is force-released.
@@ -845,6 +889,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_BUCKET_SERVE_MODE``
      - ``throughput``
      - Objective of the adaptive cut points: ``throughput`` (prompt token mass) or ``rps`` (request counts). An unknown value keeps the default.
+   * - ``AIBRIX_ENCODE_SELECTION_POLICY``
+     - ``round_robin``
+     - How the encode stage picks an encode pod for each media item: ``round_robin``, or ``least_request`` for the encode pod with the fewest items in flight. Environment only.
    * - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
      - ``30``
      - Seconds before a prefill request to a prefill pod times out.

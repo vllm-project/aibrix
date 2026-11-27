@@ -1,0 +1,433 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package routingalgorithms
+
+import (
+	"math/rand/v2"
+	"sort"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
+)
+
+// The candidate stage (RFC #3188) bounds the per-request routing work by K instead of the number
+// of ready pods. Every strategy and the load-imbalance gate read each pod's cross-gateway running
+// count from Redis, so routing over N pods costs several N-pod Redis reads per request. With
+// AIBRIX_ROUTING_CANDIDATE_K > 0, the gateway picks K pods first and runs the gate and the router
+// on those only. K is the only knob.
+//
+// The router's own strategies pick the K pods. A random scout of candidateScoutFactor*K ready
+// pods, plus up to K pods a strategy finds directly (prefix-cache's holders of the request's
+// prefix, see types.CandidateFinder), is scored on each strategy's in-memory estimate
+// (types.CandidateScorer), blended with the router's weights and normalization. The best K/2
+// of the scout are kept and the other K/2 are drawn at random from the whole fleet. A
+// request's prefix holders, its least-loaded pods and the pods with the most KV headroom so
+// compete for the same K slots, as they compete in the router's blend. Estimating only a scout
+// keeps the stage's own work bounded by K too: estimating every ready pod costs about a
+// microsecond per pod and strategy, which at 2,000 pods is as much as full scoring in process.
+
+// defaultRoutingCandidateK is the default candidate set size when AIBRIX_ROUTING_CANDIDATE_K
+// is unset (Refs #3188). Models with at most K routable pods bypass the stage unchanged;
+// set AIBRIX_ROUTING_CANDIDATE_K=0 (or routingConfig.candidate.k=0) to disable it.
+const defaultRoutingCandidateK = 64
+
+// loadRoutingCandidateK reads AIBRIX_ROUTING_CANDIDATE_K, accepting an explicit 0 as the
+// process-wide opt-out while falling back to defaultRoutingCandidateK on unset, negative,
+// or unparseable values.
+func loadRoutingCandidateK() int {
+	return utils.LoadEnvNonNegativeInt("AIBRIX_ROUTING_CANDIDATE_K", defaultRoutingCandidateK)
+}
+
+// routingCandidateK is the process default for the candidate stage (defaultRoutingCandidateK);
+// set AIBRIX_ROUTING_CANDIDATE_K=0 to opt out, or override per request via
+// routingConfig.candidate.k.
+var routingCandidateK = loadRoutingCandidateK()
+
+// candidateScoutFactor sets the random scout to candidateScoutFactor*K ready pods. Ranking K
+// of 4K random pods already keeps most of the gain of ranking every pod (the
+// power-of-d-choices effect), at a cost that does not grow with the fleet.
+const candidateScoutFactor = 4
+
+// The best K/2 scouted pods (rounded down) are ranked into the set; the other slots go to pods
+// drawn at random from the whole fleet. The random half does two jobs. The estimates lag (other
+// gateways' running counts by up to one gateway-snapshot interval, scraped engine metrics by up
+// to one scrape interval), so between refreshes every request ranks the same pods first; random
+// pods keep others in view, and the exact scoring that follows decides between them. And the
+// load-imbalance gate and the blend's normalization run on the candidates and assume they look
+// like the fleet: with three quarters ranked, the set mixes idle pods with hot prefix holders,
+// the gate fires against the holders and prefix affinity collapses (candidatesim,
+// TestCandidateSelectionKOnly). It is not a knob: it guards the ranking.
+func candidateRankedSlots(k int) int { return k / 2 }
+
+// candidateSafeStrategies are the strategies whose choice depends only on the pods they are
+// given, so routing over a sample changes which pods compete but not the formulas that judge
+// them. Checks that compare a pod with the rest of its pool (the gate's spread, prefix-cache's
+// standard-deviation check, the blend's normalization) then compare it with the sample, not the
+// fleet. A new strategy is kept off the candidate stage until it is added here.
+// Strategies that keep a global view (vtc's fairness, the queue router, session pins, external
+// and throughput routers, and the exclusive pd and slo routers) always see every ready pod.
+var candidateSafeStrategies = map[string]bool{
+	string(RouterLoadBalance):            true,
+	string(RouterPrefixCache):            true,
+	string(RouterRandom):                 true,
+	string(RouterPowerOfTwo):             true,
+	string(least.RouterLeastRequest):     true,
+	string(least.RouterLeastRequestTopK): true,
+	string(least.RouterLeastKvCache):     true,
+	string(least.RouterLeastGpuCache):    true,
+	string(least.RouterLeastBusyTime):    true,
+	string(least.RouterLeastLatency):     true,
+	string(least.RouterUtil):             true,
+}
+
+// candidateStageApplies reports whether every strategy in the request's resolved strategy, the
+// one Select actually built including any auto-blend, is candidate-safe.
+func candidateStageApplies(ctx *types.RoutingContext) bool {
+	resolved := ctx.ResolvedStrategy
+	if resolved == "" {
+		resolved = string(ctx.Algorithm)
+	}
+	cfg, err := ParseMultiRouterConfig(resolved)
+	if err != nil || len(cfg.Items) == 0 {
+		return false
+	}
+	for _, item := range cfg.Items {
+		if !candidateSafeStrategies[item.Name] {
+			return false
+		}
+	}
+	return true
+}
+
+// SelectCandidates returns the pods the gate and router should consider for this request: all of
+// readyPods when the candidate stage is off, does not apply to the strategy, or would not shrink
+// the set; otherwise K of them (see routingCandidateK). It reads no per-pod state from Redis.
+// router is the one Select returned for ctx. readyPods may alias a shared read-only snapshot, so
+// neither the stage nor its hooks (filterScout, CandidateScorer, CandidateFinder) may write or
+// append to it.
+//
+// filterScout, when non-nil, is applied to the bounded scout before inflight filtering and
+// estimation (for example, the gateway's cap-aware pod blacklist filter) so excluded pods that
+// have drained to zero load cannot win the ranked slots. It sees only the scout, never the full
+// readyPods slice, and is skipped at zero cost when nil. If filterScout returns an empty slice,
+// the unfiltered scout is kept so the caller's fallback stays in charge.
+//
+// When the request has a per-replica inflight cap, the pods the stage is about to rank are also
+// filtered on this gateway's in-memory running counts, so the ranked slots do not go to pods the
+// Redis filter is about to drop. That read is process memory only and bounded by the scout; the
+// Redis filter stays the source of truth for the 429 (see excludeInflightSaturated).
+func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, nil, ctx.RoutingOverrides().Candidate.K, filterScout, true)
+}
+
+// SelectCandidatesFromPodList behaves like SelectCandidates while preserving
+// readyPodList (for example a cached *utils.PodArray snapshot) for
+// CandidateFinder.FindCandidates and full-fleet CandidateScores calls so they
+// can reuse snapshot-level indexes such as PodArray.KeySet and PodArray.ByKey.
+// Callers must pass readyPodList only when its pods are the exact ready set
+// entering the stage (no external filter, encoder split, or blacklist
+// narrowing has modified the set).
+func SelectCandidatesFromPodList(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPodList types.PodList, filterScout func([]*v1.Pod) []*v1.Pod) []*v1.Pod {
+	if readyPodList == nil {
+		return nil
+	}
+	return selectCandidatesWithMetric(ctx, c, router, readyPodList.All(), readyPodList, ctx.RoutingOverrides().Candidate.K, filterScout, true)
+}
+
+// ReselectCandidates is SelectCandidates for a second pass over the same decision, such as the
+// gateway re-running the stage over the pods the blacklist did not exclude. It picks the same
+// way, but does not count the decision again: aibrix_routing_candidate_selections_total counts
+// one narrowing per request.
+func ReselectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, nil, ctx.RoutingOverrides().Candidate.K, nil, false)
+}
+
+func selectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int) []*v1.Pod {
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, nil, k, nil, true)
+}
+
+func selectCandidatesFromPodList(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPodList types.PodList, k int) []*v1.Pod {
+	if readyPodList == nil {
+		return nil
+	}
+	return selectCandidatesWithMetric(ctx, c, router, readyPodList.All(), readyPodList, k, nil, true)
+}
+
+// selectCandidatesWithMetric is the stage itself. countDecision says whether a decision it
+// narrows is added to aibrix_routing_candidate_selections_total.
+func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, readyPodList types.PodList, k int, filterScout func([]*v1.Pod) []*v1.Pod, countDecision bool) []*v1.Pod {
+	if k <= 0 || len(readyPods) <= k || !candidateStageApplies(ctx) {
+		return readyPods
+	}
+
+	candidates := make([]*v1.Pod, 0, k)
+	picked := make(map[*v1.Pod]struct{}, k)
+	ranked, scouted, excludedByFilter, excluded := 0, 0, 0, 0
+	path := candidatePathNoEstimate
+	parts := candidateParts(router)
+	if candidateRankedSlots(k) == 0 {
+		// K = 1 ranks no slot, so estimating would only cost time.
+		path = candidatePathNoRankedSlot
+	} else if hasEstimate(parts) {
+		path = candidatePathEstimateFailed
+		scout, scoutIsFullReady := candidateScout(ctx, parts, readyPods, readyPodList, k)
+		scouted = len(scout)
+		// Run the caller's scout filter (e.g. cap-aware pod blacklist) before
+		// excludeInflightSaturated: inflight filtering drops loaded healthy pods, not drained
+		// excluded pods, so running it first would inflate the excluded share of the remaining
+		// scout and falsely trip the exclusion cap. It also mirrors selectTargetPod's order.
+		if filterScout != nil {
+			if kept := filterScout(scout); len(kept) > 0 {
+				excludedByFilter = len(scout) - len(kept)
+				scout = kept
+			}
+		}
+		scout, excluded = excludeInflightSaturated(ctx, c, scout)
+		var scoutPodList types.PodList
+		if scoutIsFullReady && excludedByFilter == 0 && excluded == 0 {
+			scoutPodList = readyPodList
+		}
+		if estimates, ok := candidateEstimates(ctx, parts, scout, scoutPodList); ok {
+			path = candidatePathRanked
+			ranked = candidateRankedSlots(k)
+			for _, i := range bestIndices(estimates, ranked) {
+				picked[scout[i]] = struct{}{}
+				candidates = append(candidates, scout[i])
+			}
+		}
+	}
+	sampleCandidates(readyPods, k, picked, &candidates)
+	if countDecision {
+		recordCandidateSelection(ctx.Model, path)
+	}
+
+	if klog.V(5).Enabled() {
+		klog.V(5).InfoS("routing candidate stage", "request_id", ctx.RequestID, "ready_pods", len(readyPods),
+			"candidates", len(candidates), "scouted", scouted, "excluded_by_filter", excludedByFilter,
+			"excluded_at_cap", excluded, "ranked", ranked, "path", path, "strategy", ctx.ResolvedStrategy)
+	}
+	return candidates
+}
+
+// inflightCap returns the request's per-replica inflight cap, or 0 when the request has none.
+func inflightCap(ctx *types.RoutingContext) int64 {
+	if ctx == nil || ctx.ConfigProfile == nil {
+		return 0
+	}
+	return ctx.ConfigProfile.RequestsInflight
+}
+
+// excludeInflightSaturated drops scouted pods whose approximate running-request count already
+// reaches the request's per-replica inflight cap. Those pods are about to be dropped by the Redis
+// filter, so letting them win the ranked slots only wastes them and pushes the request toward a
+// 429. The read is this gateway's process memory (ApproxRunningRequestsProvider), never Redis, and
+// it is bounded by len(scout), so the stage stays O(K) even at a large fleet size.
+//
+// Two conditions keep it soft. When the cache does not implement the provider, or returns an empty
+// map, nothing is excluded. When every scouted pod is at the cap, the whole scout set is returned
+// unchanged: the Redis filter still owns the final decision, and this check must never turn a
+// recoverable ranking into a hard failure. It returns the kept pods and how many it dropped.
+func excludeInflightSaturated(ctx *types.RoutingContext, c cache.Cache, scout []*v1.Pod) ([]*v1.Pod, int) {
+	limit := inflightCap(ctx)
+	if limit <= 0 || c == nil || len(scout) == 0 {
+		return scout, 0
+	}
+	provider, ok := c.(cache.ApproxRunningRequestsProvider)
+	if !ok {
+		return scout, 0
+	}
+	running := provider.GetPodsRunningRequestsApprox(scout)
+	if len(running) == 0 {
+		return scout, 0
+	}
+	kept := make([]*v1.Pod, 0, len(scout))
+	for _, pod := range scout {
+		if running[utils.GeneratePodKey(pod.Namespace, pod.Name)] >= limit {
+			continue
+		}
+		kept = append(kept, pod)
+	}
+	if len(kept) == 0 {
+		return scout, 0
+	}
+	return kept, len(scout) - len(kept)
+}
+
+// weightedScorer is one strategy of the router and its weight in the blend.
+type weightedScorer struct {
+	scorer types.PodScorer
+	weight float64
+}
+
+// candidateParts returns the strategies router blends, with their weights: the configured
+// items of a multi-strategy router, or router itself with weight 1.
+func candidateParts(router types.Router) []weightedScorer {
+	if m, ok := router.(*multiStrategyRouter); ok {
+		parts := make([]weightedScorer, 0, len(m.config.Items))
+		for _, item := range m.config.Items {
+			if scorer, ok := m.scorers[item.Name]; ok && item.Coefficient > 0 {
+				parts = append(parts, weightedScorer{scorer: scorer, weight: float64(item.Coefficient)})
+			}
+		}
+		return parts
+	}
+	if scorer, ok := router.(types.PodScorer); ok {
+		return []weightedScorer{{scorer: scorer, weight: 1}}
+	}
+	return nil
+}
+
+func hasEstimate(parts []weightedScorer) bool {
+	for _, part := range parts {
+		if _, ok := part.scorer.(types.CandidateScorer); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// candidateScout returns the ready pods the stage estimates: up to K pods each finder among
+// parts returns, best first, then candidateScoutFactor*K pods drawn at random, without
+// duplicates. When that would cover most of the fleet, it returns the whole fleet and
+// fullReady=true.
+func candidateScout(ctx *types.RoutingContext, parts []weightedScorer, readyPods []*v1.Pod, readyPodList types.PodList, k int) ([]*v1.Pod, bool) {
+	size := candidateScoutFactor * k
+	if 2*size >= len(readyPods) {
+		return readyPods, true
+	}
+	scout := make([]*v1.Pod, 0, size+k)
+	seen := make(map[*v1.Pod]struct{}, size+k)
+	podList := readyPodList
+	if podList == nil {
+		podList = &utils.PodArray{Pods: readyPods}
+	}
+	for _, part := range parts {
+		finder, ok := part.scorer.(types.CandidateFinder)
+		if !ok {
+			continue
+		}
+		found := finder.FindCandidates(ctx, podList, k)
+		if len(found) > k {
+			found = found[:k]
+		}
+		for _, pod := range found {
+			if _, dup := seen[pod]; !dup {
+				seen[pod] = struct{}{}
+				scout = append(scout, pod)
+			}
+		}
+	}
+	sampleCandidates(readyPods, len(scout)+size, seen, &scout)
+	return scout, false
+}
+
+// candidateEstimates blends the in-memory estimates of the strategies in parts into one score
+// per pod of pods, higher is better, the way multiStrategyRouter.scoreAndRank blends ScoreAll:
+// each strategy's scores are normalized to [0, 1] by its polarity over pods and weighted by its
+// share of the total weight. A strategy without an estimate (no types.CandidateScorer, or an
+// error) counts as 0 for every pod, so it shifts no pod ahead of another. ok is false when no
+// strategy has an estimate.
+func candidateEstimates(ctx *types.RoutingContext, parts []weightedScorer, pods []*v1.Pod, podList types.PodList) ([]float64, bool) {
+	total := 0.0
+	for _, part := range parts {
+		total += part.weight
+	}
+	if total <= 0 {
+		return nil, false
+	}
+	if podList == nil {
+		podList = &utils.PodArray{Pods: pods}
+	}
+	var blended []float64
+	for _, part := range parts {
+		estimator, ok := part.scorer.(types.CandidateScorer)
+		if !ok {
+			continue
+		}
+		scores, scored, err := estimator.CandidateScores(ctx, podList)
+		if err != nil || len(scores) != len(pods) || len(scored) != len(pods) {
+			if err != nil {
+				klog.V(4).ErrorS(err, "candidate estimate skipped", "request_id", ctx.RequestID)
+			}
+			continue
+		}
+		if blended == nil {
+			blended = make([]float64, len(pods))
+		}
+		share := part.weight / total
+		for i, norm := range normalizeScores(scores, scored, estimator.Polarity()) {
+			blended[i] += norm * share
+		}
+	}
+	return blended, blended != nil
+}
+
+// bestIndices returns the indices of the n highest scores, best first. Equal scores are ordered
+// at random, so pods the estimates cannot tell apart (an idle fleet, the holders of one hot
+// prefix) share the ranked slots across requests instead of the same pods always winning.
+func bestIndices(scores []float64, n int) []int {
+	if n <= 0 {
+		return nil
+	}
+	if n > len(scores) {
+		n = len(scores)
+	}
+	top := make([]int, 0, n)
+	for _, i := range rand.Perm(len(scores)) {
+		s := scores[i]
+		if len(top) == n && s <= scores[top[n-1]] {
+			continue
+		}
+		pos := sort.Search(len(top), func(j int) bool { return scores[top[j]] < s })
+		if len(top) < n {
+			top = append(top, 0)
+		}
+		copy(top[pos+1:], top[pos:len(top)-1])
+		top[pos] = i
+	}
+	return top
+}
+
+// sampleCandidates adds pods of readyPods not yet in picked to candidates, uniformly at random,
+// until it holds k, or every ready pod. Every pod in candidates must be in picked. When the
+// sample is a small share of readyPods, rejection sampling keeps this O(k) instead of touching
+// every pod.
+func sampleCandidates(readyPods []*v1.Pod, k int, picked map[*v1.Pod]struct{}, candidates *[]*v1.Pod) {
+	add := func(pod *v1.Pod) {
+		if _, dup := picked[pod]; !dup {
+			picked[pod] = struct{}{}
+			*candidates = append(*candidates, pod)
+		}
+	}
+	k = min(k, len(readyPods))
+	if 2*k > len(readyPods) {
+		for _, i := range rand.Perm(len(readyPods)) {
+			if len(*candidates) >= k {
+				return
+			}
+			add(readyPods[i])
+		}
+		return
+	}
+	for len(*candidates) < k {
+		add(readyPods[rand.IntN(len(readyPods))])
+	}
+}

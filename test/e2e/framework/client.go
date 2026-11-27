@@ -19,6 +19,7 @@ package e2eframework
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -35,11 +37,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
@@ -300,19 +302,79 @@ func WaitForInference(t *testing.T, modelName string) {
 	require.NoError(t, err, "model %s did not become servable", modelName)
 }
 
-func ValidateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
-	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage("Say this is a test"),
-		},
-		Model: modelName,
-	})
-	if err != nil {
-		t.Fatalf("chat completions failed : %v", err)
+// WaitForStableAdapterInference checks both adapters in each round so that each
+// remains independently servable while the other is in use.
+func WaitForStableAdapterInference(t *testing.T, firstModel, secondModel string) {
+	t.Helper()
+	config := LoadConfig()
+	client := NewOpenAIClient(config.GatewayURL, config.APIKey)
+	start := time.Now()
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 30*time.Second, true,
+		stableAdapterInferenceCondition(t, client, firstModel, secondModel))
+	require.NoError(t, err, "waiting for adapters %s and %s after %s", firstModel, secondModel, time.Since(start))
+	t.Logf("both adapters served three consecutive rounds in %s", time.Since(start).Round(time.Millisecond))
+}
+
+func stableAdapterInferenceCondition(
+	t *testing.T, client openai.Client, firstModel, secondModel string,
+) wait.ConditionWithContextFunc {
+	rounds := 0
+	return func(ctx context.Context) (bool, error) {
+		ready := true
+		for _, model := range [...]string{firstModel, secondModel} {
+			// Envoy's default access log records User-Agent, even when a local
+			// reply has no response request ID or Envoy replaces x-request-id.
+			probe := "aibrix-e2e/" + uuid.NewString()
+			err := checkInference(ctx, client, model, option.WithHeader("User-Agent", probe))
+			if err == nil {
+				continue
+			}
+			var apiErr *openai.Error
+			// The default HTTPRoute readiness check marks its own 503. A plain
+			// upstream 503 or a 500 must surface on this attempt.
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusServiceUnavailable &&
+				apiErr.Response != nil && apiErr.Response.Header.Get("x-error-routing") == "true" &&
+				apiErr.Code == "service_unavailable" {
+				t.Logf("waiting for %s route (%s): %s", model, probe, inferenceFailureDetail(err))
+				ready = false
+				continue
+			}
+			return false, fmt.Errorf("inference for %s (%s): %s", model, probe, inferenceFailureDetail(err))
+		}
+		if !ready {
+			rounds = 0
+			return false, nil
+		}
+		rounds++
+		return rounds == 3, nil
 	}
-	assert.Equal(t, modelName, chatCompletion.Model)
-	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
-	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
+}
+
+func ValidateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
+	t.Helper()
+	if err := checkInference(context.Background(), client, modelName); err != nil {
+		t.Fatalf("chat completion for %s: %s", modelName, inferenceFailureDetail(err))
+	}
+}
+
+func checkInference(ctx context.Context, client openai.Client, modelName string, opts ...option.RequestOption) error {
+	completion, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage("Say this is a test")},
+		Model:    modelName,
+	}, opts...)
+	if err != nil {
+		return err
+	}
+	if completion == nil {
+		return errors.New("returned no completion")
+	}
+	if completion.Model != modelName {
+		return fmt.Errorf("returned model %q", completion.Model)
+	}
+	if len(completion.Choices) == 0 {
+		return errors.New("returned no choices")
+	}
+	return nil
 }
 
 // ValidateAllPodsAreReady waits until the default namespace has exactly expectedPodCount
@@ -341,6 +403,57 @@ func ValidateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 			return false, nil
 		})
 	require.NoError(t, err, "timeout waiting for all pods to be ready")
+}
+
+// inferenceFailureDetail includes the raw body for non-OpenAI gateway errors.
+func inferenceFailureDetail(err error) string {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) || apiErr.Response == nil {
+		return fmt.Sprintf("%v", err)
+	}
+	body, _ := io.ReadAll(apiErr.Response.Body)
+	return fmt.Sprintf("%v (request-id: %q, x-request-id: %q, response body: %q)",
+		err,
+		apiErr.Response.Header.Get("request-id"),
+		apiErr.Response.Header.Get("x-request-id"),
+		body)
+}
+
+// DumpGatewayLogs collects the access log of the installation's Envoy proxy
+// and the ext_proc plugin logs. Each source has its own time budget.
+func DumpGatewayLogs(t *testing.T, client kubernetes.Interface) {
+	t.Helper()
+	namespace := LoadConfig().GatewayNamespace
+	proxySelector := "gateway.envoyproxy.io/owning-gateway-namespace=" + namespace +
+		",gateway.envoyproxy.io/owning-gateway-name=aibrix-eg"
+	dumpPodLogs(t, client, v1.NamespaceAll, proxySelector, "envoy")
+	dumpPodLogs(t, client, namespace, "app=gateway-plugins", "gateway-plugin")
+}
+
+func dumpPodLogs(t *testing.T, client kubernetes.Interface, namespace, selector, container string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pods, err := client.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		t.Logf("listing pods for %s logs: %v", container, err)
+		return
+	}
+	if len(pods.Items) == 0 {
+		t.Logf("no pods matching %s for %s logs", selector, container)
+	}
+	for _, pod := range pods.Items {
+		logs, err := client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+			Container:    container,
+			SinceSeconds: ptr.To[int64](300),
+			TailLines:    ptr.To[int64](1000),
+		}).DoRaw(ctx)
+		if err != nil {
+			t.Logf("reading %s/%s %s logs: %v", pod.Namespace, pod.Name, container, err)
+			continue
+		}
+		t.Logf("%s/%s %s logs:\n%s", pod.Namespace, pod.Name, container, logs)
+	}
 }
 
 // PollPDChatCompletion retries a PD chat completion until it succeeds or timeout.

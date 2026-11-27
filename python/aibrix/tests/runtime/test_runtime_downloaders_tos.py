@@ -189,3 +189,54 @@ async def test_tos_downloader_download_file(monkeypatch: pytest.MonkeyPatch, tmp
 
     assert out_dir == str(tmp_path)
     assert (tmp_path / "file.bin").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory", [False, True])
+async def test_tos_cancel_waits_for_writer(monkeypatch, tmp_path, directory):
+    import asyncio
+    import threading
+    from pathlib import Path
+
+    fake_tos = _install_fake_tos(monkeypatch)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    real_download = fake_tos.TosClientV2.download_file
+
+    def blocked_download(self, *args, **kwargs):
+        started.set()
+        try:
+            assert release.wait(5)
+            return real_download(self, *args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(fake_tos.TosClientV2, "download_file", blocked_download)
+    from aibrix.openai_frontend.common.artifact_fetcher import DefaultArtifactFetcher
+
+    fetcher = DefaultArtifactFetcher(base_temp_dir=str(tmp_path))
+    task = asyncio.create_task(
+        fetcher.fetch(
+            "tos://bucket/prefix/" if directory else "tos://bucket/file.bin",
+            {"TOS_ACCESS_KEY": "AK", "TOS_SECRET_KEY": "SK"},
+        )
+    )
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        assert finished.is_set()
+        assert not list(Path(tmp_path).iterdir())
+        assert not fetcher._active_tmpdirs
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        fetcher.cleanup_all()

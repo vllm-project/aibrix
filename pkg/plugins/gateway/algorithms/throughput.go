@@ -75,8 +75,8 @@ func (r throughputRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types
 		}
 
 		// Both averages are PromQL results, so read them as such rather than as simple values.
-		promptTokens, promptOK := routeutil.NumericValue(promptThroughput)
-		generationTokens, generationOK := routeutil.NumericValue(generationThroughput)
+		promptTokens, promptOK := metrics.NumericValue(promptThroughput)
+		generationTokens, generationOK := metrics.NumericValue(generationThroughput)
 		if !promptOK || !generationOK {
 			scored[i] = false
 			continue

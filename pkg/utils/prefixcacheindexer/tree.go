@@ -240,12 +240,6 @@ func (n *TreeNode) HasValidPods(currentPodSet map[string]bool) bool {
 	return false
 }
 
-func (n *TreeNode) GetModelToPodCount() int {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	return len(n.modelToPods)
-}
-
 // GetPodsForModel returns a copy of the pod map for the given model.
 func (n *TreeNode) GetPodsForModel(model string) map[string]time.Time {
 	n.mu.RLock()

@@ -149,6 +149,58 @@ def test_put_and_get_aligned(cache_key_fixture, cache_mgr_fixture):
     get_handle.release()
 
 
+def test_get_hit_metrics_count_tokens(cache_key_fixture, cache_mgr_fixture):
+    shape, spec, cache_mgr, param = cache_mgr_fixture
+    tokens = cache_key_fixture([i for i in range(32)], spec.block_ntokens)
+    status = cache_mgr.allocate_for(None, tokens)
+    assert status.is_ok()
+    put_handle = status.value
+    randomize_cache_handle(put_handle)
+    assert cache_mgr.put(None, tokens, put_handle).is_ok()
+
+    if param.endswith("async"):
+        cache_mgr.flush()
+
+    status = cache_mgr.allocate_for(None, tokens)
+    assert status.is_ok()
+    get_handle = status.value
+    get_status = cache_mgr.get(None, tokens, get_handle)
+    assert get_status.is_ok()
+    assert get_status.value == 32
+    get_handle.release()
+
+    metrics = cache_mgr.metrics.mgr
+    assert metrics.num_tokens_hit == 32
+    assert metrics.num_tokens_miss == 0
+    assert metrics.get_metrics.num_fetched_tokens == [32]
+
+
+def test_get_hit_metrics_partial_hit(cache_key_fixture, cache_mgr_fixture):
+    shape, spec, cache_mgr, param = cache_mgr_fixture
+    tokens = cache_key_fixture([i for i in range(32)], spec.block_ntokens)
+    status = cache_mgr.allocate_for(None, tokens[:16])
+    assert status.is_ok()
+    put_handle = status.value
+    randomize_cache_handle(put_handle)
+    assert cache_mgr.put(None, tokens[:16], put_handle).is_ok()
+
+    if param.endswith("async"):
+        cache_mgr.flush()
+
+    status = cache_mgr.allocate_for(None, tokens)
+    assert status.is_ok()
+    get_handle = status.value
+    get_status = cache_mgr.get(None, tokens, get_handle)
+    assert get_status.is_ok()
+    assert get_status.value == 16
+    get_handle.release()
+
+    metrics = cache_mgr.metrics.mgr
+    assert metrics.num_tokens_hit == 16
+    assert metrics.num_tokens_miss == 16
+    assert metrics.get_metrics.num_fetched_tokens == [16]
+
+
 def test_put_and_get_with_prefix(cache_key_fixture, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     tokens0 = [i for i in range(32)]

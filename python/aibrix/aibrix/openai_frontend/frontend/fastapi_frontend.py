@@ -30,11 +30,11 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from aibrix.openai_frontend.engine.engine import LLMEngine
+from aibrix.openai_frontend.frontend.fastapi.errors import add_exception_handlers
 from aibrix.openai_frontend.frontend.fastapi.middleware.api_restriction import (
     APIRestrictionMiddleware,
     RestrictedFeatures,
@@ -46,12 +46,14 @@ from aibrix.openai_frontend.frontend.fastapi.routers import (
     chat,
     completions,
     embeddings,
-    model_management,
+    engine_routes,
+    generation,
     models,
     observability,
+    responses,
 )
 from aibrix.openai_frontend.frontend.frontend import OpenAIFrontend
-from aibrix.openai_frontend.utils.utils import HTTP_DEFAULT_MAX_INPUT_SIZE, StatusCode
+from aibrix.openai_frontend.utils.utils import HTTP_DEFAULT_MAX_INPUT_SIZE
 
 
 class FastApiFrontend(OpenAIFrontend):
@@ -71,14 +73,11 @@ class FastApiFrontend(OpenAIFrontend):
         self.restricted_apis: Optional[RestrictedFeatures] = (
             RestrictedFeatures(restricted_apis) if restricted_apis else None
         )
-        self.stopped: bool = False
+        self._engine = engine
 
         self.app = self._create_app()
         # Attach the inference engine to the FastAPI app
         self.app.engine = engine
-
-    def __del__(self):
-        self.stop()
 
     def start(self):
         config = uvicorn.Config(
@@ -91,15 +90,14 @@ class FastApiFrontend(OpenAIFrontend):
         server = uvicorn.Server(config)
         server.run()
 
-    def stop(self):
-        if hasattr(self.app, "engine") and hasattr(self.app.engine, "stop"):
-            self.app.engine.stop()
-
     def _create_app(self):
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            await app.engine.start()  # type: ignore[attr-defined]
-            yield
+            try:
+                await self._engine.start()
+                yield
+            finally:
+                await self._engine.aclose()
 
         app = FastAPI(
             title="OpenAI API",
@@ -114,13 +112,16 @@ class FastApiFrontend(OpenAIFrontend):
             lifespan=lifespan,
         )
 
-        self._add_exception_handlers(app)
+        add_exception_handlers(app)
         app.include_router(observability.router)
         app.include_router(models.router)
-        app.include_router(model_management.router)
         app.include_router(completions.router)
         app.include_router(chat.router)
         app.include_router(embeddings.router)
+        app.include_router(generation.router)
+        app.include_router(responses.router)
+        if hasattr(self._engine, "endpoint_kinds"):
+            app.include_router(engine_routes.create_router(self._engine))
 
         # NOTE: For debugging purposes, should generally be restricted or removed
         self._add_cors_middleware(app)
@@ -129,17 +130,6 @@ class FastApiFrontend(OpenAIFrontend):
         self._add_request_size_limit_middleware(app)
 
         return app
-
-    def _add_exception_handlers(self, app: FastAPI):
-        @app.exception_handler(NotImplementedError)
-        async def not_implemented_handler(
-            _: Request, exc: NotImplementedError
-        ) -> JSONResponse:
-            detail = str(exc) if str(exc) else "Not implemented"
-            return JSONResponse(
-                status_code=StatusCode.NOT_FOUND,
-                content={"detail": detail},
-            )
 
     def _add_cors_middleware(self, app: FastAPI):
         # Allow API calls through browser /docs route for debug purposes
@@ -159,7 +149,9 @@ class FastApiFrontend(OpenAIFrontend):
 
     def _add_api_restriction_middleware(self, app: FastAPI):
         app.add_middleware(
-            APIRestrictionMiddleware, restricted_apis=self.restricted_apis
+            APIRestrictionMiddleware,
+            restricted_apis=self.restricted_apis,
+            engine=self._engine,
         )
         print(
             f"[INFO] API restrictions enabled. Restricted API endpoints: {self.restricted_apis.RestrictionSummary()}"  # type: ignore[union-attr]

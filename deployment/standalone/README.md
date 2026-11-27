@@ -125,6 +125,8 @@ curl http://localhost/v1/chat/completions \
 
 See `.env.example` for all available options.
 
+Routing strategy names use hyphens, for example `least-request`, `load-balance`, and `prefix-cache`. If your `.env` was copied from an older `.env.example`, change `least_request` to `least-request` and `prefix_cache_aware` to `prefix-cache`; `least_load` and `round_robin` have no registered equivalent, so replace them with one of the names above. `./start.sh` rewrites the first two and stops on the other two in simple mode, while running `docker compose` directly rejects any unknown name with `400 incorrect routing strategy`.
+
 ## Services
 
 | Service | Port | Description |
@@ -157,6 +159,10 @@ See `.env.example` for all available options.
 | `:9901/` | Envoy admin dashboard |
 | `:9901/stats` | Envoy statistics |
 | `:9901/clusters` | Upstream cluster health |
+
+### Authentication
+
+A bearer token set on the gateway (`AIBRIX_AUTH_BEARER_TOKEN`) is checked by the gateway plugin, so it only protects routes that go through it. `/healthz`, `/v1/models`, `/v1/files`, `/v1/batches`, and `/metrics` skip the gateway plugin and are **not** covered by that token, the same as the metadata routes in the Kubernetes install. The metadata service has no authentication of its own, and this compose file also publishes it directly on port 8090. Restrict access to these routes at the network level if the stack is reachable by others.
 
 ## Commands
 

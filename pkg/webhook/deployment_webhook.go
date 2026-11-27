@@ -102,22 +102,8 @@ func (r *DeploymentCustomDefaulter) injectAIBrixRuntime(deployment *appsv1.Deplo
 		engineType = inferEngineType(podSpec.Containers)
 	}
 
-	// Ensure the artifacts download path is shared with the sidecar container
-	foundEmptyDirVolume := false
-	for i := range podSpec.Volumes {
-		v := &podSpec.Volumes[i]
-		if v.Name == DefaultAdapterVolumeName {
-			if v.EmptyDir == nil {
-				// Volume with same name exists but is not EmptyDir. Overwrite to ensure correct type.
-				v.VolumeSource = corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				}
-			}
-			foundEmptyDirVolume = true
-			break
-		}
-	}
-	if !foundEmptyDirVolume {
+	// Preserve declared storage, including persistent adapter caches.
+	if !utils.HasVolume(podSpec.Volumes, DefaultAdapterVolumeName) {
 		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 			Name: DefaultAdapterVolumeName,
 			VolumeSource: corev1.VolumeSource{

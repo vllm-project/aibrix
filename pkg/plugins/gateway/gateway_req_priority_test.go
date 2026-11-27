@@ -67,6 +67,15 @@ func TestPriorityForTier(t *testing.T) {
 	}
 }
 
+// Request bodies of the decision APIs as the engines define them. systemOneTierBody
+// is the TypeSafe shape both engines serve; the two decisions bodies are OpenAI's
+// format, which vLLM serves, and SGLang's own format.
+const (
+	systemOneTierBody       = `{"model":"test-model","state":{"ticket":"Charged twice"},"questions":{"team":{"type":"choice","instructions":"Which team?","criteria":{"billing":null,"shipping":null}}},"cache_salt":"tenant-a","chat_template_kwargs":{"enable_thinking":false}}`
+	decisionsOpenAITierBody = `{"model":"test-model","input":[{"role":"user","content":[{"type":"input_text","text":"Charged twice"}]}],"questions":[{"type":"predicate","name":"urgent","instructions":"Is it urgent?"}]}`
+	decisionsSGLangTierBody = `{"model":"test-model","input":"Charged twice","questions":[{"id":"urgent","type":"yes_no","question":"Is it urgent?"}]}`
+)
+
 // TestApplyPriorityTier covers the injection rules on the routing context
 // alone, without going through the ext_proc handler.
 func TestApplyPriorityTier(t *testing.T) {
@@ -76,6 +85,7 @@ func TestApplyPriorityTier(t *testing.T) {
 		name         string
 		enabled      bool
 		headers      map[string]string
+		path         string
 		body         string
 		wantPriority *int
 	}{
@@ -126,6 +136,54 @@ func TestApplyPriorityTier(t *testing.T) {
 			wantPriority: intPtr(0),
 		},
 		{
+			// vLLM declares a priority on /v1/systemone and schedules by it.
+			name:         "systemone gets the tier priority",
+			enabled:      true,
+			headers:      map[string]string{HeaderPriorityTier: "batch"},
+			path:         PathSystemOne,
+			body:         systemOneTierBody,
+			wantPriority: intPtr(100),
+		},
+		{
+			name:         "a priority the caller set on systemone is not overwritten",
+			enabled:      true,
+			headers:      map[string]string{HeaderPriorityTier: "batch"},
+			path:         PathSystemOne,
+			body:         `{"model":"test-model","state":"s","priority":7,"cache_salt":"tenant-a","questions":{"q":{"type":"noul","instructions":"?"}}}`,
+			wantPriority: intPtr(7),
+		},
+		{
+			name:         "systemone with a query string still gets the tier priority",
+			enabled:      true,
+			headers:      map[string]string{HeaderPriorityTier: "background"},
+			path:         PathSystemOne + "?api-version=1",
+			body:         systemOneTierBody,
+			wantPriority: intPtr(1000),
+		},
+		{
+			// Neither engine's /v1/decisions request declares a priority and
+			// both reject unknown fields, so the body must go out as it came.
+			name:    "decisions in the OpenAI shape is forwarded untouched",
+			enabled: true,
+			headers: map[string]string{HeaderPriorityTier: "batch"},
+			path:    PathDecisions,
+			body:    decisionsOpenAITierBody,
+		},
+		{
+			name:    "decisions in the SGLang shape is forwarded untouched",
+			enabled: true,
+			headers: map[string]string{HeaderPriorityTier: "background"},
+			path:    PathDecisions,
+			body:    decisionsSGLangTierBody,
+		},
+		{
+			name:    "decisions with a query string is forwarded untouched",
+			enabled: true,
+			headers: map[string]string{HeaderPriorityTier: "batch"},
+			path:    PathDecisions + "?api-version=1",
+			body:    decisionsOpenAITierBody,
+		},
+		{
 			// sjson turns a JSON array into an object instead of failing, so
 			// the guard has to reject it before the rewrite is attempted.
 			name:    "a JSON array body is forwarded untouched",
@@ -158,6 +216,7 @@ func TestApplyPriorityTier(t *testing.T) {
 			s := &Server{priorityTier: tt.enabled}
 			routingCtx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-priority", "u")
 			routingCtx.ReqBody = []byte(tt.body)
+			routingCtx.ReqPath = tt.path
 			for key, value := range tt.headers {
 				routingCtx.ReqHeaders[key] = value
 			}
@@ -215,6 +274,7 @@ func TestHandleRequestBody_PriorityTier(t *testing.T) {
 		name         string
 		enabled      bool
 		tier         string
+		path         string // defaults to PathChatCompletions
 		requestBody  string
 		unrouted     bool
 		wantPriority *int
@@ -253,6 +313,39 @@ func TestHandleRequestBody_PriorityTier(t *testing.T) {
 			tier:         "batch",
 			requestBody:  `{"model":"test-model","priority":3,"messages":[{"role":"user","content":"test"}]}`,
 			wantPriority: intPtr(3),
+		},
+		{
+			name:         "opt-in maps a tier on systemone, where vLLM declares a priority",
+			enabled:      true,
+			tier:         "batch",
+			path:         PathSystemOne,
+			requestBody:  systemOneTierBody,
+			wantPriority: intPtr(100),
+		},
+		{
+			name:         "opt-in keeps an OpenAI-shaped decisions request as sent",
+			enabled:      true,
+			tier:         "batch",
+			path:         PathDecisions,
+			requestBody:  decisionsOpenAITierBody,
+			wantPriority: nil,
+		},
+		{
+			name:         "opt-in keeps an SGLang-shaped decisions request as sent",
+			enabled:      true,
+			tier:         "background",
+			path:         PathDecisions,
+			requestBody:  decisionsSGLangTierBody,
+			wantPriority: nil,
+		},
+		{
+			name:         "an unrouted decisions request keeps its body and content-length",
+			enabled:      true,
+			tier:         "batch",
+			path:         PathDecisions,
+			requestBody:  decisionsOpenAITierBody,
+			unrouted:     true,
+			wantPriority: nil,
 		},
 		{
 			name:         "an unrouted request still gets a matching content-length",
@@ -303,6 +396,9 @@ func TestHandleRequestBody_PriorityTier(t *testing.T) {
 
 			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "req-priority", "u")
 			routingCtx.ReqPath = PathChatCompletions
+			if tt.path != "" {
+				routingCtx.ReqPath = tt.path
+			}
 			if !tt.unrouted {
 				routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(TestRouterAlgorithm)
 			}
@@ -320,6 +416,7 @@ func TestHandleRequestBody_PriorityTier(t *testing.T) {
 			require.NoError(t, json.Unmarshal(forwarded, &decoded))
 			if tt.wantPriority == nil {
 				assert.NotContains(t, decoded, "priority")
+				assert.Equal(t, tt.requestBody, string(forwarded), "a request without a priority must reach the backend byte for byte")
 			} else {
 				assert.EqualValues(t, *tt.wantPriority, decoded["priority"])
 			}

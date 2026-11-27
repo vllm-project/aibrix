@@ -222,7 +222,24 @@ if [ "$PD_MODE" = true ]; then
 else
     # Default mode: single vLLM backend
     export ENDPOINTS_CONFIG="./configs/endpoints.yaml"
-    export ROUTING_ALGORITHM="${ROUTING_ALGORITHM:-least_request}"
+    # Older .env files used underscore strategy names. Normalize the two known
+    # aliases and stop on names that no longer exist, so the gateway does not
+    # reject every request with 400 after the rename.
+    case "${ROUTING_ALGORITHM:-}" in
+        least_request)
+            echo -e "  ${YELLOW}!${NC} ROUTING_ALGORITHM=least_request is deprecated; using least-request" >&2
+            ROUTING_ALGORITHM="least-request"
+            ;;
+        prefix_cache_aware)
+            echo -e "  ${YELLOW}!${NC} ROUTING_ALGORITHM=prefix_cache_aware is deprecated; using prefix-cache" >&2
+            ROUTING_ALGORITHM="prefix-cache"
+            ;;
+        least_load|round_robin)
+            echo -e "  ${RED}✗${NC} ROUTING_ALGORITHM=${ROUTING_ALGORITHM} has no registered strategy; use least-request, load-balance, prefix-cache, or random (see .env.example)" >&2
+            exit 1
+            ;;
+    esac
+    export ROUTING_ALGORITHM="${ROUTING_ALGORITHM:-least-request}"
     echo -e "  ${CYAN}Config:${NC}    endpoints.yaml"
     echo -e "  ${CYAN}Backends:${NC}  vllm"
     echo -e "  ${CYAN}Routing:${NC}   ${ROUTING_ALGORITHM}"

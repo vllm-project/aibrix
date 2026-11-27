@@ -39,6 +39,42 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 		expected        int32
 	}{
 		// scale up tests
+		// 50 * 1.1 evaluates to 55.00000000000001: the scale-up cap is still 55.
+		{
+			name:            "scale_up_rate_limit_without_float_error",
+			currentPodCount: 50.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
+				CurrentUsePerPod:         1000.0,
+				UpFluctuationTolerance:   0.1,
+				MaxScaleUpRate:           1.1,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleDownRate:         2,
+			},
+			expected: 55,
+		},
+		// 55 / 1.1 evaluates to 49.99999999999999: the scale-down floor is still 50.
+		{
+			name:            "scale_down_rate_limit_without_float_error",
+			currentPodCount: 55.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
+				CurrentUsePerPod:         0.01,
+				UpFluctuationTolerance:   0.1,
+				MaxScaleUpRate:           2,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleDownRate:         1.1,
+			},
+			expected: 50,
+		},
 		{
 			name:            "basic_scale_up",
 			currentPodCount: 2.0,
@@ -271,6 +307,42 @@ func TestAPAAlgorithm_ComputeTargetReplicas_MetricSources(t *testing.T) {
 			context := &mockScalingContext{
 				MetricTargets: map[string]scalingctx.MetricTarget{
 					metricsName: {TargetValue: 40, MetricType: tt.source},
+				},
+				CurrentUsePerPod:         tt.value,
+				UpFluctuationTolerance:   0.1,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleUpRate:           2,
+				MaxScaleDownRate:         2,
+			}
+			result := algorithm.computeTargetReplicas(tt.currentPodCount, context, metricsName, "")
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestAPAAlgorithm_ComputeTargetReplicas_FloatError covers desired counts that are whole
+// numbers but evaluate just above them in float64, where a plain math.Ceil asked for one pod
+// too many: 5 × (0.14 / 0.1) is 7.000000000000001.
+func TestAPAAlgorithm_ComputeTargetReplicas_FloatError(t *testing.T) {
+	algorithm := &APAAlgorithm{}
+	metricsName := "test-metrics"
+	tests := []struct {
+		name            string
+		source          autoscalingv1alpha1.MetricSourceType
+		target          float64
+		currentPodCount float64
+		value           float64
+		expected        int32
+	}{
+		{"pod_scale_up", autoscalingv1alpha1.POD, 0.1, 5, 0.14, 7},
+		{"pod_scale_down", autoscalingv1alpha1.POD, 0.1, 10, 0.07, 7},
+		{"external_scale_up", autoscalingv1alpha1.EXTERNAL, 0.3, 4, 2.1, 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: tt.target, MetricType: tt.source},
 				},
 				CurrentUsePerPod:         tt.value,
 				UpFluctuationTolerance:   0.1,

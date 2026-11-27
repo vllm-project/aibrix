@@ -154,10 +154,10 @@ models:
 Set via environment variable before starting:
 
 ```bash
-ROUTING_ALGORITHM=round_robin ./run-local.sh
+ROUTING_ALGORITHM=least-request ./run-local.sh
 ```
 
-Available algorithms: `random`, `round_robin`, `least_request`, `prefix_cache_aware`, etc.
+Available algorithms: `random`, `least-request`, `load-balance`, `prefix-cache`, etc.
 
 ### Custom configs
 
@@ -173,6 +173,8 @@ Available algorithms: `random`, `round_robin`, `least_request`, `prefix_cache_aw
 | Envoy Admin | 9901 | Envoy admin interface (stats, config dump) |
 | Gateway Metrics | 8080 | Prometheus metrics from gateway-plugin |
 | Health Check | 10080/healthz | Envoy health |
+
+`/v1/models` and `/metrics` on port 10080 are served by the gateway plugin's HTTP server and skip its request processing, so a bearer token set on the gateway (`AIBRIX_AUTH_BEARER_TOKEN`) does **not** protect them. The same server also listens directly on port 8080.
 
 ## Logs
 

@@ -17,9 +17,8 @@ limitations under the License.
 package utils
 
 import (
-	crand "crypto/rand"
 	"fmt"
-	"math/big"
+	"math"
 	mrand "math/rand/v2"
 	"os"
 	"strconv"
@@ -150,11 +149,13 @@ func LoadEnvNonNegativeInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// LoadEnvFloat loads a finite, positive float from an environment variable.
+// It returns defaultValue if the variable is unset, empty or invalid.
 func LoadEnvFloat(key string, defaultValue float64) float64 {
 	valueStr := os.Getenv(key)
 	if valueStr != "" {
 		value, err := strconv.ParseFloat(valueStr, 64)
-		if err != nil || value <= 0 {
+		if err != nil || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 			klog.Warningf("invalid %s: %s, falling back to default: %g", key, valueStr, defaultValue)
 		} else {
 			klog.Infof("set %s: %g", key, value)
@@ -335,19 +336,6 @@ func IsDataParallelPod(pod *v1.Pod) bool {
 		}
 	}
 	return false
-}
-
-// CryptoShuffle shuffles slice in place using crypto/rand. Every swap reads
-// the OS entropy source, so it costs a getrandom syscall and several
-// allocations per swap; use it where unpredictability matters, not on hot
-// paths. See Shuffle.
-func CryptoShuffle[T any](slice []T) {
-	n := len(slice)
-	for i := n - 1; i > 0; i-- {
-		jBig, _ := crand.Int(crand.Reader, big.NewInt(int64(i+1)))
-		j := int(jBig.Int64())
-		slice[i], slice[j] = slice[j], slice[i]
-	}
 }
 
 // Shuffle shuffles slice in place using math/rand/v2's process-wide generator,

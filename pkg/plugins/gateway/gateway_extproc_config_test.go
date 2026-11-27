@@ -36,8 +36,7 @@ import (
 // drift apart silently.
 const gatewayPluginManifestPath = "../../../config/gateway/gateway-plugin/gateway-plugin.yaml"
 
-// kustomizeNamePrefix is applied by config/default, which is why an
-// EnvoyExtensionPolicy targets "aibrix-<route name>".
+// kustomizeNamePrefix is applied by config/default to resource names and references.
 const kustomizeNamePrefix = "aibrix-"
 
 type manifestPathMatch struct {
@@ -129,7 +128,7 @@ func loadGatewayPluginManifest(t *testing.T) gatewayPluginManifest {
 
 func (m gatewayPluginManifest) policyFor(t *testing.T, routeName string) manifestExtensionPolicy {
 	t.Helper()
-	policy, ok := m.policies[kustomizeNamePrefix+routeName]
+	policy, ok := m.policies[routeName]
 	require.True(t, ok, "no EnvoyExtensionPolicy targets route %q, so its requests would never reach ext_proc", routeName)
 	require.Len(t, policy.Spec.ExtProc, 1)
 	return policy
@@ -283,6 +282,15 @@ func TestGatewayPluginManifest_SharedRouteServesAudioSpeech(t *testing.T) {
 	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathAudioSpeech})
 }
 
+// TestGatewayPluginManifest_SharedRouteServesAudioGenerate: /v1/audio/generate is a sibling of
+// /v1/audio/speech, not a child, so the speech PathPrefix does not cover it and it needs a match
+// of its own on the shared route, whose streamed response mode passes the audio through unchanged.
+func TestGatewayPluginManifest_SharedRouteServesAudioGenerate(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathAudioGenerate})
+}
+
 // TestGatewayPluginManifest_SharedRouteServesAudioSpeechBatch: the batch endpoint has no match of
 // its own. It relies on the /v1/audio/speech PathPrefix, which Envoy Gateway applies on path
 // segment boundaries, so the manifest must keep a prefix match that is a parent segment of it.
@@ -361,8 +369,7 @@ func TestGatewayPluginManifest_EveryPolicyTargetsAnExistingRoute(t *testing.T) {
 
 	for target, policy := range manifest.policies {
 		assert.Equal(t, "HTTPRoute", policy.Spec.TargetRef.Kind)
-		routeName := strings.TrimPrefix(target, kustomizeNamePrefix)
-		assert.Contains(t, manifest.routes, routeName,
+		assert.Contains(t, manifest.routes, target,
 			"policy %q targets a route that is not in this manifest", policy.Metadata.Name)
 	}
 }
