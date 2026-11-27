@@ -429,6 +429,7 @@ func computeRoleRevisions(current, update *orchestrationv1alpha1.StormService, c
 // The aggregation behavior:
 // - Replicas, ReadyReplicas, NotReadyReplicas: Aggregated from ALL RoleSets regardless of revision
 // - UpdatedReplicas, UpdatedReadyReplicas: Only aggregated from RoleSets matching updateRevision
+// - Ready Pods of a terminating RoleSet are draining, so they count as NotReadyReplicas
 //
 // This ensures that during a rollout, Updated* fields reflect pods at the target revision,
 // while other fields show total capacity across all revisions.
@@ -440,17 +441,23 @@ func aggregateRoleStatuses(roleSets []*orchestrationv1alpha1.RoleSet, updateRevi
 	// Aggregate statuses from all RoleSets
 	for _, rs := range roleSets {
 		isUpdateRevision := isRoleSetMatchRevision(rs, updateRevision)
+		terminating := rs.DeletionTimestamp != nil
 		for _, roleStatus := range rs.Status.Roles {
 			aggStatus := roleMap[roleStatus.Name]
 			aggStatus.Name = roleStatus.Name
 			// Always aggregate total capacity metrics from all RoleSets
 			aggStatus.Replicas += roleStatus.Replicas
-			aggStatus.ReadyReplicas += roleStatus.ReadyReplicas
+			readyReplicas := roleStatus.ReadyReplicas
+			if terminating {
+				aggStatus.NotReadyReplicas += readyReplicas
+				readyReplicas = 0
+			}
+			aggStatus.ReadyReplicas += readyReplicas
 			aggStatus.NotReadyReplicas += roleStatus.NotReadyReplicas
 			// Only aggregate Updated* metrics from RoleSets matching the target revision
 			if isUpdateRevision {
 				aggStatus.UpdatedReplicas += roleStatus.Replicas
-				aggStatus.UpdatedReadyReplicas += roleStatus.ReadyReplicas
+				aggStatus.UpdatedReadyReplicas += readyReplicas
 			}
 			roleMap[roleStatus.Name] = aggStatus
 		}

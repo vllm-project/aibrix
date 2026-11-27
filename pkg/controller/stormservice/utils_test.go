@@ -2137,6 +2137,31 @@ func TestAggregateRoleStatuses(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "terminating roleset - ready pods are draining",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				makeRoleSetWithRoles("rev2",
+					orchestrationv1alpha1.RoleStatus{Name: "worker", Replicas: 2, ReadyReplicas: 2, NotReadyReplicas: 0}),
+				func() *orchestrationv1alpha1.RoleSet {
+					rs := makeRoleSetWithRoles("rev2",
+						orchestrationv1alpha1.RoleStatus{Name: "worker", Replicas: 2, ReadyReplicas: 2, NotReadyReplicas: 0})
+					now := metav1.Now()
+					rs.DeletionTimestamp = &now
+					return rs
+				}(),
+			},
+			updateRevision: "rev2",
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "worker",
+					Replicas:             4,
+					ReadyReplicas:        2,
+					NotReadyReplicas:     2,
+					UpdatedReplicas:      4,
+					UpdatedReadyReplicas: 2,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

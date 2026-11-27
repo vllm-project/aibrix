@@ -742,3 +742,69 @@ func TestFinalizeOnlyDeletesOwnedRoleSets(t *testing.T) {
 	err = fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "team-b", Name: "svc-b"}, updated)
 	assert.True(t, apierrors.IsNotFound(err), "expected the finalizer to be removed, got err=%v finalizers=%v", err, updated.Finalizers)
 }
+
+// TestUpdateStatusExcludesTerminatingRoleSetFromReadiness covers a pooled StormService
+// whose only RoleSet is being deleted: its pods drain, so the StormService must not
+// report Ready from the RoleSet's last Ready condition.
+func TestUpdateStatusExcludesTerminatingRoleSetFromReadiness(t *testing.T) {
+	const revision = "pooled-storm-rev1"
+	tests := []struct {
+		name             string
+		terminating      bool
+		wantReady        bool
+		wantReadyCount   int32
+		wantNotReady     int32
+		wantUpdatedReady int32
+		wantRoleReady    int32
+	}{
+		{name: "active ready roleset", terminating: false, wantReady: true, wantReadyCount: 1, wantNotReady: 0, wantUpdatedReady: 1, wantRoleReady: 1},
+		{name: "terminating roleset with a stale Ready condition", terminating: true, wantReady: false, wantReadyCount: 0, wantNotReady: 1, wantUpdatedReady: 0, wantRoleReady: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+			stormService := newPooledStormServiceWithSurge(0)
+			// The StormService was ready before the RoleSet started terminating.
+			stormService.Status.Conditions = orchestrationv1alpha1.Conditions{
+				*ctrlutils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""),
+			}
+			roleSet := pooledRoleSet(stormService, "pooled-storm-roleset-a", revision, tt.terminating)
+			roleSet.Status.Conditions = orchestrationv1alpha1.Conditions{
+				*ctrlutils.NewCondition(orchestrationv1alpha1.RoleSetReady, corev1.ConditionTrue, "Ready", ""),
+			}
+			roleSet.Status.Roles = []orchestrationv1alpha1.RoleStatus{
+				{Name: "engine", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, UpdatedReadyReplicas: 1},
+			}
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithStatusSubresource(&orchestrationv1alpha1.StormService{}).
+				WithObjects(stormService, roleSet).
+				Build()
+			r := &StormServiceReconciler{Client: fakeClient, Scheme: scheme}
+			cr := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: revision, Namespace: "default"}}
+
+			current := &orchestrationv1alpha1.StormService{}
+			if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stormService), current); err != nil {
+				t.Fatalf("get StormService: %v", err)
+			}
+			ready, err := r.updateStatus(context.Background(), current, nil, cr, cr, 0)
+			if err != nil {
+				t.Fatalf("updateStatus() error = %v", err)
+			}
+			assert.Equal(t, tt.wantReady, ready)
+			assert.Equal(t, int32(1), current.Status.Replicas)
+			assert.Equal(t, tt.wantReadyCount, current.Status.ReadyReplicas)
+			assert.Equal(t, tt.wantNotReady, current.Status.NotReadyReplicas)
+			assert.Equal(t, tt.wantUpdatedReady, current.Status.UpdatedReadyReplicas)
+			condition := ctrlutils.GetCondition(current.Status.Conditions, orchestrationv1alpha1.StormServiceReady)
+			assert.Equal(t, tt.wantReady, condition != nil && condition.Status == corev1.ConditionTrue)
+			if assert.Len(t, current.Status.RoleStatuses, 1) {
+				assert.Equal(t, int32(1), current.Status.RoleStatuses[0].Replicas)
+				assert.Equal(t, tt.wantRoleReady, current.Status.RoleStatuses[0].ReadyReplicas)
+			}
+		})
+	}
+}

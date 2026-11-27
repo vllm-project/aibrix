@@ -375,7 +375,7 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		if isRoleSetMatchRevision(rs, updateRevision.Name) && isAllRoleUpdated(rs) {
 			stormService.Status.UpdatedReplicas++
 		}
-		if isRoleSetMatchRevision(rs, updateRevision.Name) && utils.IsRoleSetReady(rs) && isAllRoleUpdatedAndReady(rs) {
+		if rs.DeletionTimestamp == nil && isRoleSetMatchRevision(rs, updateRevision.Name) && utils.IsRoleSetReady(rs) && isAllRoleUpdatedAndReady(rs) {
 			stormService.Status.UpdatedReadyReplicas++
 		}
 	}
@@ -383,9 +383,12 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		stormService.Status.CurrentReplicas = stormService.Status.UpdatedReplicas
 		stormService.Status.CurrentRevision = stormService.Status.UpdateRevision
 	}
-	ready, notReady := filterReadyRoleSets(allRoleSets)
+	// A terminating RoleSet drains its pods, so it is not ready even while its last
+	// condition says Ready.
+	activeRoleSets, terminatingRoleSets := filterTerminatingRoleSets(allRoleSets)
+	ready, notReady := filterReadyRoleSets(activeRoleSets)
 	stormService.Status.ReadyReplicas = int32(len(ready))
-	stormService.Status.NotReadyReplicas = int32(len(notReady))
+	stormService.Status.NotReadyReplicas = int32(len(notReady) + len(terminatingRoleSets))
 	// set conditions
 	specReplica := stormService.Spec.ResolvedReplicas()
 	stormServiceReady := stormService.Status.ReadyReplicas >= specReplica &&
