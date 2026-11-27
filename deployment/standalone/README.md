@@ -125,6 +125,8 @@ curl http://localhost/v1/chat/completions \
 
 See `.env.example` for all available options.
 
+Routing strategy names use hyphens, for example `least-request`, `load-balance`, and `prefix-cache`. If your `.env` was copied from an older `.env.example`, change `least_request` to `least-request` and `prefix_cache_aware` to `prefix-cache`; `least_load` and `round_robin` have no registered equivalent, so replace them with one of the names above. `./start.sh` rewrites the first two and stops on the other two in simple mode, while running `docker compose` directly rejects any unknown name with `400 incorrect routing strategy`.
+
 ## Services
 
 | Service | Port | Description |

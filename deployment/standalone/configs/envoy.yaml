@@ -2,7 +2,7 @@
 #
 # This configuration provides intelligent routing through the gateway-plugin:
 # - Request parsing and model extraction
-# - Routing algorithms (least_request, prefix_cache_aware, etc.)
+# - Routing algorithms (least-request, prefix-cache, etc.)
 # - Rate limiting and authentication
 # - Request/response metrics
 #
