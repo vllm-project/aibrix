@@ -4,6 +4,10 @@
 ## Related Issues
 Resolves: #[Insert issue number(s)]
 
+## Review Conduct
+- [ ] I have read every change in this PR and can explain it.
+- [ ] No agent will reply to reviews or push to this PR unless I have read and approved each reply and push.
+
 **Important: Before submitting, please complete the description above and review the checklist below.**
 
 ---

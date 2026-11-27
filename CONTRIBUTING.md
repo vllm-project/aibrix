@@ -17,6 +17,8 @@ please see the [Development Guide](development/README.md) in the `development` d
 - Review every generated or AI-assisted change yourself; submit only changes
   you can explain and verify. Agent-generated analysis or review does not
   constitute maintainer approval; the human contributor remains accountable.
+  As a reviewer, post an approval or a must-fix verdict only when you have made
+  that judgment yourself.
 
 ### 0. Coding Guidelines
 
@@ -92,14 +94,25 @@ automatically exempt: it must identify the real behavior or risk it protects.
     checks that could not be completed and what remains unverified. Never
     report an unexecuted check as passing.
 - **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
+  - Answer a reviewer's question before changing code for it. A question is
+    not a request for a change.
+  - Address each review round in one push, then wait for the reviewer before
+    pushing again. Fixing CI, or a rebase the reviewer asked for, is the
+    exception.
+  - Keep a revision to what the review asked for. Propose any further change
+    in the thread first.
+  - You are responsible for every comment and push on your PR. Do not let an
+    agent reply to reviews or push commits unless you have read and approved
+    each one, and stop when a maintainer asks you to hold.
 
 Maintainers may close a pull request without completing a code-level review
 when it bypasses the issue-first policy, duplicates existing work, lacks the
 required reproduction or validation evidence after feedback, or materially
 exceeds the accepted issue scope. Maintainers may also close low-value
 mechanical or generated changes whose maintenance cost exceeds their benefit.
-After satisfying the requirements, the contributor may submit a new pull
-request.
+They may close a pull request, or lock its conversation, when unattended
+automated replies or pushes continue after a request to stop. After
+satisfying the requirements, the contributor may submit a new pull request.
 
 ## Advanced Contributions
 
