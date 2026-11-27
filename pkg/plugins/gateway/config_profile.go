@@ -255,7 +255,9 @@ func maxTokensFromRequestBody(body []byte) *int64 {
 
 func int64Field(req map[string]json.RawMessage, key string) (int64, bool) {
 	raw, ok := req[key]
-	if !ok {
+	// JSON null is treated as absent: unmarshalling null into int64 is a no-op
+	// without an error, so it would otherwise read as 0.
+	if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return 0, false
 	}
 	var v int64
