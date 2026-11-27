@@ -1150,6 +1150,18 @@ msgstr ""
 "**整个 prompt。** 否则对整个 prompt 计费。``token_load`` 本身不查询 prefix "
 "cache，因此没有会话头时就按这种方式计费。"
 
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:561
+msgid ""
+"The media-aware estimate recognizes the chat content-part types "
+"``image_url``, ``audio_url``, ``input_audio``, and ``video_url``. Other "
+"media shapes, such as vLLM's ``image_embeds`` / ``image_pil`` or "
+"Responses-style ``input_image``, keep the original body-byte estimate "
+"until explicit support is added."
+msgstr ""
+"媒体感知估计支持聊天内容部分类型 ``image_url``、``audio_url``、``input_audio`` "
+"和 ``video_url``。其他媒体形式，例如 vLLM 的 ``image_embeds`` / ``image_pil`` "
+"或 Responses 风格的 ``input_image``，在显式支持之前仍按原始请求体字节数估计。"
+
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:488
 msgid "**Charge lifecycle**"
 msgstr "**计费生命周期**"

@@ -18,6 +18,7 @@ package pd
 
 import (
 	"bytes"
+	"unsafe"
 
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -66,6 +67,14 @@ func EstimatePromptTokens(reqBody []byte) int {
 	return estimatePromptTokensWithConfig(reqBody, defaultPromptTokenEstimateConfig)
 }
 
+// gjsonFieldNoCopy avoids copying reqBody into a string for gjson. The returned
+// Result may reference the body's memory, so it must not outlive the body or be
+// used while the body is mutated. The estimate consumes it synchronously, and
+// the gateway does not mutate ReqBody during routing.
+func gjsonFieldNoCopy(body []byte, path string) gjson.Result {
+	return gjson.Get(unsafe.String(unsafe.SliceData(body), len(body)), path)
+}
+
 func estimatePromptTokensWithConfig(reqBody []byte, cfg promptTokenEstimateConfig) int {
 	if len(reqBody) == 0 {
 		return 0
@@ -74,7 +83,7 @@ func estimatePromptTokensWithConfig(reqBody []byte, cfg promptTokenEstimateConfi
 		return len(reqBody) / bytesPerTokenEstimate
 	}
 
-	messages := gjson.GetBytes(reqBody, "messages")
+	messages := gjsonFieldNoCopy(reqBody, "messages")
 	if !messages.IsArray() {
 		return len(reqBody) / bytesPerTokenEstimate
 	}
@@ -110,8 +119,9 @@ func estimatePromptTokensWithConfig(reqBody []byte, cfg promptTokenEstimateConfi
 }
 
 // hasChatMediaPayload keeps the common text-only path out of the JSON walk.
-// Base64 payloads cannot contain JSON quotes, so the key checks cannot be
-// satisfied by the payload itself.
+// A false positive only costs one parse; the walk below checks the actual
+// messages[].content[] parts, so text that merely mentions a media key is not
+// treated as media.
 func hasChatMediaPayload(body []byte) bool {
 	if !bytes.Contains(body, []byte(`"messages"`)) {
 		return false
