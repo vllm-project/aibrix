@@ -109,6 +109,8 @@ type Server struct {
 	httprouteCacheTTL   time.Duration
 	httprouteErrorTTL   time.Duration
 	httprouteSFGroup    singleflight.Group
+	// httprouteStaleLogged maps model -> last HTTPRoute generation logged as stale.
+	httprouteStaleLogged sync.Map
 	// asyncJobs resolves the public job ids handed out for asynchronous APIs
 	// (currently vLLM-Omni's Videos API) back to the pod that owns the job. It
 	// reads and writes its store directly on every operation: there is no
@@ -1233,7 +1235,7 @@ func (s *Server) encodeMedia(routeCtx *types.RoutingContext, encoders []*v1.Pod)
 // Non-zero ObservedGeneration behind generation is skipped as stale (0 is
 // accepted for controllers that omit it); when only stale conditions remain,
 // stale=true lets the caller fail open under the short error TTL.
-func httpRouteStatusError(namespace, name string, generation int64, parents []gatewayv1.RouteParentStatus) (err error, stale bool) {
+func httpRouteStatusError(namespace, name string, generation int64, parents []gatewayv1.RouteParentStatus) (stale bool, err error) {
 	var reasons []string
 	for _, parent := range parents {
 		var accepted, resolved bool
@@ -1260,16 +1262,24 @@ func httpRouteStatusError(namespace, name string, generation int64, parents []ga
 			}
 		}
 		if accepted && resolved {
-			return nil, false
+			return false, nil
 		}
 	}
 	if len(reasons) > 0 {
-		return fmt.Errorf("httproute: %s/%s, %s", namespace, name, strings.Join(reasons, ", ")), false
+		return false, fmt.Errorf("httproute: %s/%s, %s", namespace, name, strings.Join(reasons, ", "))
 	}
 	if stale {
-		return nil, true
+		return true, nil
 	}
-	return fmt.Errorf("httproute: %s/%s, does not have valid status: no parent reports both Accepted=True and ResolvedRefs=True", namespace, name), false
+	return false, fmt.Errorf("httproute: %s/%s, does not have valid status: no parent reports both Accepted=True and ResolvedRefs=True", namespace, name)
+}
+
+// shouldLogStaleHTTPRoute reports whether a stale status for this model and
+// generation has not been logged yet, so a stuck reconcile is logged once per
+// generation instead of on every error-TTL re-check.
+func (s *Server) shouldLogStaleHTTPRoute(model string, generation int64) bool {
+	prev, loaded := s.httprouteStaleLogged.Swap(model, generation)
+	return !loaded || prev.(int64) != generation
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
@@ -1325,11 +1335,14 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			return nil, err
 		}
 
-		result, stale := httpRouteStatusError(namespace, name, httproute.Generation, httproute.Status.Parents)
+		stale, result := httpRouteStatusError(namespace, name, httproute.Generation, httproute.Status.Parents)
+		if !stale {
+			s.httprouteStaleLogged.Delete(model)
+		}
 		ttl := s.httprouteCacheTTL
 		if result != nil || stale {
-			if stale {
-				klog.V(4).InfoS("HTTPRoute status has stale observedGeneration; caching under error TTL",
+			if stale && s.shouldLogStaleHTTPRoute(model, httproute.Generation) {
+				klog.InfoS("HTTPRoute status has stale observedGeneration; skipping status check until the controller catches up",
 					"namespace", namespace, "name", name, "generation", httproute.Generation)
 			}
 			ttl = s.httprouteErrorTTL

@@ -553,6 +553,7 @@ func TestValidateHTTPRouteStatus_StaleGenerationTransitions(t *testing.T) {
 			require.True(t, ok)
 			entry := raw.(httpRouteCacheEntry)
 			assert.LessOrEqual(t, time.Until(entry.expiresAt), errorTTL+time.Second)
+			assert.False(t, s.shouldLogStaleHTTPRoute(model, 2), "stale generation should already be logged")
 
 			// Controller writes generation 2 status; expire cache without wall-clock sleep.
 			updated := route.DeepCopy()
@@ -568,6 +569,8 @@ func TestValidateHTTPRouteStatus_StaleGenerationTransitions(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+			_, staleLogged := s.httprouteStaleLogged.Load(model)
+			assert.False(t, staleLogged, "current status should clear the stale log marker")
 			raw, ok = s.httprouteCache.Load(model)
 			require.True(t, ok)
 			remaining := time.Until(raw.(httpRouteCacheEntry).expiresAt)
@@ -578,6 +581,15 @@ func TestValidateHTTPRouteStatus_StaleGenerationTransitions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestShouldLogStaleHTTPRoute(t *testing.T) {
+	s := &Server{}
+	assert.True(t, s.shouldLogStaleHTTPRoute("m", 2))
+	assert.False(t, s.shouldLogStaleHTTPRoute("m", 2))
+	assert.True(t, s.shouldLogStaleHTTPRoute("other", 2))
+	assert.True(t, s.shouldLogStaleHTTPRoute("m", 3))
+	assert.False(t, s.shouldLogStaleHTTPRoute("m", 3))
 }
 
 func checkHTTPRouteErrorExpiry(t *testing.T, invalidRoute *gatewayv1.HTTPRoute) {
