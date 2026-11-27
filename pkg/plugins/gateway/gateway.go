@@ -51,10 +51,13 @@ import (
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/auth"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/inflight"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/modelclaim"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
@@ -112,7 +115,7 @@ type Server struct {
 	// per-replica job cache, so any replica can answer a follow-up for a job
 	// another replica created, with no reconciliation window. Built lazily by
 	// asyncJobRegistry() when not injected.
-	asyncJobs     AsyncJobRegistry
+	asyncJobs     asyncjob.AsyncJobRegistry
 	asyncJobsOnce sync.Once
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
@@ -395,7 +398,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	klog.InfoS("HTTPRoute lookup namespace configured", "namespace", s.gatewayNamespace)
-	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	s.asyncJobs = asyncjob.NewAsyncJobRegistryForClient(redisClient, c)
 	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
@@ -405,6 +408,18 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	s.registerPodLifecycle()
 	s.registerPodQuarantine()
 	return s
+}
+
+// asyncJobRegistry returns the Server's registry, building it on first use. The
+// lazy path exists for Servers assembled as struct literals (tests, and any
+// caller that does not go through NewServerWithOptions).
+func (s *Server) asyncJobRegistry() asyncjob.AsyncJobRegistry {
+	s.asyncJobsOnce.Do(func() {
+		if s.asyncJobs == nil {
+			s.asyncJobs = asyncjob.NewAsyncJobRegistryForClient(s.redisClient, s.cache)
+		}
+	})
+	return s.asyncJobs
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
@@ -1030,9 +1045,17 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if isExclusive {
 		// For exclusive strategies the set is the full ready set, and the filter runs before
 		// engine validation so a request that will be rejected for saturation is not failed on
-		// a pod it never uses.
-		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet); err != nil {
-			return "", err
+		// a pod it never uses. Under PD, only routable decode (and combined) pods are admitted
+		// against aibrix:rrq:*, so prefill/encode/non-HTTP workers are partitioned out of the
+		// Redis inflight check and reattached when capacity remains (#3619).
+		if isPD {
+			if readyPods, err = s.narrowPDToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet); err != nil {
+				return "", err
+			}
+		} else {
+			if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet); err != nil {
+				return "", err
+			}
 		}
 		if isPD {
 			engine, err := routing.ValidateAndGetLLMEngine(readyPods)
@@ -1181,11 +1204,7 @@ func countRoutablePodsFromList(pods types.PodList) int {
 }
 
 func newEncodeExecutor() *encode.Executor {
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	}
+	transport := pd.NewHTTPTransport()
 	// No client timeout: every encode call carries its own deadline.
 	return encode.NewExecutor(&http.Client{Transport: otelhttp.NewTransport(transport)})
 }
@@ -1447,8 +1466,8 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 	// authoritative respErrorCode; the body's own code is preserved inside the body.
 	if normalizedBody, code, ok := normalizeUpstreamErrorBody([]byte(errMsg), respErrorCode); ok {
 		errHeaders := append(append([]*configPb.HeaderValueOption{}, headers...),
-			buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")...)
-		return buildErrorResponseWithBody(code, normalizedBody, errHeaders)
+			errresp.BuildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")...)
+		return errresp.BuildErrorResponseWithBody(code, normalizedBody, errHeaders)
 	}
 
 	// Determine appropriate error code based on HTTP status
@@ -1460,7 +1479,7 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 		errorCode = ErrorCodeServiceUnavailable
 	}
 
-	return generateErrorResponse(
+	return errresp.GenerateErrorResponse(
 		envoyTypePb.StatusCode(respErrorCode),
 		headers,
 		errMsg, errorCode, "")

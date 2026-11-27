@@ -211,3 +211,39 @@ func TestKubernetesProviderQueriesOnlyEnabledResources(t *testing.T) {
 		})
 	}
 }
+
+func TestKubernetesProviderPodWatchResourceVersionFollowsBookmarks(t *testing.T) {
+	// The Pod list answers at version 7, then the watch sends one bookmark at
+	// version 9 and stays open with nothing else.
+	bookmark := `{"type":"BOOKMARK","object":{"kind":"Pod","apiVersion":"v1","metadata":{"resourceVersion":"9"}}}` + "\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/pods") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("watch") == "true" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(bookmark))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		_ = json.NewEncoder(w).Encode(&v1.PodList{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
+			ListMeta: metav1.ListMeta{ResourceVersion: "7"},
+		})
+	}))
+	stopCh := make(chan struct{})
+	t.Cleanup(func() {
+		close(stopCh)
+		server.CloseClientConnections()
+		server.Close()
+	})
+
+	provider := NewKubernetesProvider(&rest.Config{Host: server.URL}).WithModelAdapters(false)
+	assert.Empty(t, provider.PodWatchResourceVersion(), "no informer before Watch")
+	require.NoError(t, provider.Watch(func(WatchEvent) {}, stopCh))
+	require.Eventually(t, func() bool { return provider.PodWatchResourceVersion() == "9" },
+		5*time.Second, 10*time.Millisecond, "the bookmark moves the version past the list's 7")
+}

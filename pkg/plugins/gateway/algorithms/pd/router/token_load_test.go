@@ -191,17 +191,18 @@ func TestPDRouter_TokenLoadSpreadsByPromptCost(t *testing.T) {
 	}
 	assert.Equal(t, float64(0.5*longBytes/4), tokenLoad.GetPriority(burstPodKey(longPod)), "only weighted KV is left")
 
-	// Request completion via the cache.RequestTracker callbacks clears the
-	// KV charge; unknown request IDs and a nil context are harmless.
-	r.DoneRequestCount(nil, "long", longCtx.Model, 0)
-	r.DoneRequestTrace(nil, "short-0", longCtx.Model, 0, 0, 0)
+	// Request completion via the cache.RequestTracker callbacks clears the KV charge. Completion
+	// carries the request's routing context (as the gateway does) so the release matches the
+	// charge's TrackerKey; an unknown request id with a nil context is still a harmless no-op.
+	r.DoneRequestCount(longCtx, longCtx.RequestID, longCtx.Model, 0)
+	r.DoneRequestTrace(shortCtxs[0], shortCtxs[0].RequestID, longCtx.Model, 0, 0, 0)
 	r.DoneRequestCount(nil, "never-routed", longCtx.Model, 0)
 	_, kv = tokenLoad.GetLoad(burstPodKey(longPod))
 	assert.Equal(t, float64(0), kv)
 	_, kv = tokenLoad.GetLoad(burstPodKey(shortPod))
 	assert.Equal(t, float64(shortBytes/4), kv, "short-1 has not completed yet")
 
-	r.DoneRequestCount(nil, "short-1", longCtx.Model, 0)
+	r.DoneRequestCount(shortCtxs[1], shortCtxs[1].RequestID, longCtx.Model, 0)
 	_, kv = tokenLoad.GetLoad(burstPodKey(shortPod))
 	assert.Equal(t, float64(0), kv)
 	assert.Equal(t, int64(0), r.AddRequestCount(longCtx, "long", longCtx.Model))

@@ -282,7 +282,7 @@ decode_score = running_reqs_with_pending
 
 ### `token_load`
 
-Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
+Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under the model's selection lock (`selectStripes`) together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
 
 ```
 decode_score = decode_tokens + generated_tokens
@@ -377,6 +377,24 @@ For SGLang, `Route()` returning a decode pod means the gateway has dispatched
 the asynchronous prefill worker, not that the prefill HTTP request has already
 completed. Prefill success/failure metrics are emitted by the async worker after
 the prefill HTTP request returns.
+
+For SGLang, the async prefill HTTP call retains the request's ext_proc stream
+cancellation and deadline. The pending prefill HTTP request is cancelled when
+that stream ends, either because the client disconnects or because the response
+finishes normally, rather than waiting for `AIBRIX_PREFILL_REQUEST_TIMEOUT`.
+If decode has already responded, cancellation leaves the late prefill outcome
+unobserved: the gateway logs it at verbosity 4, skips prefill failure handling,
+and emits neither a prefill success nor a failure metric. Deadlines and other
+HTTP failures still follow the failure path. The prefill timeout (or the model
+profile override) still bounds calls whose streams remain active.
+Cancellation closes the prefill connection; stopping engine work and
+releasing KV resources depend on the deployed SGLang version's disconnect
+handling. The gateway does not send a separate prefill `/abort_request`.
+
+This async cancellation policy is specific to async handlers. vLLM already
+retains client cancellation through synchronous prefill: `IsAsync()` is false,
+so the executor passes the original routing context to the HTTP call. The
+SGLang policy change does not change vLLM's cancellation behavior.
 
 `rid` is the engine-visible request id of the attempt. SGLang reads it from the
 request body (the `X-Request-Id` header is ignored) and its `/abort_request`
@@ -679,7 +697,7 @@ Enabled by `AIBRIX_BUCKET_SERVE=true`, which requires `AIBRIX_PROMPT_LENGTH_BUCK
 Plain bucketing keeps every roleset whose range covers the request as a candidate, and the scoring decides among them. Adaptive bucket serving narrows that choice. The gateway keeps a per-model picture of the prompt lengths it routes, charges every roleset the traffic only it can serve, and splits each range that several rolesets still need into one band per roleset, drawing each band against one replica-proportional share so a roleset carrying several overlaps does not draw a fresh share from each. The cut points sit at quantiles of the observed traffic. The picture is an EWMA with a 30s half-life, a model's plan is recomputed at most once every 5s, and one plan holds at most 16 affinity bands. A shared range needs a meaningful share of the model's traffic before it is split at all, and a range that cannot afford one band per needing roleset splits into as many bands as the budget left allows; an interval that is not split keeps every covering roleset a candidate.
 
 ```
-bucketServeBand()   (before selectMu, one call per request)
+bucketServeBand()   (before the model's selection lock, one call per request)
     ├─ observe promptLength for the model
     ├─ groups: one per eligible roleset, with the range its profile declares and its prefill replica count
     ├─ plan: shared ranges split at mode quantiles in replica proportion, light ones kept whole
@@ -830,7 +848,7 @@ NewPDRouter()
   │     load_balancing  → pd.LoadBalancingDecodePolicy
   │     (other)         → log warning, same as load_balancing
   ├─ create HTTP client with connection pool
-  │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
+  │     MaxIdleConns=1024, MaxIdleConnsPerHost=128, IdleConnTimeout=90s
   ├─ TRT handler from AIBRIX_TRT_SCHEDULE_STYLE (immutable, router-scoped)
   │     owns a lazily populated /server_info cache for generation_first
   ├─ NewPrefillRequestTracker()

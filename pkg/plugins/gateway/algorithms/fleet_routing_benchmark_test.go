@@ -18,9 +18,11 @@ package routingalgorithms
 
 import (
 	"context"
+	crand "crypto/rand"
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"strings"
 	"testing"
@@ -161,10 +163,26 @@ func benchmarkFleetRouting(b *testing.B, k int, shuffle func([]*v1.Pod)) {
 // BenchmarkFleetRouting_Full is today's path: every ready pod is shuffled and scored.
 func BenchmarkFleetRouting_Full(b *testing.B) { benchmarkFleetRouting(b, 0, utils.Shuffle[*v1.Pod]) }
 
+// cryptoShuffle shuffles slice in place using crypto/rand. Every swap reads
+// the OS entropy source, so it costs a getrandom syscall and several
+// allocations per swap. Kept as the historical baseline for
+// BenchmarkFleetRouting_FullCryptoShuffle and BenchmarkShuffle.
+func cryptoShuffle[T any](slice []T) {
+	n := len(slice)
+	for i := n - 1; i > 0; i-- {
+		jBig, err := crand.Int(crand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			panic(err)
+		}
+		j := int(jBig.Int64())
+		slice[i], slice[j] = slice[j], slice[i]
+	}
+}
+
 // BenchmarkFleetRouting_FullCryptoShuffle shuffles with crypto/rand, as the gateway did
 // before it switched to math/rand/v2. Run against older code, it reproduces the "before" cost.
 func BenchmarkFleetRouting_FullCryptoShuffle(b *testing.B) {
-	benchmarkFleetRouting(b, 0, utils.CryptoShuffle[*v1.Pod])
+	benchmarkFleetRouting(b, 0, cryptoShuffle[*v1.Pod])
 }
 
 // BenchmarkFleetRouting_NoShuffle isolates the cost of shuffling the full list.
@@ -303,7 +321,7 @@ func BenchmarkShuffle(b *testing.B) {
 		b.Run(fmt.Sprintf("crypto/N=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				utils.CryptoShuffle(pods)
+				cryptoShuffle(pods)
 			}
 		})
 		b.Run(fmt.Sprintf("math/N=%d", n), func(b *testing.B) {

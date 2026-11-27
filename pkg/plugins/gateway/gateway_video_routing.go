@@ -21,7 +21,7 @@ package gateway
 // produced it, so every follow-up has to land on that same pod. The gateway
 // therefore hands the client an opaque, owner-scoped public job id and keeps the
 // (public id -> pod identity, backend job id) mapping in the async job registry
-// (see async_job_registry.go). The backend's own id is never exposed: it is a
+// (see asyncjob/async_job_registry.go). The backend's own id is never exposed: it is a
 // bare, guessable handle with no ownership attached, and the gateway rewrites it
 // into the request path -- and back out of the response body -- on every hop.
 //
@@ -49,6 +49,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -128,36 +130,36 @@ func isUnsupportedVideoTrailingSlash(requestPath string) bool {
 	return path != "/" && strings.HasPrefix(path, PathVideos+"/") && strings.HasSuffix(path, "/")
 }
 
-func parseVideoListOptions(requestPath string) (AsyncJobListOptions, error) {
+func parseVideoListOptions(requestPath string) (asyncjob.AsyncJobListOptions, error) {
 	_, rawQuery, hasQuery := strings.Cut(requestPath, "?")
-	options := AsyncJobListOptions{Limit: defaultAsyncJobListLimit, Order: "desc"}
+	options := asyncjob.AsyncJobListOptions{Limit: asyncjob.DefaultAsyncJobListLimit, Order: "desc"}
 	if !hasQuery || rawQuery == "" {
 		return options, nil
 	}
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return AsyncJobListOptions{}, fmt.Errorf("invalid video list query: %w", err)
+		return asyncjob.AsyncJobListOptions{}, fmt.Errorf("invalid video list query: %w", err)
 	}
 	for key := range values {
 		if key != "after" && key != "limit" && key != "order" {
-			return AsyncJobListOptions{}, fmt.Errorf("unsupported video list query parameter %q", key)
+			return asyncjob.AsyncJobListOptions{}, fmt.Errorf("unsupported video list query parameter %q", key)
 		}
 		if len(values[key]) != 1 {
-			return AsyncJobListOptions{}, fmt.Errorf("video list query parameter %q must be supplied once", key)
+			return asyncjob.AsyncJobListOptions{}, fmt.Errorf("video list query parameter %q must be supplied once", key)
 		}
 	}
 	options.After = values.Get("after")
 	if rawLimit, ok := values["limit"]; ok {
 		limit, err := strconv.Atoi(rawLimit[0])
 		if err != nil {
-			return AsyncJobListOptions{}, fmt.Errorf("video list limit must be an integer")
+			return asyncjob.AsyncJobListOptions{}, fmt.Errorf("video list limit must be an integer")
 		}
 		options.Limit = limit
 	}
 	if rawOrder, ok := values["order"]; ok {
 		options.Order = rawOrder[0]
 	}
-	return normalizeAsyncJobListOptions(options)
+	return asyncjob.NormalizeAsyncJobListOptions(options)
 }
 
 // asyncJobOwnerFromRoutingContext derives the job scope from the only principal
@@ -166,9 +168,9 @@ func parseVideoListOptions(requestPath string) (AsyncJobListOptions, error) {
 // view over everyone else's jobs.
 func asyncJobOwnerFromRoutingContext(routingCtx *types.RoutingContext) string {
 	if routingCtx == nil || routingCtx.User == nil {
-		return asyncJobOwnerShared
+		return asyncjob.AsyncJobOwnerShared
 	}
-	return asyncJobOwnerFromUserName(*routingCtx.User)
+	return asyncjob.AsyncJobOwnerFromUserName(*routingCtx.User)
 }
 
 // videoJobResponseNeedsBuffering reports whether a response body must be held
@@ -203,7 +205,7 @@ func videoJobResponseNeedsBuffering(method, requestPath string) bool {
 // All of those are deliberately indistinguishable: a distinct "exists but not
 // yours" answer would turn the 404 into an id oracle.
 func videoNotFoundResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_NotFound,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_NotFound,
 		fmt.Sprintf("video %s not found", publicJobID), ErrorCodeVideoNotFound, "",
 		HeaderErrorVideoNotFound, "true")
 }
@@ -213,7 +215,7 @@ func videoNotFoundResponse(publicJobID string) *extProcPb.ProcessingResponse {
 // than confirmed gone. The record is left in place: the generated video is on
 // that pod's local disk, so pinning elsewhere is not an option.
 func videoJobPodUnavailableResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		fmt.Sprintf("video %s's pod is temporarily unavailable, please retry", publicJobID),
 		ErrorCodeVideoJobPodUnavailable, "",
 		HeaderErrorVideoJobPodUnavailable, "true")
@@ -224,7 +226,7 @@ func videoJobPodUnavailableResponse(publicJobID string) *extProcPb.ProcessingRes
 // a 404: the job most likely still exists, and telling the client otherwise
 // would make it abandon a job it is still paying for.
 func videoJobStoreUnavailableResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		fmt.Sprintf("video %s could not be resolved right now, please retry", publicJobID),
 		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 }
@@ -233,14 +235,14 @@ func videoJobStoreUnavailableResponse(publicJobID string) *extProcPb.ProcessingR
 // gets: absent or dead means terminal 404, transient means retryable 503.
 func videoJobErrorResponse(publicJobID string, err error) *extProcPb.ProcessingResponse {
 	switch {
-	case errors.Is(err, errAsyncJobNotFound):
+	case errors.Is(err, asyncjob.ErrAsyncJobNotFound):
 		return videoNotFoundResponse(publicJobID)
-	case errors.Is(err, errAsyncJobTargetUnavailable):
+	case errors.Is(err, asyncjob.ErrAsyncJobTargetUnavailable):
 		return videoJobPodUnavailableResponse(publicJobID)
-	case errors.Is(err, errAsyncJobStoreUnavailable):
+	case errors.Is(err, asyncjob.ErrAsyncJobStoreUnavailable):
 		return videoJobStoreUnavailableResponse(publicJobID)
 	default:
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("video %s could not be resolved", publicJobID), "", "",
 			HeaderErrorRouting, "true")
 	}
@@ -250,7 +252,7 @@ func videoJobErrorResponse(publicJobID string, err error) *extProcPb.ProcessingR
 // not be persisted. It carries no id at all: the public id was never durable and
 // the backend id must not become the client's handle on the job.
 func videoJobRegistrationFailedResponse() *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		"video job could not be registered, please retry",
 		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 }
@@ -259,7 +261,7 @@ func videoJobRegistrationFailedResponse() *extProcPb.ProcessingResponse {
 // job but its record could not be removed. Reporting success would leave a
 // public id that still resolves to a job the client believes is gone.
 func videoJobCleanupFailedResponse(publicJobID string) *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+	return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 		fmt.Sprintf("video %s was deleted but its record could not be cleaned up, please retry", publicJobID),
 		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 }
@@ -288,15 +290,15 @@ type videoListResponse struct {
 // ImmediateResponse because there is no backend to ask: the catalog is aibrix's
 // own record of what the caller owns, deliberately without live status
 // enrichment, which would mean fanning out HTTP calls to every pinned pod.
-func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner string, options AsyncJobListOptions) *extProcPb.ProcessingResponse {
-	page, err := s.asyncJobRegistry().List(ctx, owner, asyncJobTypeVideo, options)
+func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner string, options asyncjob.AsyncJobListOptions) *extProcPb.ProcessingResponse {
+	page, err := s.asyncJobRegistry().List(ctx, owner, asyncjob.AsyncJobTypeVideo, options)
 	if err != nil {
-		if errors.Is(err, errAsyncJobNotFound) || errors.Is(err, errAsyncJobInvalidRecord) {
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+		if errors.Is(err, asyncjob.ErrAsyncJobNotFound) || errors.Is(err, asyncjob.ErrAsyncJobInvalidRecord) {
+			return errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest,
 				"invalid video list cursor or parameters", "", "", HeaderErrorRequestBodyProcessing, "true")
 		}
 		klog.ErrorS(err, "failed to list async video jobs", "requestID", requestID, "owner", owner)
-		return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			"video jobs could not be listed right now, please retry",
 			ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 	}
@@ -326,7 +328,7 @@ func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner st
 	})
 	if err != nil {
 		klog.ErrorS(err, "failed to marshal video job list", "requestID", requestID, "owner", owner)
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			"failed to marshal video job list", "", "", HeaderErrorResponseUnknown, "true")
 	}
 
@@ -338,7 +340,7 @@ func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner st
 			ImmediateResponse: &extProcPb.ImmediateResponse{
 				Status: &envoyTypePb.HttpStatus{Code: envoyTypePb.StatusCode_OK},
 				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: buildEnvoyProxyHeaders(nil, "Content-Type", "application/json"),
+					SetHeaders: errresp.BuildEnvoyProxyHeaders(nil, "Content-Type", "application/json"),
 				},
 				Body: string(respBody),
 			},
@@ -397,7 +399,7 @@ func (s *Server) pinAsyncVideoJob(ctx context.Context, routingCtx *types.Routing
 		}
 	}()
 
-	headers = buildEnvoyProxyHeaders(make([]*configPb.HeaderValueOption, 0, 4),
+	headers = errresp.BuildEnvoyProxyHeaders(make([]*configPb.HeaderValueOption, 0, 4),
 		HeaderRoutingStrategy, videoJobAffinityLabel,
 		HeaderTargetPod, targetPodIP,
 		pathKey, rewrittenPath,
@@ -424,7 +426,7 @@ func (s *Server) handleVideoJobSubResource(ctx context.Context, routingCtx *type
 		return errResp, routingCtx.Model, false, term
 	}
 
-	headers = buildEnvoyProxyHeaders(headers, "content-length", strconv.Itoa(len(routingCtx.ReqBody)))
+	headers = errresp.BuildEnvoyProxyHeaders(headers, "content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 
 	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
@@ -536,8 +538,8 @@ func (s *Server) registerVideoJobFromCreateResponse(ctx context.Context, request
 	}
 
 	owner := asyncJobOwnerFromRoutingContext(routerCtx)
-	record, err := s.asyncJobRegistry().Register(ctx, AsyncJobRegistration{
-		JobType:      asyncJobTypeVideo,
+	record, err := s.asyncJobRegistry().Register(ctx, asyncjob.AsyncJobRegistration{
+		JobType:      asyncjob.AsyncJobTypeVideo,
 		Owner:        owner,
 		Model:        routerCtx.Model,
 		BackendJobID: backendJobID,

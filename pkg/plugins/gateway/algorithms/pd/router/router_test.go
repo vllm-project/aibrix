@@ -233,7 +233,8 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 	assert.Equal(t, 0.0, testutil.ToFloat64(successCounter.WithLabelValues("", "test-model", pdRoutePrefillRequestSuccess, "200")))
 
 	<-prefillStarted
-	cancelParent()
+	// Keep the client connected while the prefill completes successfully.
+	// Client cancellation is covered separately and now cancels the HTTP call.
 	close(releasePrefill)
 	releasedPrefill = true
 	assert.Eventually(t, func() bool {
@@ -974,6 +975,88 @@ func TestScoreDecodePods(t *testing.T) {
 			if tt.check != nil {
 				tt.check(t, run)
 			}
+		})
+	}
+}
+
+func TestScoreDecodePods_ConductorFleetMedianFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		pods        []*v1.Pod
+		counts      map[string]float64
+		throughputs map[string]float64
+		freeGPU     map[string]float64
+		check       func(t *testing.T, run pd.DecodeScoreRun)
+	}{
+		{
+			name: "mixed fleet idle unmeasured pod beats busy measured pod",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "busy", Labels: map[string]string{PDRoleSetIdentifier: "rs1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "idle", Labels: map[string]string{PDRoleSetIdentifier: "rs1"}}},
+			},
+			counts:      map[string]float64{"busy": 20, "idle": 0},
+			throughputs: map[string]float64{"busy": 4000, "idle": 0},
+			freeGPU:     map[string]float64{"busy": 50, "idle": 50},
+			check: func(t *testing.T, run pd.DecodeScoreRun) {
+				assert.Equal(t, "idle", run.PerRoleset["rs1"].Pod.Name)
+				// Idle: (1 + 1) * (1000 / 4000) = 0.5 ms; Busy: (20 + 1) * (1000 / 4000) = 5.25 ms.
+				assert.InDelta(t, 0.5, run.PerRoleset["rs1"].Score, 1e-9)
+				assert.InDelta(t, 5.25, run.MaxScore, 1e-9)
+				assert.Nil(t, run.Err)
+			},
+		},
+		{
+			name: "mixed fleet same load scores unmeasured pod in same units via median",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "m1", Labels: map[string]string{PDRoleSetIdentifier: "rs1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "m2", Labels: map[string]string{PDRoleSetIdentifier: "rs2"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "u1", Labels: map[string]string{PDRoleSetIdentifier: "rs3"}}},
+			},
+			// Median of [1000, 3000] is 2000; u1 (10 running, 0 tok/s) scores 11*(1000/2000)=5.5 ms,
+			// matching m1 (11*1.0=11 ms) and m2 (11*0.333=3.67 ms) in scale.
+			counts:      map[string]float64{"m1": 10, "m2": 10, "u1": 10},
+			throughputs: map[string]float64{"m1": 1000, "m2": 3000, "u1": 0},
+			freeGPU:     map[string]float64{"m1": 50, "m2": 50, "u1": 50},
+			check: func(t *testing.T, run pd.DecodeScoreRun) {
+				assert.InDelta(t, 11.0, run.PerRoleset["rs1"].Score, 1e-9)
+				assert.InDelta(t, 11.0/3.0, run.PerRoleset["rs2"].Score, 1e-9)
+				assert.InDelta(t, 5.5, run.PerRoleset["rs3"].Score, 1e-9)
+			},
+		},
+		{
+			name: "all unmeasured fleet falls back to 20ms per request consistently",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "light", Labels: map[string]string{PDRoleSetIdentifier: "rs1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "heavy", Labels: map[string]string{PDRoleSetIdentifier: "rs1"}}},
+			},
+			counts:      map[string]float64{"light": 1, "heavy": 40},
+			throughputs: map[string]float64{"light": 0, "heavy": 0},
+			freeGPU:     map[string]float64{"light": 50, "heavy": 50},
+			check: func(t *testing.T, run pd.DecodeScoreRun) {
+				assert.Equal(t, "light", run.PerRoleset["rs1"].Pod.Name)
+				assert.InDelta(t, 40.0, run.PerRoleset["rs1"].Score, 1e-9)
+				assert.InDelta(t, 820.0, run.MaxScore, 1e-9)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &pdRouter{decodePolicy: pd.ConductorDecodePolicy{}}
+			ctx := &types.RoutingContext{RequestID: "test-conductor"}
+
+			run := r.scoreDecodePods(
+				ctx,
+				tt.pods,
+				40.0,
+				4000.0,
+				50.0,
+				byPodKey(tt.pods, tt.counts),
+				byPodKey(tt.pods, tt.throughputs),
+				byPodKey(tt.pods, tt.freeGPU),
+				r.decodePolicy,
+			)
+			tt.check(t, run)
 		})
 	}
 }

@@ -27,8 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -98,8 +100,8 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			// Even an unrelated rid must never trigger SGLang's abort endpoint.
 			ctx.SetPDRequestID("not-a-trt-abort-id")
 			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-			exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
-			exec.tokenLoad.AcquirePrefill(ctx.RequestID, podKey, 100)
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
+			exec.tokenLoad.AcquirePrefill(ctx.TrackerKey(), podKey, 100)
 			require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 			if class == pd.PrefillFailureCanceled {
 				select {
@@ -140,6 +142,97 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 	}
 }
 
+func TestTRTAsyncCancelAfterDecodeHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		bodyPending bool
+	}{
+		{name: "waiting_for_prefill_headers"},
+		{name: "reading_prefill_body", bodyPending: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failures, cleanup := metrics.SetupCounterMetricsForTest(metrics.GatewayPrefillRequestFailTotal, []string{"status", "status_code"})
+			defer cleanup()
+			started, disconnected := make(chan struct{}), make(chan struct{})
+			responseReceived, release := make(chan struct{}), make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				_, _ = io.Copy(io.Discard, req.Body)
+				if tc.bodyPending {
+					_, _ = io.WriteString(w, `{"usage":`)
+					w.(http.Flusher).Flush()
+				}
+				close(started)
+				select {
+				case <-req.Context().Done():
+					close(disconnected)
+				case <-release:
+				}
+			}))
+			defer srv.Close()
+			defer close(release)
+			exec, handler := trtAsyncExecutor(t)
+			if tc.bodyPending {
+				exec.httpClient.Transport = responseObservedTransport{http.DefaultTransport, responseReceived}
+			}
+			ctx := failFastCtx("trt-cancel-after-headers", `{"messages":[{"role":"user","content":"hi"}],"stream":true}`, "127.0.0.1:1")
+			defer ctx.Delete()
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx.Context, ctx.Engine = parent, pd.EngineTRTLLM
+			ctx.SetResetAfterHeaders(engine.AsyncDispatchPolicyFor(handler).ResetAfterHeaders)
+			pod := failFastPod(t, "trt-ctx", strings.TrimPrefix(srv.URL, "http://"))
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			const decodeKey = "default/trt-decode"
+			exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
+			exec.tokenLoad.AcquirePrefill(ctx.TrackerKey(), podKey, 100)
+			// No TTL: only failure handling can release this decode charge.
+			exec.tokenLoad.AcquireDecodeWithTTL(ctx.TrackerKey(), decodeKey, 100, 0)
+			require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
+			defer func(leg *types.PDLegState) {
+				cancel()
+				waitForDecodeAbort(t, leg)
+			}(ctx.PDLeg())
+			select {
+			case <-started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("prefill request did not arrive")
+			}
+			if tc.bodyPending {
+				select {
+				case <-responseReceived:
+				case <-time.After(2 * time.Second):
+					t.Fatal("prefill response headers did not arrive")
+				}
+			}
+			// TRT can send decode headers before receiving KV. A disconnect
+			// here must still signal fail-fast and release the decode charge.
+			ctx.MarkDecodeResponded()
+			require.Equal(t, 100.0, exec.tokenLoad.GetDecodeLoad(decodeKey))
+			cancel()
+			select {
+			case <-disconnected:
+			case <-time.After(2 * time.Second):
+				t.Fatal("stream cancellation did not close the prefill request")
+			}
+			require.Eventually(t, func() bool {
+				active, _ := exec.tokenLoad.GetLoad(podKey)
+				return exec.tracker.GetPrefillRequestCountsForPod(podKey) == 0 && active == 0
+			}, 2*time.Second, time.Millisecond)
+			assert.Zero(t, exec.tokenLoad.GetDecodeLoad(decodeKey))
+			assert.Equal(t, 1.0, testutil.ToFloat64(failures.WithLabelValues("context_canceled", "499")))
+			select {
+			case <-ctx.PrefillFailed():
+			default:
+				t.Error("TRT cancellation after decode headers must signal fail-fast")
+			}
+			require.NotNil(t, ctx.PrefillFailure())
+			assert.Equal(t, pd.PrefillFailureCanceled, ctx.PrefillFailure().Class)
+			assert.True(t, pd.PrefillFailureIsTerminalFor(ctx.PrefillFailure().Class, ctx.ResetAfterHeaders()))
+			assert.True(t, ctx.PrefillSucceededAt().IsZero())
+		})
+	}
+}
+
 func TestTRTAsyncFailureAfterContextReuse(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -160,7 +253,7 @@ func TestTRTAsyncFailureAfterContextReuse(t *testing.T) {
 	ctx.Engine = pd.EngineTRTLLM
 	pod := failFastPod(t, "ctx", strings.TrimPrefix(srv.URL, "http://"))
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
+	exec.tracker.AddPrefillRequest(ctx.TrackerKey(), podKey)
 	require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 	select {
 	case <-started:

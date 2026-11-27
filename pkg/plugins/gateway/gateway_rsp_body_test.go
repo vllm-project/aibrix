@@ -34,6 +34,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/asyncjob"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -597,7 +599,7 @@ func TestProcessLanguageResponse_InvalidJSON(t *testing.T) {
 
 	assert.True(t, complete)
 	assert.NotNil(t, res)
-	// buildErrorResponse returns ImmediateResponse, not ResponseBody
+	// errresp.BuildErrorResponse returns ImmediateResponse, not ResponseBody
 	immResp := res.GetImmediateResponse()
 	assert.NotNil(t, immResp)
 	headers := immResp.GetHeaders().GetSetHeaders()
@@ -892,10 +894,10 @@ func TestNormalizeUpstreamError(t *testing.T) {
 }
 
 func TestBuildErrorResponseWithBody(t *testing.T) {
-	resp := buildErrorResponseWithBody(
+	resp := errresp.BuildErrorResponseWithBody(
 		envoyTypePb.StatusCode_BadRequest,
 		`{"error":{"message":"bad","type":"BadRequestError"}}`,
-		buildEnvoyProxyHeaders(nil, "x-upstream-error", "true"),
+		errresp.BuildEnvoyProxyHeaders(nil, "x-upstream-error", "true"),
 	)
 	immResp := resp.GetImmediateResponse()
 	assert.NotNil(t, immResp)
@@ -2366,10 +2368,10 @@ func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
 
 	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
 	publicJobID := gjson.GetBytes(body, "id").String()
-	assert.True(t, strings.HasPrefix(publicJobID, asyncJobPublicIDPrefix), "client must never see the backend id: %s", publicJobID)
+	assert.True(t, strings.HasPrefix(publicJobID, "aibrixjob-"), "client must never see the backend id: %s", publicJobID)
 	assert.Equal(t, "queued", gjson.GetBytes(body, "status").String())
 
-	record, err := listTestAsyncJobs(context.Background(), registry, asyncJobOwnerShared, asyncJobTypeVideo)
+	record, err := listTestAsyncJobs(context.Background(), registry, asyncjob.AsyncJobOwnerShared, asyncjob.AsyncJobTypeVideo)
 	require.NoError(t, err)
 	require.Len(t, record, 1)
 	assert.Equal(t, publicJobID, record[0].PublicJobID)
@@ -2381,7 +2383,7 @@ func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
 // a status poll with its own id, which the client has never seen and cannot use.
 func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
-	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
 		readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-status", "")
@@ -2408,7 +2410,7 @@ func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
 // response that must never be buffered: the video file itself.
 func TestHandleResponseBody_VideoContentStaysStreaming(t *testing.T) {
 	s, _, registry := newTestVideoJobServer(t)
-	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+	record := registerTestVideoJob(t, registry, asyncjob.AsyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
 		readyPod("pod-a", "ns-a", "10.0.0.5"))
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-content", "")
@@ -2528,4 +2530,165 @@ func TestHandleResponseBody_ContinuousUsageStatsFinalizesAtStreamEnd(t *testing.
 			assert.False(t, pending, "the running usage is dropped once the request is finalized")
 		})
 	}
+}
+
+// TestProcessLanguageResponse_OversizeBodyCap covers the configurable cap on the per-request
+// non-streamed response buffer (requestBuffers). Because the default router streams the body,
+// an over-cap response cannot be failed once it is in flight: the gateway must stop buffering,
+// forward the remaining chunks unchanged (CONTINUE, never an ImmediateResponse), skip usage, and
+// leave no buffer behind -- while a body under the cap (and any body when the cap is disabled)
+// is still buffered and metered as before.
+func TestProcessLanguageResponse_OversizeBodyCap(t *testing.T) {
+	t.Run("over-cap body is passed through, not failed, and leaves no buffer", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 64
+		defer func() { maxResponseBodySize = orig }()
+
+		// Capture the overflow counter.
+		var overflow float64
+		originalFn := metrics.IncrementCounterMetricFnForTest
+		defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+		metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+			if name == metrics.GatewayResponseBufferOverflowTotal {
+				overflow += value
+			}
+		}
+
+		requestID := "test-oversize-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		// First chunk stays under the cap: a normal "wait for more" response, buffer retained.
+		first := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: bytes.Repeat([]byte("a"), 32), EndOfStream: false},
+		}
+		res, complete, _, _, _ := processLanguageResponse(requestID, first)
+		assert.False(t, complete)
+		assert.Nil(t, res.GetImmediateResponse())
+		assert.NotNil(t, res.GetResponseBody().GetResponse(), "an under-cap chunk continues")
+
+		// Second chunk crosses the cap before end-of-stream. The body is already streaming, so it
+		// must be forwarded (CONTINUE), not failed, and the buffer must be dropped (pass-through).
+		second := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: bytes.Repeat([]byte("b"), 64), EndOfStream: false},
+		}
+		res, complete, _, _, _ = processLanguageResponse(requestID, second)
+		assert.False(t, complete, "the stream is not done; keep forwarding")
+		assert.Nil(t, res.GetImmediateResponse(), "an in-flight streamed response must not be failed")
+		assert.NotNil(t, res.GetResponseBody().GetResponse(), "the over-cap chunk is forwarded (CONTINUE)")
+		assert.Equal(t, float64(1), overflow, "the overflow counter is incremented once")
+		if v, ok := requestBuffers.Load(requestID); assert.True(t, ok, "a pass-through marker is kept until end of stream") {
+			assert.Same(t, requestBufferOverflow, v, "the real buffer is replaced by the overflow sentinel")
+		}
+
+		// A later chunk stays in pass-through: forwarded, still no re-buffering.
+		third := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: bytes.Repeat([]byte("c"), 1024), EndOfStream: false},
+		}
+		res, complete, _, _, _ = processLanguageResponse(requestID, third)
+		assert.False(t, complete)
+		assert.Nil(t, res.GetImmediateResponse())
+		assert.Equal(t, float64(1), overflow, "the counter is not incremented again for the same request")
+
+		// Final chunk: finalize with zero usage and release the marker.
+		final := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: []byte("d"), EndOfStream: true},
+		}
+		res, complete, pt, ct, tt2 := processLanguageResponse(requestID, final)
+		assert.True(t, complete)
+		assert.Nil(t, res.GetImmediateResponse())
+		assert.Nil(t, res, "the final pass-through chunk defers to the caller's end-of-stream handling")
+		assert.Equal(t, int64(0), pt)
+		assert.Equal(t, int64(0), ct)
+		assert.Equal(t, int64(0), tt2)
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered, "the pass-through marker must be released, not left behind")
+	})
+
+	t.Run("single over-cap final chunk is passed through and leaves no buffer", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 64
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-oversize-final-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: bytes.Repeat([]byte("x"), 128), EndOfStream: true},
+		}
+		res, complete, _, _, tt2 := processLanguageResponse(requestID, req)
+		assert.True(t, complete)
+		assert.Nil(t, res.GetImmediateResponse(), "an over-cap body is not failed")
+		assert.Equal(t, int64(0), tt2, "an unbuffered over-cap body yields no usage")
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered, "no buffer or marker is left behind")
+	})
+
+	t.Run("body under the cap is buffered and metered normally", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 1024
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-undersize-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model":"m","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
+				EndOfStream: true,
+			},
+		}
+		// processLanguageResponse leaves finalization (complete) to HandleResponseBody, which
+		// sets it from the usage; here we assert the body was accepted and metered.
+		res, _, pt, ct, tt2 := processLanguageResponse(requestID, req)
+		assert.Nil(t, res.GetImmediateResponse(), "a body under the cap is not rejected")
+		assert.Equal(t, int64(10), pt)
+		assert.Equal(t, int64(5), ct)
+		assert.Equal(t, int64(15), tt2)
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered, "the buffer is released after final processing")
+	})
+
+	t.Run("body exactly at the cap is buffered and metered, not passed through", func(t *testing.T) {
+		// The cap is exclusive (len > cap), so a body whose size equals the cap is still buffered.
+		// Guards the boundary: the `>`-to-`>=` mutant would pass this body through and lose usage.
+		body := []byte(`{"model":"m","usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)
+		orig := maxResponseBodySize
+		maxResponseBodySize = len(body) // cap exactly equals the body size
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-atcap-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: body, EndOfStream: true},
+		}
+		res, _, pt, ct, tt2 := processLanguageResponse(requestID, req)
+		assert.Nil(t, res.GetImmediateResponse())
+		// Non-zero usage proves the body was buffered and parsed, not passed through (which skips usage).
+		assert.Equal(t, int64(1), pt)
+		assert.Equal(t, int64(2), ct)
+		assert.Equal(t, int64(3), tt2, "a body exactly at the cap must be metered, not passed through")
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered, "the buffer is released after final processing")
+	})
+
+	t.Run("cap disabled buffers and meters a large body", func(t *testing.T) {
+		orig := maxResponseBodySize
+		maxResponseBodySize = 0 // disabled
+		defer func() { maxResponseBodySize = orig }()
+
+		requestID := "test-capdisabled-" + time.Now().Format("150405.000")
+		defer requestBuffers.Delete(requestID)
+
+		large := append([]byte(`{"model":"m","content":"`), bytes.Repeat([]byte("z"), 4096)...)
+		large = append(large, []byte(`","usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)...)
+		req := &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: large, EndOfStream: true},
+		}
+		res, _, _, _, tt2 := processLanguageResponse(requestID, req)
+		assert.Nil(t, res.GetImmediateResponse(), "with the cap disabled no overflow handling runs")
+		assert.Equal(t, int64(3), tt2)
+		_, buffered := requestBuffers.Load(requestID)
+		assert.False(t, buffered)
+	})
 }

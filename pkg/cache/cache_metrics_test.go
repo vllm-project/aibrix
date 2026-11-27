@@ -1939,6 +1939,15 @@ func scrapeGatewayMetrics(t *testing.T) *httptest.ResponseRecorder {
 	return recorder
 }
 
+// scrapeHandler renders a /metrics response from an isolated test registry.
+func scrapeHandler(t *testing.T, handler http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	return recorder
+}
+
 // metricFamilyFromHTTP parses a /metrics response and returns the named family,
 // nil when the endpoint does not export it at all.
 func metricFamilyFromHTTP(t *testing.T, body io.Reader, metricName string) *dto.MetricFamily {
@@ -2014,13 +2023,17 @@ func TestUpdateRealtimeRunningRequestsDrainRate1m_ExportsDrainRateGauge(t *testi
 			pod := namespacedTestPod(testNamespace, tt.podName)
 			pod.Labels = tt.labels
 			pod.Annotations = tt.annotations
+			pod.Status.PodIP = "10.0.0.1"
+			pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+			store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 
 			seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
 			atomic.StoreInt64(&pod.completedRequests, 30) // 30 completions over the ~30s window
 
 			store.updateRealtimeRunningRequestsDrainRate1m(pod)
+			handler := runningRequestsMetricsHandler(t, store)
 
-			family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+			family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
 			require.NotNil(t, family, "the gateway /metrics response must export %s", metrics.RealtimeRunningRequestsDrainRate1m)
 			require.Equal(t, dto.MetricType_GAUGE, family.GetType())
 
@@ -2043,6 +2056,9 @@ func TestUpdateRealtimeRunningRequestsDrainRate1m_ZeroRateReportsZeroOnSameSerie
 	store := &Store{}
 	pod := namespacedTestPod(testNamespace, "drain-gauge-zero")
 	pod.Labels = map[string]string{constants.ModelLabelName: "test-model-zero"}
+	pod.Status.PodIP = "10.0.0.1"
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 
 	wantLabels := map[string]string{
 		"namespace":   testNamespace,
@@ -2055,8 +2071,9 @@ func TestUpdateRealtimeRunningRequestsDrainRate1m_ZeroRateReportsZeroOnSameSerie
 	seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
 	atomic.StoreInt64(&pod.completedRequests, 30)
 	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+	handler := runningRequestsMetricsHandler(t, store)
 
-	family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
 	value, ok := gaugeValueForLabels(family, wantLabels)
 	require.True(t, ok, "the series must be exported before the rate reaches zero")
 	require.InDelta(t, 1.0, value, 0.05)
@@ -2065,7 +2082,7 @@ func TestUpdateRealtimeRunningRequestsDrainRate1m_ZeroRateReportsZeroOnSameSerie
 	seedCompletedRequestsHistory(t, pod, 30, 30*time.Second)
 	store.updateRealtimeRunningRequestsDrainRate1m(pod)
 
-	family = metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	family = metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
 	value, ok = gaugeValueForLabels(family, wantLabels)
 	require.True(t, ok, "the series must stay exported when the rate reaches zero")
 	require.Equal(t, 0.0, value)
