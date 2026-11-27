@@ -171,6 +171,13 @@ func (c *Store) addPod(obj interface{}) {
 	}
 }
 
+func hasSamePodMetricIdentity(oldPod, newPod *v1.Pod) bool {
+	oldModelName, oldOk := getModelNameFromPod(oldPod)
+	newModelName, newOk := getModelNameFromPod(newPod)
+	return oldPod.Namespace == newPod.Namespace && oldPod.Name == newPod.Name && oldPod.UID == newPod.UID &&
+		oldModelName == newModelName && oldOk == newOk && isWorkerPod(oldPod) == isWorkerPod(newPod)
+}
+
 func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
@@ -183,13 +190,12 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 		return
 	}
 
-	oldModelName, oldOk := getModelNameFromPod(oldPod)
+	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
 	newModelClaims := c.modelClaimBindingsFromPod(newPod)
 	newHasModelInfo := newOk || len(newModelClaims) > 0
-	sameMetricIdentity := oldPod.Namespace == newPod.Namespace && oldPod.Name == newPod.Name && oldPod.UID == newPod.UID &&
-		oldModelName == newModelName && oldOk == newOk && oldIsWorker == newIsWorker
+	sameMetricIdentity := hasSamePodMetricIdentity(oldPod, newPod)
 
 	if !oldOk && !existed && !newHasModelInfo {
 		return // No model information to track in either old or new pod
