@@ -147,6 +147,71 @@ func TestEstimatePromptTokens_MultipleMessagesAndParts(t *testing.T) {
 	assert.Equal(t, want, estimatePromptTokensWithConfig(body, cfg))
 }
 
+func TestEstimatePromptTokens_ResponsesInputImage(t *testing.T) {
+	cfg := promptTokenEstimateConfig{imageTokens: 100}
+	payload := "data:image/png;base64,AAAA"
+	tests := []struct {
+		name    string
+		body    string
+		payload string
+	}{
+		{
+			name:    "direct data url",
+			body:    `{"model":"m","input":[{"type":"input_image","image_url":"` + payload + `"}]}`,
+			payload: payload,
+		},
+		{
+			name:    "message wrapped data url",
+			body:    `{"model":"m","input":[{"role":"user","content":[{"type":"input_image","image_url":"` + payload + `"}]}]}`,
+			payload: payload,
+		},
+		{
+			name:    "direct remote url",
+			body:    `{"model":"m","input":[{"type":"input_image","image_url":"https://example.com/a.png"}]}`,
+			payload: "https://example.com/a.png",
+		},
+		{
+			name:    "message wrapped remote url",
+			body:    `{"model":"m","input":[{"role":"user","content":[{"type":"input_image","image_url":"https://example.com/a.png"}]}]}`,
+			payload: "https://example.com/a.png",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(tt.body)
+			want := (len(body)-len(tt.payload)-2)/bytesPerTokenEstimate + cfg.imageTokens
+			assert.Equal(t, want, estimatePromptTokensWithConfig(body, cfg))
+		})
+	}
+}
+
+func TestEstimatePromptTokens_ResponsesMultipleImages(t *testing.T) {
+	cfg := promptTokenEstimateConfig{imageTokens: 100}
+	first := "data:image/png;base64,AAAA"
+	second := "data:image/png;base64,BBBB"
+	body := []byte(`{"model":"m","input":[{"type":"input_image","image_url":"` + first + `"},{"role":"user","content":[{"type":"input_image","image_url":"` + second + `"}]}]}`)
+
+	mediaBytes := len(first) + 2 + len(second) + 2
+	want := (len(body)-mediaBytes)/bytesPerTokenEstimate + 2*cfg.imageTokens
+	assert.Equal(t, want, estimatePromptTokensWithConfig(body, cfg))
+}
+
+func TestEstimatePromptTokens_ResponsesTextOnlyUnchanged(t *testing.T) {
+	bodies := [][]byte{
+		[]byte(`{"model":"m","input":"hello"}`),
+		[]byte(`{"model":"m","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`),
+	}
+	for _, body := range bodies {
+		assert.Equal(t, len(body)/bytesPerTokenEstimate, EstimatePromptTokens(body))
+	}
+}
+
+func TestEstimatePromptTokens_ResponsesMalformedFallback(t *testing.T) {
+	body := []byte(`{"input":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}`)
+	assert.Equal(t, len(body)/bytesPerTokenEstimate, EstimatePromptTokens(body))
+}
+
 func TestEstimatePromptTokens_FallbackCases(t *testing.T) {
 	cfg := promptTokenEstimateConfig{imageTokens: 100, audioTokens: 50, videoTokens: 200}
 	cases := map[string][]byte{
@@ -204,6 +269,7 @@ func TestLoadPromptTokenEstimateConfig(t *testing.T) {
 func BenchmarkEstimatePromptTokens(b *testing.B) {
 	text := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}],"max_tokens":128}`)
 	image := chatBodyWithContentParts(`{"type":"image_url","image_url":{"url":"data:image/png;base64,` + strings.Repeat("A", 1<<16) + `"}}`)
+	responsesImage := []byte(`{"model":"m","input":[{"type":"input_image","image_url":"data:image/png;base64,` + strings.Repeat("A", 1<<16) + `"}]}`)
 
 	b.Run("text", func(b *testing.B) {
 		b.ReportAllocs()
@@ -215,6 +281,12 @@ func BenchmarkEstimatePromptTokens(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			_ = EstimatePromptTokens(image)
+		}
+	})
+	b.Run("responses_image", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = EstimatePromptTokens(responsesImage)
 		}
 	})
 }

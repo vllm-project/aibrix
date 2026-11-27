@@ -558,7 +558,7 @@ Each request is charged ``request_cost + new_tokens``, where ``request_cost`` (`
 2. **Prefix match.** If the scoring policy looked the prompt up in the prefix cache (``hybrid_cache_load``), the charge is ``prompt_tokens × (1 − match_percent / 100)``.
 3. **Whole prompt.** Otherwise the whole prompt is charged. ``token_load`` itself does not consult the prefix cache, so without a session header this is what it charges.
 
-The media-aware estimate recognizes the chat content-part types ``image_url``, ``audio_url``, ``input_audio``, and ``video_url``. Other media shapes, such as vLLM's ``image_embeds`` / ``image_pil`` or Responses-style ``input_image``, keep the original body-byte estimate until explicit support is added.
+The media-aware estimate recognizes the chat content-part types ``image_url``, ``audio_url``, ``input_audio``, and ``video_url``, plus Responses API ``input_image`` parts (both direct ``input`` items and message-wrapped ``content`` arrays). Other media shapes, such as vLLM's ``image_embeds`` / ``image_pil``, keep the original body-byte estimate until explicit support is added.
 
 **Charge lifecycle**
 

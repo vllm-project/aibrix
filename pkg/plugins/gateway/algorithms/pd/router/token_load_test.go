@@ -128,6 +128,28 @@ func TestPDRouter_TokenLoadChargesMediaAwareEstimate(t *testing.T) {
 	assert.Less(t, active, float64(len(body)/4), "base64 payload must not dominate the charge")
 }
 
+// TestPDRouter_TokenLoadChargesResponsesMediaAwareEstimate pins the same call
+// site for Responses API input_image parts (#3641).
+func TestPDRouter_TokenLoadChargesResponsesMediaAwareEstimate(t *testing.T) {
+	r, tokenLoad := newTokenLoadTestRouter(t, &http.Client{})
+	payload := "data:image/png;base64," + strings.Repeat("A", 64*1024)
+	body := []byte(`{"model":"token-load-model","input":[{"role":"user","content":[{"type":"input_image","image_url":"` + payload + `"}]}],"stream":true}`)
+
+	ctx := types.NewRoutingContext(context.Background(), "pd", "token-load-model", "hi", "responses-media", "user")
+	t.Cleanup(ctx.Delete)
+	ctx.Engine = "vllm"
+	ctx.ReqPath = pd.ResponsesPath
+	ctx.ReqBody = body
+	pod := burstPod("prefill-responses-media", "prefill", "127.0.0.1")
+
+	r.chargeTokenLoad(ctx, pod, r.prefillPolicy, nil)
+
+	want := float64(pd.EstimatePromptTokens(body))
+	active, _ := tokenLoad.GetLoad(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	assert.Equal(t, want, active)
+	assert.Less(t, active, float64(len(body)/4), "Responses base64 payload must not dominate the charge")
+}
+
 // waitForActiveTokens polls until the sum of active tokens over pods equals
 // want, i.e. until the in-flight prefills charged so far are all visible.
 func waitForActiveTokens(t *testing.T, tracker *pd.TokenLoadTracker, pods []*v1.Pod, want float64) {
