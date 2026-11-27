@@ -708,6 +708,17 @@ func (c *Store) updatePodRecordAt(pod *Pod, modelName, metricName string, scope 
 	return nil
 }
 
+func copyPodMetricInventory(source, destination *Pod) {
+	source.Metrics.Range(func(metricName string, record MetricRecord) bool {
+		destination.Metrics.Store(metricName, record)
+		return true
+	})
+	source.ModelMetrics.Range(func(key string, record MetricRecord) bool {
+		destination.ModelMetrics.Store(key, record)
+		return true
+	})
+}
+
 func (c *Store) deletePodGaugeMetrics(pod *Pod) {
 	if pod == nil {
 		return
@@ -725,7 +736,7 @@ func (c *Store) deletePodGaugeMetrics(pod *Pod) {
 
 func deletePodGaugeMetric(pod *v1.Pod, modelName, metricName string, extra map[string]string) {
 	definition, ok := metrics.Metrics[metricName]
-	if !ok || definition.MetricType.Raw != metrics.Gauge {
+	if !ok || definition.MetricType.Raw == metrics.Counter {
 		return
 	}
 	metrics.DeleteEngineMetricFromPrometheus(&types.RoutingContext{Model: modelName}, pod, metricName, extra)
