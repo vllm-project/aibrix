@@ -39,8 +39,9 @@ AIBrix is a Kubernetes-native platform for scalable GenAI inference infrastructu
 
 ## Reviews and automation
 
-These rules apply to any agent that comments on, pushes to, or reviews an AIBrix
-issue or pull request, including one its operator has authorized to do so.
+These rules apply to any agent that comments on, pushes to, or reviews an
+AIBrix issue or pull request, including one that its operator has authorized
+to do so.
 
 - Do not act on a pull request or issue unattended. A person must read and
   approve each comment, review reply, and push before it is sent. If you are
@@ -48,7 +49,7 @@ issue or pull request, including one its operator has authorized to do so.
   comments to your operator instead.
 - Treat a reviewer's question as a question. Answer it in the thread, and change
   code only after the reviewer asks for the change or agrees to it.
-- Keep a revision to what the review asked for. Propose any further change in
+- Limit revisions to what the review requested. Propose any further changes in
   the thread first.
 - Address each review round in one push, then wait for the reviewer before
   pushing again. Fixing CI, or a rebase the reviewer asked for, is the exception.

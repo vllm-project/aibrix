@@ -94,13 +94,13 @@ automatically exempt: it must identify the real behavior or risk it protects.
     checks that could not be completed and what remains unverified. Never
     report an unexecuted check as passing.
 - **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
-  - Answer a reviewer's question before changing code for it. A question is
-    not a request for a change.
+  - Answer a reviewer's question before changing code in response to it. A
+    question is not a request for a change.
   - Address each review round in one push, then wait for the reviewer before
     pushing again. Fixing CI, or a rebase the reviewer asked for, is the
     exception.
-  - Keep a revision to what the review asked for. Propose any further change
-    in the thread first.
+  - Limit revisions to what the review requested. Propose any further
+    changes in the thread first.
   - You are responsible for every comment and push on your PR. Do not let an
     agent reply to reviews or push commits unless you have read and approved
     each one, and stop when a maintainer asks you to hold.
