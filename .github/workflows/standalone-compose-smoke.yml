@@ -1,0 +1,96 @@
+name: Standalone Compose Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main", "release-*"]
+    paths:
+      - 'deployment/standalone/**'
+      - 'build/container/**'
+      - 'development/app/**'
+      - '.github/workflows/standalone-compose-smoke.yml'
+      - '!**/*.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  compose-smoke:
+    name: Standalone Compose Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # docker-compose.yml and docker-compose.mock.yml tag AIBrix images with this.
+      AIBRIX_VERSION: ${{ github.sha }}
+      COMPOSE: docker compose -f docker-compose.yml -f docker-compose.mock.yml
+    defaults:
+      run:
+        working-directory: deployment/standalone
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Build from the PR so image changes (e.g. an entrypoint change, #3535) are tested.
+      # Caches are shared with Installation Smoke.
+      - name: Build gateway-plugins
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.gateway
+          tags: aibrix/gateway-plugins:${{ github.sha }}
+          cache-from: type=gha,scope=gateway-plugins
+          load: true
+
+      - name: Build metadata-service
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.python
+          target: metadata-service
+          tags: aibrix/metadata-service:${{ github.sha }}
+          cache-from: type=gha,scope=metadata-service
+          load: true
+
+      - name: Build vllm-mock
+        uses: docker/build-push-action@v7
+        with:
+          context: development/app
+          file: development/app/Dockerfile
+          tags: aibrix/vllm-mock:${{ github.sha }}
+          cache-from: type=gha,scope=vllm-mock
+          load: true
+
+      - name: Start the stack
+        run: timeout 3m $COMPOSE up -d
+
+      # The gateway image has no healthcheck, so `up --wait` cannot be used;
+      # retry each request until the stack is serving instead.
+      - name: Check endpoints
+        run: |
+          set -euo pipefail
+          check() {
+            echo "--- $1 $2"
+            curl -sf --retry 30 --retry-delay 2 --retry-all-errors "${@:3}" "http://localhost$2"
+            echo
+          }
+          check GET  /healthz | tee /dev/stderr | grep -q '"mode":"gateway"'
+          check GET  /v1/models
+          check POST /v1/chat/completions -H 'Content-Type: application/json' \
+            -d '{"model":"Qwen/Qwen2.5-1.5B-Instruct","messages":[{"role":"user","content":"hi"}]}'
+
+      - name: Dump stack state
+        if: failure()
+        run: |
+          $COMPOSE ps -a
+          $COMPOSE logs --no-color
+
+      - name: Stop the stack
+        if: always()
+        run: $COMPOSE down -v

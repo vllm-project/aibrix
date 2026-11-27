@@ -96,7 +96,7 @@ services:
       gateway:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9901/ready"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9901 && printf 'GET /ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q 'HTTP/1.1 200' <&3"]
       <<: *healthcheck-defaults
       start_period: 5s
     networks:
