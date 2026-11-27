@@ -309,6 +309,31 @@ func lifecycleOf(deployment *appsv1.Deployment) *poolLifecyclePolicy {
 	return policy.Lifecycle
 }
 
+// activationTimeoutOf is how long a pool lets an instance stay Activating
+// after its engine has stopped booting: its activation.timeoutSeconds, or
+// defaultActivationTimeout when the policy sets none or is not valid.
+func activationTimeoutOf(deployment *appsv1.Deployment) time.Duration {
+	raw := deployment.Annotations[constants.ModelPoolPolicyAnnotationKey]
+	if raw == "" {
+		return defaultActivationTimeout
+	}
+	policy, err := parsePoolPolicy(raw)
+	if err != nil || policy.Activation == nil {
+		return defaultActivationTimeout
+	}
+	return time.Duration(policy.Activation.TimeoutSeconds) * time.Second
+}
+
+// activationTimeoutFor is the activation timeout of a pod's pool. A pod whose
+// pool cannot be found has the default.
+func (r *ModelClaimReconciler) activationTimeoutFor(ctx context.Context, pod *corev1.Pod) time.Duration {
+	deployment, err := r.poolDeploymentForPod(ctx, pod)
+	if err != nil || deployment == nil {
+		return defaultActivationTimeout
+	}
+	return activationTimeoutOf(deployment)
+}
+
 // poolLifecycleOf is the lifecycle policy of a pod's pool, or nil.
 func (r *ModelClaimReconciler) poolLifecycleOf(ctx context.Context, pod *corev1.Pod) *poolLifecyclePolicy {
 	deployment, err := r.poolDeploymentForPod(ctx, pod)

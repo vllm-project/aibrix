@@ -1124,6 +1124,30 @@ msgstr ""
 "``EngineFailed``，其 ``Scheduled`` 条件会说明它为何无法迁移。runtime "
 "snapshot 中该引擎的 ``last_error`` 说明了它崩溃的原因。"
 
+#: ../../source/features/model-serving/model-claim.rst:628
+msgid ""
+"An engine can also stay off the route without crashing, because it never "
+"gets ready or its KV limit does not take. The controller gives it 30 "
+"minutes from when it gets ready, or from five minutes after it starts if "
+"it is still not ready then. A restart starts the count over. The "
+"controller then stops the engine, and the claim gets an "
+"``ActivationTimedOut`` Event. If another Pod has room, the controller "
+"starts the claim there. Otherwise, the claim reads ``Failed``. A pool "
+"sets its own timeout in its policy annotation with "
+"``activation.timeoutSeconds``, for example "
+"``{\"activation\":{\"timeoutSeconds\":3600}}``. Raise it for a model that"
+" takes long to load, such as one that downloads its weights when it "
+"starts."
+msgstr ""
+"引擎也可能没有崩溃，却一直不在路由中，原因是它始终没有就绪，或者它的 KV "
+"上限没有生效。控制器给它 30 分钟，从它就绪时算起；"
+"如果启动五分钟后它仍未就绪，就从那时算起。引擎重启后重新计时。时限到了，"
+"控制器会停止该引擎，其 claim 会得到一个 ``ActivationTimedOut`` Event。"
+"如果另一个 Pod 有空间，控制器会在那里启动 claim。否则，claim 显示 "
+"``Failed``。热池可以在其策略注解中用 ``activation.timeoutSeconds`` "
+"设置自己的时限，例如 ``{\"activation\":{\"timeoutSeconds\":3600}}``。"
+"对于加载较慢的模型，例如启动时才下载权重的模型，请调大这个时限。"
+
 #: ../../source/features/model-serving/model-claim.rst:519
 msgid ""
 "If the runtime agent crashes, its engines keep running. The image "
@@ -1310,11 +1334,13 @@ msgstr "``Failed``"
 
 #: ../../source/features/model-serving/model-claim.rst:595
 msgid ""
-"The engine failed permanently (``EngineFailed``), could not be started "
+"The engine failed permanently (``EngineFailed``), did not get on the "
+"route in time (``ActivationTimedOut``), could not be started "
 "(``ActivateFailed``) or is moving to another Pod (``Moving``), or the "
 "engine arguments are invalid (``InvalidEngineConfig``)."
 msgstr ""
-"引擎已永久失败（``EngineFailed``）、无法启动（``ActivateFailed``）"
+"引擎已永久失败（``EngineFailed``）、"
+"未能及时加入路由（``ActivationTimedOut``）、无法启动（``ActivateFailed``）"
 "或正在迁移到另一个 Pod（``Moving``），"
 "或者引擎参数无效（``InvalidEngineConfig``）。"
 
@@ -1558,8 +1584,10 @@ msgid "Annotation on the pool's Deployment"
 msgstr "热池 Deployment 上的注解"
 
 #: ../../source/features/model-serving/model-claim.rst:702
-msgid "The sleep policy, as JSON. See `Sleep and wake`_."
-msgstr "休眠策略，JSON 格式。参见 `休眠与唤醒`_。"
+msgid ""
+"The sleep policy and the activation timeout, as JSON. See `Sleep and "
+"wake`_ and `Failures`_."
+msgstr "休眠策略和启动时限，JSON 格式。参见 `休眠与唤醒`_ 和 `故障`_。"
 
 #: ../../source/features/model-serving/model-claim.rst:703
 msgid "``aibrix.ai/metrics: modelclaim-runtime``"
@@ -1835,6 +1863,12 @@ msgid ""
 msgstr ""
 "引擎可能仍在下载或加载模型。请查看 runtime agent 的日志，以及 runtime "
 "snapshot 中该引擎的 ``last_error``："
+
+#: ../../source/features/model-serving/model-claim.rst:934
+msgid ""
+"If the engine stays off the route past its timeout, the controller stops "
+"it, as `Failures`_ explains."
+msgstr "如果引擎超过时限仍不在路由中，控制器会停止它，详见 `故障`_。"
 
 #: ../../source/features/model-serving/model-claim.rst:807
 msgid "A Pod is turned away because an engine there \"answers to no claim\""

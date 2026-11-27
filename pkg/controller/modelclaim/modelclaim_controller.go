@@ -127,6 +127,10 @@ type ModelClaimReconciler struct {
 	// LimitWarnings remembers when each engine was last warned that its KV
 	// limit did not take. It is made on first use when unset.
 	LimitWarnings *limitWarningClock
+	// StuckActivations remembers when each instance was first seen stuck
+	// Activating, for the activation timeout. It is made on first use when
+	// unset.
+	StuckActivations *stuckActivations
 }
 
 func (r *ModelClaimReconciler) now() time.Time {
@@ -1514,6 +1518,13 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		booting = booting || state.booting
 		desiredPhase, routingPort := state.phase, state.routingPort
 		serving := state.serving
+		// An instance stuck past its pool's activation timeout fails once its
+		// engine is stopped, so that a request can go to another instance.
+		var timedOutAfter time.Duration
+		if timedOut, timeout := r.activationTimedOut(ctx, pm, inst, pod, snapshot, observed, state); timedOut &&
+			r.stopTimedOutEngine(ctx, pm, inst, pod, timeout, readings) {
+			desiredPhase, routingPort, timedOutAfter = modelv1alpha1.ModelClaimFailed, 0, timeout
+		}
 
 		reason := ""
 		if desiredPhase == inst.Phase {
@@ -1533,7 +1544,13 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		inst.Phase = desiredPhase
 		// A reason belongs to the phase it was given in.
 		inst.Reason = ""
-		r.announcePhase(pm, inst, previousPhase, observed, serving)
+		if timedOutAfter > 0 {
+			inst.Reason = instanceReasonActivationTimedOut
+			r.Recorder.Event(pm, corev1.EventTypeWarning, instanceReasonActivationTimedOut,
+				activationTimeoutMessage(pm, inst, timedOutAfter))
+		} else {
+			r.announcePhase(pm, inst, previousPhase, observed, serving)
+		}
 		if inst.Phase == modelv1alpha1.ModelClaimSleeping {
 			r.warnOfAnUnmeasuredSleep(pm, inst.Pod, observed, r.podsWithoutWakeReserve(ctx, []corev1.Pod{*pod})[pod.Name])
 		}

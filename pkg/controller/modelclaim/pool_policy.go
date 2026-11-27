@@ -39,6 +39,7 @@ const (
 	poolPolicyErrorInvalidCapacity = "invalid_capacity"
 	poolPolicyErrorInvalidFloor    = "invalid_floor"
 	poolPolicyErrorInvalidSleep    = "invalid_sleep_window"
+	poolPolicyErrorInvalidTimeout  = "invalid_activation_timeout"
 )
 
 var errPoolKVUsageExceedsCapacity = errors.New(
@@ -77,10 +78,25 @@ func poolPolicyDecodeErrorClass(err error) string {
 // poolPolicy is intentionally configured by one JSON Deployment annotation,
 // not another resource. Reclaim adjusts kvcached ceilings; lifecycle parks an
 // idle engine with vLLM sleep after request observations establish idleness.
+// Activation bounds how long an engine may take to become routable.
 type poolPolicy struct {
-	Reclaim   *poolReclaimPolicy   `json:"reclaim,omitempty"`
-	Lifecycle *poolLifecyclePolicy `json:"lifecycle,omitempty"`
+	Reclaim    *poolReclaimPolicy    `json:"reclaim,omitempty"`
+	Lifecycle  *poolLifecyclePolicy  `json:"lifecycle,omitempty"`
+	Activation *poolActivationPolicy `json:"activation,omitempty"`
 }
+
+// poolActivationPolicy bounds how long an instance may wait to be routed once
+// its engine has stopped booting.
+type poolActivationPolicy struct {
+	// TimeoutSeconds is how long an instance may stay Activating after its
+	// engine has stopped booting. Its engine is then stopped, and the
+	// instance fails.
+	TimeoutSeconds int64 `json:"timeoutSeconds"`
+}
+
+// defaultActivationTimeout is how long an instance may stay Activating after
+// its engine has stopped booting, when the pool does not say.
+const defaultActivationTimeout = 30 * time.Minute
 
 type poolReclaimPolicy struct {
 	Mode                   string `json:"mode,omitempty"`
@@ -167,6 +183,12 @@ func parsePoolPolicy(raw string) (*poolPolicy, error) {
 	if policy.Lifecycle != nil {
 		if err := validateLifecycle(policy.Lifecycle); err != nil {
 			return nil, &poolPolicyConfigError{class: poolPolicyErrorInvalidSleep, err: err}
+		}
+	}
+	if policy.Activation != nil && policy.Activation.TimeoutSeconds <= 0 {
+		return nil, &poolPolicyConfigError{
+			class: poolPolicyErrorInvalidTimeout,
+			err:   errors.New("activation.timeoutSeconds must be positive"),
 		}
 	}
 	return policy, nil

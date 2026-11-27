@@ -625,6 +625,17 @@ engine and starts the claim there at once. Otherwise, the claim reads
 cannot move. The engine's ``last_error`` in the runtime snapshot says why it
 crashed.
 
+An engine can also stay off the route without crashing, because it never gets
+ready or its KV limit does not take. The controller gives it 30 minutes from
+when it gets ready, or from five minutes after it starts if it is still not
+ready then. A restart starts the count over. The controller then stops the
+engine, and the claim gets an ``ActivationTimedOut`` Event. If another Pod has
+room, the controller starts the claim there. Otherwise, the claim reads
+``Failed``. A pool sets its own timeout in its policy annotation with
+``activation.timeoutSeconds``, for example
+``{"activation":{"timeoutSeconds":3600}}``. Raise it for a model that takes
+long to load, such as one that downloads its weights when it starts.
+
 If the runtime agent crashes, its engines keep running. The image restarts the
 agent, which takes the engines back from ``/var/run/aibrix`` with their ports
 unchanged.
@@ -701,7 +712,8 @@ Status
    * - ``Sleeping``
      - The engine is asleep, and a request wakes it.
    * - ``Failed``
-     - The engine failed permanently (``EngineFailed``), could not be started
+     - The engine failed permanently (``EngineFailed``), did not get on the
+       route in time (``ActivationTimedOut``), could not be started
        (``ActivateFailed``) or is moving to another Pod (``Moving``), or the
        engine arguments are invalid (``InvalidEngineConfig``).
 
@@ -810,7 +822,8 @@ You set the first four keys. AIBrix writes the others, so leave them alone.
    * - ``claim.model.aibrix.ai/pool-policy``
      - Annotation on the pool's Deployment
      - You
-     - The sleep policy, as JSON. See `Sleep and wake`_.
+     - The sleep policy and the activation timeout, as JSON. See
+       `Sleep and wake`_ and `Failures`_.
    * - ``aibrix.ai/metrics: modelclaim-runtime``
      - Label on the pool's metrics Service
      - You
@@ -917,6 +930,9 @@ A claim stays ``Activating``
 
       kubectl logs <pod> -c aibrix-runtime
       kubectl exec <pod> -c aibrix-runtime -- curl -s localhost:8080/v1/runtime/snapshot
+
+   If the engine stays off the route past its timeout, the controller stops it,
+   as `Failures`_ explains.
 
 A Pod is turned away because an engine there "answers to no claim"
    The controller cannot tell what such an engine holds on the GPU, so it
