@@ -56,6 +56,61 @@ the same settings with its own rate limiter; this is not a combined request
 budget. This configuration is also used when initializing the plugin's Kubernetes
 caches. These flags control API server traffic, not inference request QPS.
 
+Gateway Plugin Graceful Shutdown
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+On SIGTERM or SIGINT, the plugin marks gRPC health as ``NOT_SERVING`` and drains
+existing gRPC streams before stopping gateway services, state synchronization,
+and cache workers. ``--graceful-shutdown-timeout`` bounds this drain and forces
+remaining RPCs to stop at its deadline. It defaults to ``20s`` and must be
+positive, leaving 10 seconds for cleanup within the default Kubernetes
+30-second termination grace period.
+
+For longer streams, enable ``gatewayPlugin.gracefulShutdown.enabled`` in the
+Helm chart and set ``gateway.envoyAsSideCar=false``. This requires a rebuilt
+gateway image containing the standalone ``/prestop`` binary. This command waits for
+endpoint propagation, then polls the Pod-local ``gateway_in_flight_requests``
+metric until three consecutive valid zero samples or its deadline. The plugin
+initializes the metric to zero so a Pod that has never served a request can
+drain. Missing or invalid samples and fetch failures reset the zero count.
+
+The command accepts ``--metrics-url``, ``--propagation-delay``, ``--timeout``,
+and ``--poll-interval``. The last three flags accept Go durations such as ``10s``;
+the Helm values remain integer seconds. Each fetch bypasses proxies, rejects
+redirects, and is limited to 5 seconds and the remaining hook budget. Responses
+larger than 8 MiB are treated as failed fetches. Upgrade the image and chart
+together; custom hooks invoking ``/prestop.sh`` must switch to ``/prestop``.
+The image no longer includes the shell hook or BusyBox. The existing
+``/gateway-plugins prestop`` subcommand remains available for custom hooks;
+the chart uses the smaller binary to avoid gateway package initialization.
+
+The Helm hook defaults to a 300-second total budget, including a 10-second
+propagation delay, and polls every 2 seconds. When enabled, the chart sets
+``--graceful-shutdown-timeout`` from ``grpcDrainTimeoutSeconds`` (30 seconds by
+default). Set ``terminationGracePeriodSeconds`` to at least ``timeoutSeconds +
+grpcDrainTimeoutSeconds + 10``. The 10-second cleanup reserve is a minimum:
+with ``AIBRIX_STATESYNC_ENABLED=true``, state synchronization alone can wait up
+to 90 seconds, while HTTP shutdown and the OpenTelemetry flush can each take
+another 5 seconds. Increase the Pod grace period to cover the enabled services.
+
+The hook and its rollout settings are disabled by default. Enabling the hook
+sets ``maxUnavailable: 0``, ``maxSurge: 1``, and ``minReadySeconds: 10``; reserve
+capacity for the extra Pod. The bounded gRPC drain and shutdown ordering apply
+to rebuilt gateway images even when the Helm hook is disabled.
+
+Configure separately deployed Envoy proxies with
+``gateway.envoyProxy.gracefulShutdown.enabled``. This requires Envoy Gateway
+v1.2.0 or later with matching ``EnvoyProxy`` CRDs, uses its native shutdown
+manager, and preserves its generated lifecycle hooks. Upgrade the controller
+and CRDs together: older CRDs may prune ``spec.shutdown`` without enabling
+draining. Recheck the generated hooks and shutdown-manager arguments when
+upgrading Envoy Gateway. See the
+`Helm chart shutdown settings <https://github.com/vllm-project/aibrix/blob/main/dist/chart/README.md#gateway-plugin-graceful-shutdown>`_
+for configuration examples and budget constraints. Validate plugin and Envoy
+rolling updates separately with long SSE streams, including an idle Pod and
+an over-budget stream; keep the other gateway components and model backends
+available during each test.
+
 Gateway Plugin Model Discovery and Listing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -113,12 +168,14 @@ discovery completes and returns the same 503 while its cache is unavailable.
 This only covers requests that reach the plugin; when no gateway process or
 ready Service endpoint is reachable, the front proxy controls the response.
 
-The gateway plugin serves ``GET /v1/models`` on its HTTP port. The standard
-Kubernetes Envoy route still sends this path to the metadata service; route
-it to the plugin HTTP port if clients should receive the plugin's list. For
-the default Kustomize installation, this optional HTTPRoute sends the exact
-path to the plugin Service on port 8080. The exact match takes precedence over
-the existing metadata route's prefix match, while ``/v1/files`` and
+The gateway plugin serves both ``GET /v1/models`` and ``GET /v1/models/`` on
+its HTTP port, including query strings, through the same handler without
+redirects. The standard Kubernetes Envoy route still sends model-list requests
+to the metadata service; route them to the plugin HTTP port if clients should
+receive the plugin's list. For the default Kustomize installation, this optional
+HTTPRoute sends both ``/v1/models`` and ``/v1/models/`` to the plugin Service on
+port 8080. These exact matches take precedence over the existing metadata
+route's prefix match, while ``/v1/files`` and
 ``/v1/batches`` keep their existing destination:
 
 .. code-block:: yaml
@@ -136,6 +193,9 @@ the existing metadata route's prefix match, while ``/v1/files`` and
             - path:
                 type: Exact
                 value: /v1/models
+            - path:
+                type: Exact
+                value: /v1/models/
           backendRefs:
             - name: aibrix-gateway-plugins
               port: 8080
@@ -144,6 +204,141 @@ Apply the route only when you intend to expose the plugin's list. Confirm its
 ``Accepted`` and ``ResolvedRefs`` conditions before relying on it. The route
 does not change whether the plugin returns ``known`` or ``ready-pods``; that
 choice comes from ``--model-list-mode``.
+
+Gateway Plugin Discovery Staleness
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each gateway replica keeps its own copy of the Pod list, fed by a Kubernetes
+watch. If one replica loses its connection to the API server, the watch is
+retried in the background and the replica keeps routing on the Pod list it had,
+including Pods that have since been deleted. Its health status does not change,
+and at the default log level nothing is logged.
+
+To make this visible, every replica checks the API server independently of
+watch events:
+
+- **Reachability** (always on): one ``LIST pods`` with ``limit=1`` every
+  interval, as a consistent read (the API server confirms etcd's current
+  revision). Each check is bounded by half the interval, so checks never
+  overlap. It costs one small request per interval per replica and needs no
+  permission beyond what the gateway role already has.
+- **Consistency** (only with ``--model-list-discovery-max-age``): the
+  verification described in the previous section, run on its own schedule
+  instead of only when ``/v1/models`` is called. It makes a full LIST at most
+  once per max age, now even when nobody calls ``/v1/models``, and keeps that
+  verification's ten-second timeout. After a failure it waits twice as long
+  before the next attempt, up to five minutes, so a LIST that is too slow for a
+  large cluster is not repeated every interval. When reachability recovers
+  after a failure, the wait starts over at one interval plus a random delay of
+  up to one interval, so replicas do not all send a full LIST at once.
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --discovery-check-interval=10s   # default; 0 disables the check
+          - --discovery-unreachable-threshold=30s  # default; at least twice the interval
+
+The check exports these metrics:
+
+- ``aibrix_gateway_discovery_reachability_age_seconds``: seconds since the
+  reachability check last succeeded.
+- ``aibrix_gateway_discovery_unreachable``: 1 once that age reaches
+  ``--discovery-unreachable-threshold``, otherwise 0.
+- ``aibrix_gateway_discovery_consistency_last_verified_age_seconds``: seconds
+  since the cache last matched a full LIST, whether this check or a
+  ``/v1/models`` request ran it. Only with the consistency check.
+- ``aibrix_gateway_discovery_watch_progress_age_seconds``: seconds since the
+  Pod informer's resource version last moved, whether by a watch event, a watch
+  bookmark, or a relist. It is sampled once per interval, so it can read up to
+  one interval high. It covers the Pod watch only, not ModelAdapters. Exported
+  only when the API server is Kubernetes 1.31 or newer (see below).
+- ``aibrix_gateway_discovery_watch_progress_supported``: 1 when the watch
+  progress age is exported, 0 when it is not.
+- ``aibrix_gateway_discovery_verification_failures_total``: failed checks, by
+  ``check`` (``reachability`` or ``consistency``).
+
+Only reachability drives the unreachable gauge. The consistency check requires
+an exact match, so a Pod or ModelAdapter change during its LIST fails it on a
+healthy replica; a single failure is expected during rollouts. A consistency
+age that keeps rising, while reachability succeeds, means the cache is not
+converging. Because failed checks back off for up to five minutes, a few
+failures in a row can raise the age to about five minutes plus the max age on a
+healthy replica, so set any alert on it above that.
+
+The watch progress age is the signal for a watch that is connected but stuck,
+and it costs no request: the check reads how far the informer has got. Every
+Pod change resets it. With no Pod changes, it moves only on watch bookmarks,
+which the API server sends about once a minute, and a bookmark carries a newer
+resource version only if something advanced the API server's Pod watch cache
+since the last one. On idle test API servers running Kubernetes 1.31 and 1.37,
+the reachability LIST did that: the version moved about every 60 seconds while
+the check ran and never stood still for more than about 61 seconds. Without the
+check, an idle Pod watch on 1.31 stopped moving: in one run it stood still for
+300 seconds, and in another it moved once, after about a minute, and then stood
+still for 310 seconds. That is why the gauge exists only when the check runs.
+
+On Kubernetes 1.29 the check did not help: an idle Pod watch got no advancing
+bookmark in 300 seconds, with or without it, so the age would keep rising on a
+healthy replica. The gateway therefore reads the API server version once at
+startup and exports the age only on 1.31 or newer. On older versions, and when
+the version cannot be read, it exports no age, sets
+``aibrix_gateway_discovery_watch_progress_supported`` to 0, and logs the
+detected version. 1.30 was not measured and counts as older. The 1.31 floor
+comes from behaviour observed on test API servers, not from a known mechanism.
+If a newer cluster shows a rising age while Pods are quiet, treat the signal as
+unsupported there. The version is read only at startup, so after upgrading the
+API server to 1.31, restart the gateway to start exporting the age.
+
+Alert when it exceeds three minutes, about three bookmark periods, while the
+replica still reaches the API server:
+
+.. code-block:: yaml
+
+    - alert: AIBrixGatewayDiscoveryWatchStalled
+      expr: |
+        max by (pod) (aibrix_gateway_discovery_watch_progress_age_seconds) > 180
+          and on (pod) max by (pod) (aibrix_gateway_discovery_unreachable) == 0
+
+The bookmark period is internal to the API server and cannot be configured, so
+keep the threshold a multiple of it rather than tightening it. Below 1.31 the
+age is not exported, so this alert never fires there; check the supported gauge
+to tell that apart from a healthy watch.
+
+Before you turn the alert on in production, watch the gauge for a while on your
+own API server version, with the reachability check on and Pods quiet, and
+confirm that its peaks stay near one bookmark period (about 60 to 70 seconds).
+The numbers above come from test API servers, not from production clusters.
+
+Alert on the unreachable gauge. One replica reporting it while others do not
+has lost its own connection; every replica at once points at the API server:
+
+.. code-block:: yaml
+
+    - alert: AIBrixGatewayDiscoveryUnreachable
+      expr: max by (pod) (aibrix_gateway_discovery_unreachable) == 1
+      for: 1m
+
+The threshold absorbs a normal watch reconnect, so keep it above the time one
+takes. The ``for`` clause then requires it to stay unreachable, so with the
+defaults the alert fires after about 90 seconds without a successful check.
+
+What the check does not prove:
+
+- Reachability proves the API server answers this replica. It does not prove
+  the watch is delivering events. A watch that is connected but stuck shows in
+  the watch progress age, and in the consistency age when that check is on.
+- A watch progress age that stays low proves the Pod watch delivered at least
+  a bookmark recently, not that every Pod event arrived. Only the consistency
+  check compares the cache with the API server. A stuck watch on a reachable
+  API server could not be reproduced in testing, so the alert above has not
+  been seen to fire on one.
+- Reporting unreachable does not change readiness or routing. The replica
+  stays in the Service endpoints and keeps routing on its last known Pod list.
+
+In standalone mode there is no API server, so no check runs and no discovery
+metric is reported.
 
 Envoy Proxy
 ~~~~~~~~~~~

@@ -17,6 +17,7 @@ limitations under the License.
 package encode
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -36,12 +37,28 @@ func IsEncoder(pod *v1.Pod) bool {
 }
 
 // SplitEncoders returns the pods that can serve requests and the encoders,
-// keeping the order of pods in each.
+// keeping the order of pods in each. When no pod is an encoder it returns pods
+// itself and a nil encoders, so it costs no allocation; otherwise serving is a
+// fresh slice that does not alias pods. Callers must treat serving as read-only:
+// no in-place writes and no append, since pods may have spare capacity another
+// reader shares.
 func SplitEncoders(pods []*v1.Pod) (serving, encoders []*v1.Pod) {
-	for _, pod := range pods {
+	first := slices.IndexFunc(pods, IsEncoder)
+	if first < 0 {
+		return pods, nil
+	}
+	if first > 0 {
+		serving = make([]*v1.Pod, first, len(pods)-1)
+		copy(serving, pods[:first])
+	}
+	for i := first; i < len(pods); i++ {
+		pod := pods[i]
 		if IsEncoder(pod) {
 			encoders = append(encoders, pod)
 		} else {
+			if serving == nil {
+				serving = make([]*v1.Pod, 0, len(pods)-i)
+			}
 			serving = append(serving, pod)
 		}
 	}

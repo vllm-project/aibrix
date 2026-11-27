@@ -46,7 +46,7 @@ In most Kubernetes setups, ``LoadBalancer`` is supported by default. Capture the
 Verify the route
 ^^^^^^^^^^^^^^^^
 
-Verify that the ``HTTPRoute`` status is ``Accepted`` before sending traffic:
+Before sending traffic through a model's ``HTTPRoute``, check that one entry in ``status.parents`` reports both ``Accepted=True`` and ``ResolvedRefs=True``. While a new route is pending, the gateway plugin returns HTTP 503 for inference requests with no routing strategy selected.
 
 .. code-block:: bash
 
@@ -226,7 +226,7 @@ General load balancing
 
   Edge cases:
 
-  - **KV guardrail:** a pod with less than 10% free KV cache scores ``+Inf`` and is skipped. If every pod is below that threshold, the request still routes to the pod with the most KV headroom.
+  - **KV guardrail:** a pod scores ``+Inf`` and is skipped when its free KV-cache fraction falls below 10%. If every pod is below that threshold, the request still routes to the pod with the most KV headroom.
   - **Missing KV metrics:** a pod whose engine reports no KV-cache usage, or reports ``NaN``, is treated as fully free (no penalty and no guardrail).
   - **No token-rate estimate yet:** the pod is scored at the mean estimate of the others (uniform capacity when none has one).
   - **Ties:** broken using least combined GPU+CPU KV-cache usage, falling back to a random pick if cache metrics are unavailable for the tied pods.
@@ -695,7 +695,7 @@ Candidate stage
      - Description
    * - ``candidate.k``
      - ``AIBRIX_ROUTING_CANDIDATE_K``
-     - Number of ready pods the load-imbalance gate and the router score, so each request reads per-pod load for ``k`` pods instead of all of them. The strategies pick them: ``4k`` random ready pods, plus the pods holding the prompt's longest cached prefix, are scored from in-memory estimates (prefix index, local and snapshot running counts, scraped metrics) with the router's blend weights; the best half are kept and the rest are drawn at random. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the candidates. Use at least ``2``: with ``1``, the one candidate is routed to without scoring.
+     - Number of ready pods the load-imbalance gate and the router score, so each request reads per-pod load for ``k`` pods instead of all of them. The strategies pick them: ``4k`` random ready pods, plus the pods holding the prompt's longest cached prefix, are scored from in-memory estimates (prefix index, local and snapshot running counts, scraped metrics) with the router's blend weights; the best half are kept and the rest are drawn at random. Defaults to ``64`` (evaluated per model, per request: models with 64 or fewer routable pods are unaffected); ``0`` disables the stage and scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the candidates. Use at least ``2``: with ``1``, the one candidate is routed to without scoring.
 
 VTC fairness
 ~~~~~~~~~~~~

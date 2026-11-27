@@ -19,6 +19,164 @@ This chart is not intended for upgrades from earlier deployments that used Kusto
 
 ## Development 
 
+### Gateway plugin graceful shutdown
+
+The Helm hook is disabled by default and requires `gateway.envoyAsSideCar=false`.
+Rebuild the gateway image with `build/container/Dockerfile.gateway` to include
+the standalone `/prestop` binary, then configure:
+
+```yaml
+gatewayPlugin:
+  container:
+    image:
+      repository: your-registry/gateway-plugins
+      tag: your-rebuilt-tag
+  gracefulShutdown:
+    enabled: true
+    terminationGracePeriodSeconds: 340
+    propagationDelaySeconds: 10
+    timeoutSeconds: 300
+    grpcDrainTimeoutSeconds: 30
+    pollIntervalSeconds: 2
+    metricsURL: http://127.0.0.1:8080/metrics
+```
+
+The standalone Go preStop command waits for endpoint propagation, then polls this Pod's local
+`gateway_in_flight_requests` metric until three consecutive zero samples or the
+hook timeout. The plugin initializes the metric to zero before accepting RPCs,
+so an idle Pod can drain without waiting for the deadline. Missing or invalid
+metrics and fetch failures reset the zero count.
+SIGTERM then starts a bounded gRPC drain; remaining RPCs are stopped at its
+deadline. View hook progress with `kubectl logs -c gateway-plugin`.
+
+In rebuilt gateway images, SIGTERM always marks gRPC health NOT_SERVING and
+drains gRPC before stopping gateway services, state synchronization, and cache
+workers. Without an explicit flag, `--graceful-shutdown-timeout` defaults to `20s`
+and must be positive. This leaves 10 seconds of the default Kubernetes 30-second
+termination grace period for cleanup. Enabling the Helm hook supplies the
+independent `grpcDrainTimeoutSeconds` value (30 seconds by default).
+
+When customizing the gateway-plugin container's `args`, keep a single list. With
+`gatewayPlugin.gracefulShutdown.enabled=true`, append additional flags to the
+generated list and preserve `--graceful-shutdown-timeout`, whose value comes from
+`grpcDrainTimeoutSeconds`. Replacing the list without that flag falls back to the
+binary's 20-second default. When editing the template's commented QPS/burst
+example, add the flags to the existing list instead of adding another `args:` key.
+
+The metrics URL must point to this Pod directly. The hook matches the metric
+name without filtering labels and requires exactly one valid sample per scrape.
+Fetches bypass proxy environment variables and do not follow redirects. Each
+fetch is limited to 5 seconds and the remaining hook budget, with an 8 MiB
+response limit. Fetch errors and oversized responses reset the zero count.
+
+All Helm durations are integer seconds. The hook timeout includes propagation and
+fetches. Required constraints:
+
+- `timeoutSeconds > propagationDelaySeconds`
+- `terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10`
+
+Update existing grace-period overrides to satisfy these constraints. Tune budgets
+for observed request durations, cleanup time, and endpoint update latency; the
+propagation delay does not confirm Envoy updates. Keep another ready plugin
+replica with spare capacity.
+The 10-second cleanup reserve is only a minimum validation allowance. With
+`AIBRIX_STATESYNC_ENABLED=true`, `RedisSync.Stop()` alone can wait up to 90 seconds;
+HTTP shutdown and the OpenTelemetry flush can each take another 5 seconds.
+Increase the Pod grace period to cover these waits when those services are enabled.
+Enabling the hook sets `maxUnavailable: 0`, `maxSurge: 1`, and `minReadySeconds: 10`;
+reserve capacity for a surge Pod. With the hook disabled, the chart retains
+`maxUnavailable: 1`, `maxSurge: 1`, and no readiness stabilization delay.
+This hook does not coordinate Envoy or model backend termination.
+
+The Helm value names and budget rules are unchanged. Upgrade the chart and gateway
+image together. Custom hooks that invoke `/prestop.sh` must switch to `/prestop`;
+the gateway image no longer includes that script or `/busybox`. The existing
+`/gateway-plugins prestop` subcommand remains available for custom hooks, but the
+chart uses the smaller binary to avoid gateway package initialization and its logs.
+
+Run the core drain and command tests without Docker:
+
+```sh
+go test ./pkg/plugins/gateway/drain ./cmd/prestop ./cmd/plugins
+go test ./pkg/plugins/gateway -run TestProcessInFlightMetricLabelContract
+```
+
+Run image smoke tests for the command entrypoint, proxy bypass, and hook logging:
+
+```sh
+docker build -f build/container/Dockerfile.gateway -t aibrix/gateway-plugins:prestop-test .
+python3 build/container/entrypoints/test_prestop.py
+```
+
+These image smoke tests are run manually. Override `AIBRIX_PRESTOP_TEST_IMAGE`
+to test another rebuilt gateway image.
+
+### Envoy proxy graceful shutdown
+
+Disabled by default; applies only to Envoy Gateway-managed deployments with
+`gateway.enable=true` and `gateway.envoyAsSideCar=false`. Requires Envoy Gateway
+**v1.2.0 or later** with the matching `EnvoyProxy` CRDs. Upgrade the controller and
+CRDs together: older CRDs may prune `spec.shutdown` while leaving the longer Pod
+grace period in place, without enabling draining. Enable separately:
+
+```yaml
+gateway:
+  envoyProxy:
+    gracefulShutdown:
+      enabled: true
+      terminationGracePeriodSeconds: 330
+      drainTimeoutSeconds: 300
+      minDrainDurationSeconds: 10
+```
+
+Uses native `EnvoyProxy.spec.shutdown` and Envoy Gateway's lifecycle hooks; no
+custom image is needed. The shutdown-manager fails readiness and drains existing
+connections, including SSE streams. It waits at least `minDrainDurationSeconds`,
+then exits when connections drain or the timeout expires. Idle keepalive
+connections can prolong draining; requests still running at timeout may be cut off.
+
+All durations are integer seconds. Required constraints:
+
+- `terminationGracePeriodSeconds > drainTimeoutSeconds + 10` (includes the
+  shutdown-manager readiness wait in the supported v1.2 baseline; inspect the
+  generated hooks and arguments when upgrading Envoy Gateway)
+- `drainTimeoutSeconds > minDrainDurationSeconds`
+
+Enabling sets `maxUnavailable: 0` and `maxSurge: 1`; reserve capacity for an extra
+Pod. New Pods must stay Ready for 10 seconds before becoming available. Keep
+plugins and model backends available during draining; route and stream timeouts
+still apply.
+
+Before relying on either feature, test Envoy and plugin rolling updates separately
+with long SSE requests. Verify that existing streams finish, new requests succeed,
+and over-budget streams terminate within the configured budgets. Inspect Envoy's
+generated Deployment and `kubectl logs -c shutdown-manager` for drain behavior.
+
+#### Rollout verification procedure
+
+Use a test cluster with two plugin replicas, two Envoy replicas, and capacity for
+the surge Pods. Record Kubernetes and Envoy Gateway versions, image digests,
+rendered shutdown settings, and the generated Envoy lifecycle hooks and
+shutdown-manager arguments. Keep the backend and the other Deployment running
+while testing each Deployment separately.
+
+Use an SSE backend with a controlled response duration. Wait for the first event
+and identify the serving plugin Pod from its request logs before starting
+`kubectl rollout restart deployment/<plugin-deployment> -n <namespace>`.
+Repeat with `<envoy-deployment>`, and send new requests throughout each rollout.
+Ensure request and route timeouts exceed the tested shutdown budgets.
+
+| Case | Stream remaining when termination starts | Required observation |
+| --- | --- | --- |
+| Idle Pod | No requests have reached the plugin | After propagation, three zero samples end the hook; it does not use the full 300-second budget. |
+| Within budget | 120 seconds with the default 300-second hook / Envoy drain budget | The client receives the final SSE completion marker; new requests succeed through replacement replicas. |
+| Over budget | At least 400 seconds with the default budgets | The stream is interrupted when draining is exhausted; record the client exit status, last event and elapsed time, and confirm Pod termination remains bounded. |
+
+For each case, save the client output, rollout status, Pod termination timestamps,
+plugin hook logs and Envoy shutdown-manager logs. Report observed durations and
+outcomes separately for plugin and Envoy rollouts. Unit tests and image smoke
+tests do not establish these cluster-level results.
+
 ### Envoy Service NodePorts
 
 The default `gateway.envoyProxy.service: {}` preserves Envoy Gateway's Service
@@ -221,6 +379,26 @@ Or use a custom values file:
 helm install aibrix dist/chart -f my-values.yaml -n aibrix-system --create-namespace
 ```
 
+
+### Gateway and model HTTPRoute namespace
+
+The chart sets `AIBRIX_GATEWAY_NAMESPACE` to `.Release.Namespace` in both the
+controller manager and gateway plugin. It also sets the controller manager's
+`AIBRIX_GATEWAY_NAME` to the rendered Gateway name, using the same
+`aibrix.fullname` helper and `-eg` suffix as the Gateway template. For example,
+`helm install myrel dist/chart -n gateway-system --create-namespace` configures
+both components to create and read model HTTPRoutes in `gateway-system`, with
+ModelRouter attaching them to Gateway `myrel-aibrix-eg`. `nameOverride` and
+`fullnameOverride` also update this Gateway reference.
+
+Both variables are managed by the chart. Overrides through either component's
+`container.envs`, including empty values, are rejected to keep the route writer,
+reader, and Gateway references consistent. These settings cover routing objects;
+other component naming and namespace requirements and workload discovery are
+unchanged. They do not establish support for renaming the entire installation.
+See the
+[gateway configuration reference](../../pkg/plugins/gateway/ENV_VARS.md#general-gateway)
+for defaults and manually managed deployments.
 
 ### Verification
 

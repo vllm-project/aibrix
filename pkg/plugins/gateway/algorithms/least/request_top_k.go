@@ -224,8 +224,17 @@ func applyRampAdjustment(c cache.Cache, now time.Time, readyPods []*v1.Pod, coun
 			elapsed = 0 // defensive against clock skew / a fake clock rewinding in tests
 		}
 		decay := 1 - float64(elapsed)/float64(window)
-		penalty := int(math.Round(float64(warmMin) * decay))
-		adjusted[podKey] += penalty
+		roundedPenalty := math.Round(float64(warmMin) * decay)
+		// On 64-bit builds float64(math.MaxInt) rounds up past the int range.
+		penalty := math.MaxInt
+		if roundedPenalty < float64(math.MaxInt) {
+			penalty = int(roundedPenalty)
+		}
+		count := adjusted[podKey]
+		if penalty > 0 && count > math.MaxInt-penalty {
+			penalty = math.MaxInt - count
+		}
+		adjusted[podKey] = count + penalty
 		if penalty != 0 && klog.V(4).Enabled() {
 			klog.V(4).InfoS("least_request_top_k_ramp_penalty",
 				"target_pod", pod.Name, "real_count", counts[podKey], "effective_count", adjusted[podKey],

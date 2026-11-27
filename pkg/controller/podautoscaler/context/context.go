@@ -53,6 +53,7 @@ type ScalingContext interface {
 	GetScaleUpCooldownWindow() time.Duration
 	GetScaleDownCooldownWindow() time.Duration
 	GetScaleToZero() bool
+	GetHoldScaleDownOnMetricFailure() bool
 }
 
 // baseScalingContext provides a base implementation of the ScalingContext interface.
@@ -77,6 +78,8 @@ type baseScalingContext struct {
 	ScaleDownCooldownWindow time.Duration
 	// Scale to zero flag
 	ScaleToZero bool
+	// Hold a metric-driven scale-down while any metric source fails
+	HoldScaleDownOnMetricFailure bool
 	// Panic threshold for KPA
 	PanicThreshold float64
 
@@ -181,6 +184,14 @@ var annotationParsers = map[string]annotationParser{
 			return fmt.Errorf("must be a boolean")
 		}
 		b.ScaleToZero = v
+		return nil
+	},
+	types.HoldScaleDownOnMetricFailureLabel: func(b *baseScalingContext, value string) error {
+		v, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("must be a boolean")
+		}
+		b.HoldScaleDownOnMetricFailure = v
 		return nil
 	},
 }
@@ -410,4 +421,8 @@ func (b *baseScalingContext) GetScaleDownCooldownWindow() time.Duration {
 
 func (b *baseScalingContext) GetScaleToZero() bool {
 	return b.ScaleToZero
+}
+
+func (b *baseScalingContext) GetHoldScaleDownOnMetricFailure() bool {
+	return b.HoldScaleDownOnMetricFailure
 }

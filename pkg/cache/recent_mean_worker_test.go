@@ -72,8 +72,8 @@ func TestWorkerStoresRecentMeanOfLatencyHistograms(t *testing.T) {
 	}
 
 	c := &Store{engineMetricsFetcher: metrics.NewEngineMetricsFetcher()}
-	jobs := make(chan *Pod, 1)
-	jobs <- pod
+	jobs := make(chan podMetricsJob, 1)
+	jobs <- podMetricsJob{Pod: pod}
 	close(jobs)
 	c.worker(jobs)
 

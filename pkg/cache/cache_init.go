@@ -27,6 +27,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
@@ -76,6 +77,15 @@ type InitOptions struct {
 	// ModelListMaxAge enables on-demand Kubernetes discovery verification for
 	// the gateway model list when positive. Zero preserves the existing behavior.
 	ModelListMaxAge time.Duration
+
+	// DiscoveryCheckInterval enables the gateway's periodic discovery check
+	// (see DiscoveryChecker) when positive. It applies only to Kubernetes
+	// discovery; standalone mode has no API server to check.
+	DiscoveryCheckInterval time.Duration
+
+	// DiscoveryUnreachableThreshold is the age of the last successful discovery
+	// check at which the gateway reports the API server unreachable.
+	DiscoveryUnreachableThreshold time.Duration
 }
 
 const (
@@ -96,6 +106,10 @@ type Store struct {
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
 	disableModelClaimBindings bool // Whether to ignore ModelClaim Pod annotations
+
+	// outputRateMinSamples overrides AIBRIX_OUTPUT_RATE_MIN_SAMPLES for this store when set
+	// (see minOutputRateSamples).
+	outputRateMinSamples *int
 
 	// Metrics related fields
 	subscribers          []metrics.MetricSubscriber    // List of metric subscribers
@@ -154,8 +168,8 @@ type Store struct {
 	// Number of concurrent workers used to update Pod metrics
 	podMetricsWorkerCount int
 
-	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
-	podMetricsJobs chan *Pod
+	// podMetricsJobs shares the bounded worker pool between pods and ModelClaim endpoints.
+	podMetricsJobs chan podMetricsJob
 
 	// podMetricsBackoff tracks per-pod fetch failure backoff for metrics collection.
 	podMetricsBackoff utils.SyncMap[string, *podMetricsBackoffState]
@@ -200,8 +214,8 @@ type Store struct {
 	snapshotClock func() time.Time
 	// remoteRunningReader, when set, is where GetPodsRunningRequestsApprox and
 	// syncRunningRequestsGlobally take the other gateways' counts from instead of
-	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup,
-	// and only when AIBRIX_REMOTE_RUNNING_READER_ENABLED is true (#3442).
+	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup
+	// when Redis is configured and AIBRIX_REMOTE_RUNNING_READER_ENABLED is enabled (default true, #3442).
 	remoteRunningReader atomic.Pointer[remoteRunningReader]
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
@@ -285,7 +299,7 @@ func newStore(clients *utils.RedisClients, prometheusApi prometheusv1.API, model
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
 		modelRouterProvider:   modelRouterProvider,
 		podMetricsWorkerCount: podMetricsWorkerCount,
-		podMetricsJobs:        make(chan *Pod, podMetricsJobQueueSize),
+		podMetricsJobs:        make(chan podMetricsJob, podMetricsJobQueueSize),
 		engineMetricsFetcher:  metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
 		enableProfileCaching:  enableModelGPUProfileCaching,
 	}
@@ -517,8 +531,15 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		}
 		klog.InfoS("Using discovery provider", "type", provider.Type())
 		if opts.IsGateway {
+			startDiscoveryChecker(store, config, provider, opts, prometheus.DefaultRegisterer, stopCh)
 			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
 				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
+			}
+			if err := initPodGatewayMetricsCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod gateway metrics collector")
+			}
+			if err := initPodOutputRateCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod output rate collector")
 			}
 		}
 		initMetricsCache(store, stopCh)
@@ -600,6 +621,49 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 			}
 		}
 	}()
+}
+
+// startDiscoveryChecker starts the periodic discovery check for Kubernetes
+// discovery and returns it, or returns nil when the check is disabled or there
+// is no API server to check. Its metrics are registered only when it starts.
+func startDiscoveryChecker(store *Store, config *rest.Config, provider discovery.Provider, opts InitOptions,
+	reg prometheus.Registerer, stopCh <-chan struct{}) *DiscoveryChecker {
+	if opts.DiscoveryCheckInterval <= 0 {
+		return nil
+	}
+	kubernetesProvider, ok := provider.(*discovery.KubernetesProvider)
+	if !ok || config == nil {
+		klog.InfoS("Discovery check disabled: discovery does not use the Kubernetes API server", "provider", provider.Type())
+		return nil
+	}
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.ErrorS(err, "Discovery check disabled: cannot create a Kubernetes client")
+		return nil
+	}
+	checkOpts := DiscoveryCheckOptions{
+		Interval:             opts.DiscoveryCheckInterval,
+		UnreachableThreshold: opts.DiscoveryUnreachableThreshold,
+		Reachability:         PodListReachability(client),
+		// Read once, before Run, bounded like a reachability check.
+		WatchResourceVersion: KubernetesWatchProgress(config, kubernetesProvider, opts.DiscoveryCheckInterval/2),
+	}
+	if health := store.modelListHealth; health != nil {
+		checkOpts.Consistency = health
+	}
+	checker, err := NewDiscoveryChecker(checkOpts)
+	if err != nil {
+		klog.ErrorS(err, "Discovery check disabled")
+		return nil
+	}
+	if err := checker.Register(reg); err != nil {
+		klog.ErrorS(err, "Discovery check disabled: cannot register its metrics")
+		return nil
+	}
+	go checker.Run(stopCh)
+	klog.InfoS("Discovery check started", "interval", opts.DiscoveryCheckInterval,
+		"unreachableThreshold", opts.DiscoveryUnreachableThreshold, "consistency", checkOpts.Consistency != nil)
+	return checker
 }
 
 // initDiscoveryProvider initializes the cache using a discovery provider.

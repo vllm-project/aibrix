@@ -29,13 +29,14 @@ import httpx
 
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.logger import init_logger
-from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core.http_client import HTTPClient
+from aibrix.metadata.core.json_profiler import JsonProfiler
 
 logger = init_logger(__name__)
 
 Response = Dict[str, Any]
 _MAX_ERROR_BODY_CHARS = 4096
-_HTTPXLikeClient = HTTPXClientWrapper | httpx.AsyncClient
+JSON_PROFILER = JsonProfiler(purpose="batch_json")
 
 # Idle connections must be discarded before the server's own keep-alive timeout,
 # not at the same moment. httpx defaults to 5s and so does uvicorn: under
@@ -52,6 +53,7 @@ _KEEPALIVE_EXPIRY_SECONDS = 3.0
 _CONNECT_TIMEOUT_SECONDS = 10.0
 _WRITE_TIMEOUT_SECONDS = 60.0
 _POOL_TIMEOUT_SECONDS = 30.0
+_MAX_KEEPALIVE_CONNECTIONS = 20
 
 
 def _build_timeout(read_timeout: float) -> httpx.Timeout:
@@ -100,7 +102,7 @@ class HttpChannel:
         base_url: str,
         *,
         timeout: float = 30.0,
-        client: Optional[_HTTPXLikeClient] = None,
+        client: Optional[HTTPClient] = None,
     ) -> None:
         self._base_url = base_url
         self._timeout = timeout
@@ -124,11 +126,11 @@ class HttpChannel:
                 if request.read_timeout is None
                 else _build_timeout(request.read_timeout)
             )
-            post_kwargs = {"json": request.payload, "timeout": timeout_config}
-            if isinstance(client, HTTPXClientWrapper):
-                post_kwargs["telemetry_call_site"] = (
-                    "batch.client.channel.HttpChannel.send"
-                )
+            post_kwargs = {
+                "json": request.payload,
+                "timeout": timeout_config,
+                "telemetry_call_site": "batch.client.channel.HttpChannel.send",
+            }
             response = await client.post(url, **post_kwargs)  # type: ignore[arg-type]
         except httpx.TimeoutException as ex:
             # repr, not str: httpx timeout exceptions often stringify to an
@@ -159,7 +161,10 @@ class HttpChannel:
             )
 
         try:
-            return response.json()
+            return JSON_PROFILER.profile(
+                "batch.runtime.response_json",
+                response.json,
+            )
         except ValueError as ex:
             raise InferenceError(
                 InferenceErrorCode.RESPONSE_ERROR,
@@ -169,17 +174,10 @@ class HttpChannel:
                 retryable=False,
             ) from ex
 
-    def _ensure_client(self) -> _HTTPXLikeClient:
+    def _ensure_client(self) -> HTTPClient:
         if self._client is None:
-            self._client = HTTPXClientWrapper(
-                client_id=f"http-channel-{self._base_url}",
-                limits=httpx.Limits(
-                    # Restate httpx's own defaults: constructing Limits() to set
-                    # keepalive_expiry alone would reset these two to unbounded.
-                    max_connections=100,
-                    max_keepalive_connections=20,
-                    keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
-                ),
+            self._client = create_batch_runtime_http_client(
+                f"http-channel-{self._base_url}"
             )
         return self._client
 
@@ -187,6 +185,25 @@ class HttpChannel:
         if self._owns_client and self._client is not None:
             await self._client.aclose()
             self._client = None
+
+
+def create_batch_runtime_http_client(
+    client_id: str,
+    *,
+    max_connections: int = 100,
+    max_keepalive_connections: int = _MAX_KEEPALIVE_CONNECTIONS,
+    limit_per_host: int = 100,
+) -> HTTPClient:
+    return HTTPClient(
+        client_id=client_id,
+        purpose="batch_runtime_http",
+        aiohttp_limit_per_host=limit_per_host,
+        limits=httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+            keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
+        ),
+    )
 
 
 class EchoChannel:

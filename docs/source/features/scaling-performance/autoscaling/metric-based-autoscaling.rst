@@ -298,6 +298,11 @@ reason. The other annotations still apply.
      - ``false``
      - KPA, APA
      - Enables the scaling context's scale-to-zero flag. The final replica count is still bounded by ``spec.minReplicas``.
+   * - ``autoscaling.aibrix.ai/hold-scale-down-on-metric-failure``
+     - bool
+     - ``false``
+     - KPA, APA
+     - Holds a metric-driven scale-down while any metric source fails, instead of scaling down on the sources that remain. A scale-up from the healthy sources still goes ahead, and ``spec.minReplicas`` and ``spec.maxReplicas`` still apply. See :ref:`metric-source-failures`.
 
 Example:
 
@@ -319,6 +324,14 @@ Example:
    spec:
      scalingStrategy: KPA
 
+.. _metric-source-failures:
+
+When a metric source fails
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When some metric sources of a KPA or APA PodAutoscaler fail and the others are read, the recommendation is made from the sources that remain. The PodAutoscaler raises a ``FailedGetMetrics`` warning event naming the failed sources when the set of failed sources changes, and a ``RecoveredMetrics`` event once they are read again. A scale-down made on the remaining sources is reported as ``Available metrics below target (<sources> could not be read)``. The ``aibrix_autoscaler_failed_metric_sources`` gauge counts the failed sources of each PodAutoscaler, including when every source fails.
+
+With ``autoscaling.aibrix.ai/hold-scale-down-on-metric-failure: "true"``, a scale-down is held instead, as Kubernetes HPA does: the ScalingActive condition reports ``ScaleDownHeld``, a ``ScaleDownHeld`` warning event is raised when the hold starts, and the ``aibrix_autoscaler_scale_down_held`` gauge is 1. Held recommendations are not recorded for the cooldown windows, so they cannot delay a later scale-up. The hold has no time limit: while a source keeps failing, including one whose endpoint never worked, the replicas stay at their current count, which can keep idle capacity running. Alert on the gauges to catch a long outage.
 
 StormService Role-Level Autoscaling
 ------------------------------------

@@ -211,10 +211,13 @@ type MetricSnapshot struct {
 
 // RateCalculator manages historical metric values for rate calculation
 type RateCalculator struct {
-	mu       sync.RWMutex
-	history  map[string][]MetricSnapshot // key: "namespace/podName/modelName/metricName"
-	maxAge   time.Duration               // Maximum age to keep snapshots
-	maxCount int                         // Maximum number of snapshots to keep
+	mu      sync.RWMutex
+	history map[string][]MetricSnapshot // key: "namespace/podName/modelName/metricName"
+	// outputRate holds each pod's completion-counter history, keyed by utils.GeneratePodKey. One
+	// entry per pod, so deleting a pod's entry does not scan the map.
+	outputRate map[string][]outputRateSnapshot
+	maxAge     time.Duration // Maximum age to keep snapshots
+	maxCount   int           // Maximum number of snapshots to keep
 }
 
 // rateHistoryPodPrefix returns the prefix of every rate history key of a pod. The history
@@ -241,6 +244,7 @@ func (r *RateCalculator) PurgeEntriesForPod(namespace, podName string) {
 			delete(r.history, k)
 		}
 	}
+	delete(r.outputRate, utils.GeneratePodKey(namespace, podName))
 }
 
 var (
@@ -340,6 +344,15 @@ func (c *Store) updatePodMetrics() {
 				"pod", metaPod.Name, "namespace", metaPod.Namespace)
 			return true
 		}
+		if metaPod.claimMetrics != nil {
+			if len(metaPod.claimMetrics) != 0 {
+				c.updateGatewayTrackedPodMetrics(metaPod)
+			}
+			for _, target := range metaPod.claimMetrics {
+				c.enqueueModelClaimMetrics(metaPod, target, now)
+			}
+			return true
+		}
 		if c.shouldSkipPodMetricsFetch(metaPod, now) {
 			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonBackoff)
 			klog.V(4).InfoS("Pod metrics fetch is in backoff, skipping pod metrics update",
@@ -358,7 +371,7 @@ func (c *Store) updatePodMetrics() {
 		// goroutine from blocking indefinitely when workers are stuck on slow
 		// or unreachable engine pods.
 		select {
-		case c.podMetricsJobs <- metaPod:
+		case c.podMetricsJobs <- podMetricsJob{Pod: metaPod}:
 		default:
 			c.finishPodMetricsScheduling(metaPod)
 			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonQueueFull)
@@ -369,8 +382,18 @@ func (c *Store) updatePodMetrics() {
 	})
 }
 
-func (c *Store) worker(jobs <-chan *Pod) {
-	for pod := range jobs {
+type podMetricsJob struct {
+	*Pod
+	target *modelClaimMetricsTarget
+}
+
+func (c *Store) worker(jobs <-chan podMetricsJob) {
+	for job := range jobs {
+		if job.target != nil {
+			c.scrapeModelClaimMetrics(job.Pod, job.target)
+			continue
+		}
+		pod := job.Pod
 		c.markPodMetricsInFlight(pod)
 		ctx, cancel := context.WithTimeout(context.Background(), podMetricsFetchTimeout)
 		podMetricPort := getPodMetricPort(pod)
@@ -384,6 +407,17 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			engineType := metrics.GetEngineType(*pod.Pod)
 			identifier := pod.Name
 			result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
+			if !c.disableModelClaimBindings && pod.Labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue {
+				// A pool-labelled serving Pod can enter ModelClaim scrape mode
+				// while an ordinary scrape is in flight. Serialize publication
+				// with the informer update, leaving the HTTP request outside the lock.
+				c.mu.RLock()
+				defer c.mu.RUnlock()
+				current, ok := c.metaPods.Load(podMetricsBackoffKey(pod))
+				if !ok || current != pod {
+					return
+				}
+			}
 			if err != nil {
 				metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
 				c.recordPodMetricsFetchFailure(pod, time.Now())
@@ -440,10 +474,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			// Update pod metrics using typed results
 			c.updatePodMetricsFromTypedResultAt(pod, result, fetchedAt)
 
-			c.syncRunningRequestsGlobally(pod)
-
-			c.updateRealtimeRunningRequestsDrainRate1m(pod)
-			c.updateRealtimeOutputTokenRateEWMA(pod)
+			c.updateGatewayTrackedPodMetrics(pod)
 
 			// Handle Prometheus-based metrics separately (these require PromQL queries)
 			if c.prometheusApi != nil {
@@ -460,6 +491,13 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				"errors", len(result.Errors))
 		}()
 	}
+}
+
+func (c *Store) updateGatewayTrackedPodMetrics(pod *Pod) {
+	c.syncRunningRequestsGlobally(pod)
+	c.updateRealtimeRunningRequestsDrainRate1m(pod)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
 }
 
 func (c *Store) tryMarkPodMetricsQueued(pod *Pod) bool {
@@ -666,7 +704,7 @@ func (c *Store) updatePodRecordAt(pod *Pod, modelName, metricName string, scope 
 				return fmt.Errorf("modelName should not be empty for scope %v", scope)
 			}
 		}
-		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), record)
+		pod.modelMetricStore(modelName).Store(c.getPodModelMetricName(modelName, metricName), record)
 	default:
 		return fmt.Errorf("scope %v is not supported", scope)
 	}
@@ -804,60 +842,74 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 	perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
 	if perSecRate >= 0 {
 		rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, rateMetricName, rateValue, metricValue.GetLabelValues())
+		if target := pod.claimMetrics[model]; target != nil {
+			target.emitMetric(rateMetricName, rateValue, metricValue.GetLabelValues())
+		} else {
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, rateMetricName, rateValue, metricValue.GetLabelValues())
+		}
 		_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
 		klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
 	}
 }
 
-// syncRunningRequestsGlobally computes the cross-gateway running request count for a pod and
-// stores it so GetMetricValueByPod returns the global total. It takes the other gateways' counts
-// from gatewayRemoteRunning (published every 100ms by initGatewaySnapshotSync — no Redis call
-// here) and adds this gateway's own local atomic counter (always fresher than the Redis snapshot
-// for the local instance). Remote counts last actually read more than remoteRunningMaxAge ago
-// are left out, as GetPodsRunningRequestsApprox leaves them out (#3441): a sync that keeps
-// missing a pod's keys would otherwise report counts frozen when it first missed them.
-// With the remote running reader on, the other gateways' counts come from it instead: an unread
-// pod skips emission (matching the snapshot hold-back above), while a stale count falls back to
-// this gateway's own count.
+// syncRunningRequestsGlobally updates the routing metric cache with the same estimate that
+// the scrape-time collector computes directly. The collector must not read this cache slot:
+// request start/finish also write it with the local count and refresh its timestamp.
 func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
-	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	var remoteRunning float64
-	if reader := c.remoteRunningReader.Load(); reader != nil {
-		count, seen := reader.freshCount(podKey, c.snapshotNow())
-		if !seen {
-			return
-		}
-		remoteRunning = float64(count)
-	} else {
-		snap := c.gatewayRemoteRunning.Load()
-		if snap == nil {
-			return
-		}
-		remoteRunning = float64(snap.freshCount(podKey, c.snapshotNow()))
+	total, ready := c.runningRequestsEstimate(pod, c.snapshotNow())
+	if !ready {
+		return
 	}
-
-	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
-	total := localRunning + remoteRunning
-	klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
-
 	totalValue := &metrics.SimpleMetricValue{Value: total}
-	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeNumRequestsRunning, totalValue, nil)
 	if err := c.updatePodRecord(pod, "", metrics.RealtimeNumRequestsRunning,
 		metrics.PodMetricScope, totalValue); err != nil {
 		klog.V(4).ErrorS(err, "failed to update global running requests", "pod", pod.Name)
 	}
 }
 
+// runningRequestsEstimate adds the local atomic counter to fresh remote contributions without
+// accessing Redis or the metric cache. An active reader takes precedence over the snapshot;
+// unread reader pods and an uninitialized snapshot withhold the estimate. Once initialized,
+// freshCount excludes expired remote contributions, falling back to the local count.
+func (c *Store) runningRequestsEstimate(pod *Pod, now time.Time) (float64, bool) {
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	var remoteRunning float64
+	if reader := c.remoteRunningReader.Load(); reader != nil {
+		count, seen := reader.freshCount(podKey, now)
+		if !seen {
+			return 0, false
+		}
+		remoteRunning = float64(count)
+	} else {
+		snap := c.gatewayRemoteRunning.Load()
+		if snap == nil {
+			return 0, false
+		}
+		remoteRunning = float64(snap.freshCount(podKey, now))
+	}
+
+	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
+	total := localRunning + remoteRunning
+	if klog.V(5).Enabled() {
+		klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
+	}
+
+	return total, true
+}
+
 // updateRealtimeRunningRequestsDrainRate1m computes the 1-minute rolling rate at which completed
-// requests are draining on the pod and stores it under RealtimeRunningRequestsDrainRate1m.
-// Computed for all pods; the PD-disaggregation decode router scores on it.
+// requests are draining on the pod and stores it under RealtimeRunningRequestsDrainRate1m. The
+// gateway exports the stored value at scrape time (podGatewayMetricsCollector), so a deleted or
+// relabeled pod leaves no stale series. Computed for all pods; the PD-disaggregation decode
+// router scores on it.
 func (c *Store) updateRealtimeRunningRequestsDrainRate1m(pod *Pod) {
 	completed := float64(atomic.LoadInt64(&pod.completedRequests))
 	drainRate := c.calculateRate1m(pod, "completed_requests", completed)
 	if drainRate >= 0 {
 		rateValue := &metrics.SimpleMetricValue{Value: drainRate}
-		metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeRunningRequestsDrainRate1m, rateValue, nil)
+		// The gauge describes the whole pod rather than one request, so the collector takes
+		// its model label from the pod's own metadata: the model.aibrix.ai/name label, or the
+		// annotation of the same name for model names a label cannot carry (#3501).
 		_ = c.updatePodRecord(pod, "", metrics.RealtimeRunningRequestsDrainRate1m, metrics.PodMetricScope, rateValue)
 		klog.V(4).InfoS("Updating drain rate metric", "pod", pod.Name,
 			"completed_requests", completed, metrics.RealtimeRunningRequestsDrainRate1m, drainRate)
@@ -893,6 +945,117 @@ func (c *Store) updateRealtimeOutputTokenRateEWMA(pod *Pod) {
 	_ = c.updatePodRecord(pod, "", metrics.RealtimeOutputTokenRateEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: ewma})
 	klog.V(4).InfoS("Updating output token rate metric", "pod", pod.Name,
 		"completed_output_tokens", completed, "rate_1m", rate, metrics.RealtimeOutputTokenRateEWMA, ewma)
+}
+
+const (
+	outputRateMinSamplesEnv = "AIBRIX_OUTPUT_RATE_MIN_SAMPLES"
+	// From the runs on #3491 (one model, 32 output tokens, short unique prompts): once a pod's
+	// first seconds are left out, the per-request rate of its first k completed requests is within
+	// 10% of its steady value from k = 8, for all 70 same-speed (run, pod) pairs and at the 95th
+	// percentile of the 14 heterogeneous ones. It covers estimation noise for that workload only.
+	// A fresh engine's first requests are slower than its steady state, and no sample count this
+	// small averages that out. A pod that completes fewer requests than this per window never
+	// refreshes its estimate.
+	outputRateMinSamplesDefault = 8
+)
+
+// outputRateMinSamplesFromEnv is the process default of Store.minOutputRateSamples.
+var outputRateMinSamplesFromEnv = utils.LoadEnvNonNegativeInt(outputRateMinSamplesEnv, outputRateMinSamplesDefault)
+
+// minOutputRateSamples is how many requests with known output tokens a pod must have completed
+// within the rate window for the window to update its per-request rate. 0 lets every window with
+// a completed request update it.
+func (c *Store) minOutputRateSamples() int {
+	if c.outputRateMinSamples != nil {
+		return *c.outputRateMinSamples
+	}
+	return outputRateMinSamplesFromEnv
+}
+
+// readOutputRateCounters reads the completion counters as one consistent set. donePodStats
+// updates them under the pod's stats lock, so they are read under it too: a metrics tick never
+// sees a request's tokens without its time or its sample.
+func (c *Store) readOutputRateCounters(pod *Pod) outputRateCounters {
+	mu := c.podStatsLockFor(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	mu.Lock()
+	defer mu.Unlock()
+	return outputRateCounters{
+		tokens:      float64(atomic.LoadInt64(&pod.completedOutputTokens)),
+		busySeconds: float64(atomic.LoadInt64(&pod.completedOutputBusyNanos)) / float64(time.Second),
+		requests:    float64(atomic.LoadInt64(&pod.completedOutputRequests)),
+		finished:    float64(atomic.LoadInt64(&pod.completedRequests)),
+	}
+}
+
+// ewmaWeight is the weight of a new sample in an EWMA with time constant
+// outputTokenRateEWMATau, elapsed after the previous one.
+func ewmaWeight(elapsed time.Duration) float64 {
+	return 1 - math.Exp(-elapsed.Seconds()/outputTokenRateEWMATau.Seconds())
+}
+
+// updateRealtimeOutputTokensPerRequestSecondEWMA maintains two pod metrics from one window of the
+// gateway-tracked completion counters.
+//
+// RealtimeOutputTokensPerRequestSecondEWMA is the pod's per-request decode rate: the output tokens
+// completed in the window divided by the time those requests spent on the pod. Doubling a pod's
+// traffic doubles both terms, so below saturation it does not depend on how traffic is split,
+// which RealtimeOutputTokenRateEWMA does (#3450). A faster replica finishes each request sooner
+// and measures higher. When requests queue on a saturated replica their time on the pod grows and
+// the estimate falls. No router reads it yet.
+//
+// What it does not see:
+//   - A request that finishes without output tokens is in neither term: aborted, timed out,
+//     failed, or completed without usage. The last includes every streaming request sent
+//     without stream_options.include_usage, which the gateway only requires of TPM-limited
+//     users. So RealtimeRequestsWithoutOutputTokensFraction1m is not a failure rate: on a pod
+//     whose clients stream without usage it reads near 1 and the rate is never updated, and
+//     with mixed clients the rate describes only the requests that reported usage. A pod whose
+//     slowest requests are abandoned reads faster than it is; the fraction makes that visible.
+//   - It is one value per pod. A pod that serves several models (ModelClaim) mixes them.
+//   - Time on the pod is the whole request, from addPodStats to donePodStats, so it includes
+//     queueing and prompt processing. Pods that receive different request mixes read differently
+//     even on the same hardware.
+//
+// Both values can be old. The rate is updated only by a window in which at least
+// minOutputRateSamples requests with known output tokens completed, and the fraction only by a
+// window in which a request finished. Otherwise the previous value stays, with the timestamp of
+// its last update: an idle pod, or one below that request rate, keeps its last values
+// indefinitely. A reader must check the record's Timestamp (GetMetricRecordByPod) and decide how
+// old a value it accepts.
+//
+// The EWMA weighs a new window by the time since the estimate was last updated, so after
+// skipped windows the old estimate counts for less.
+func (c *Store) updateRealtimeOutputTokensPerRequestSecondEWMA(pod *Pod) {
+	d, ok := c.outputRateDeltas1m(pod, c.readOutputRateCounters(pod))
+	if !ok {
+		return
+	}
+	now := time.Now()
+
+	if d.finished > 0 {
+		without := math.Min(1, math.Max(0, 1-d.requests/d.finished))
+		_ = c.updatePodRecordAt(pod, "", metrics.RealtimeRequestsWithoutOutputTokensFraction1m, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: without}, now)
+	}
+
+	if d.tokens <= 0 || d.busySeconds <= 0 || d.requests < float64(c.minOutputRateSamples()) {
+		return
+	}
+	rate := d.tokens / d.busySeconds
+
+	ewma := rate
+	if prev, ok := pod.Metrics.Load(metrics.RealtimeOutputTokensPerRequestSecondEWMA); ok {
+		elapsed := now.Sub(prev.Timestamp)
+		if elapsed < podMetricRefreshInterval {
+			elapsed = podMetricRefreshInterval
+		}
+		alpha := ewmaWeight(elapsed)
+		ewma = alpha*rate + (1-alpha)*prev.Value.GetSimpleValue()
+	}
+	_ = c.updatePodRecordAt(pod, "", metrics.RealtimeOutputTokensPerRequestSecondEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: ewma}, now)
+	klog.V(4).InfoS("Updating per-request output token rate metric", "pod", pod.Name,
+		"window_output_tokens", d.tokens, "window_busy_seconds", d.busySeconds, "window_requests", d.requests,
+		"window_finished", d.finished, "rate_1m", rate,
+		metrics.RealtimeOutputTokensPerRequestSecondEWMA, ewma)
 }
 
 // updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage.

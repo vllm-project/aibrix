@@ -1,6 +1,18 @@
 {{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
 {{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
 {{- $sentinelEnabled := dig "dependencies" "redis" "sentinel" "enabled" false .Values.gatewayPlugin }}
+{{- $shutdown := .Values.gatewayPlugin.gracefulShutdown | default dict }}
+{{- if $shutdown.enabled }}
+{{- if .Values.gateway.envoyAsSideCar }}
+{{- fail "gatewayPlugin.gracefulShutdown requires gateway.envoyAsSideCar=false; sidecar termination ordering is not covered." }}
+{{- end }}
+{{- if le (int $shutdown.timeoutSeconds) (int $shutdown.propagationDelaySeconds) }}
+{{- fail "gatewayPlugin.gracefulShutdown requires timeoutSeconds > propagationDelaySeconds." }}
+{{- end }}
+{{- if lt (int $shutdown.terminationGracePeriodSeconds) (int (add $shutdown.timeoutSeconds $shutdown.grpcDrainTimeoutSeconds 10)) }}
+{{- fail "gatewayPlugin.gracefulShutdown requires terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10 (cleanup reserve)." }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -18,14 +30,20 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: {{ ternary 0 1 ($shutdown.enabled | default false) }}
       maxSurge: 1
+  {{- if $shutdown.enabled }}
+  minReadySeconds: 10
+  {{- end }}
   template:
     metadata:
       labels:
         {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gateway-plugin
     spec:
+      {{- if $shutdown.enabled }}
+      terminationGracePeriodSeconds: {{ $shutdown.terminationGracePeriodSeconds }}
+      {{- end }}
       {{- with .Values.gatewayPlugin.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
@@ -84,9 +102,25 @@ spec:
         - name: gateway-plugin
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
           imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
+          {{- if $shutdown.enabled }}
+          args:
+            - {{ printf "--graceful-shutdown-timeout=%ds" (int $shutdown.grpcDrainTimeoutSeconds) | quote }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /prestop
+                  - {{ printf "--metrics-url=%s" $shutdown.metricsURL | quote }}
+                  - {{ printf "--propagation-delay=%ds" (int $shutdown.propagationDelaySeconds) | quote }}
+                  - {{ printf "--timeout=%ds" (int $shutdown.timeoutSeconds) | quote }}
+                  - {{ printf "--poll-interval=%ds" (int $shutdown.pollIntervalSeconds) | quote }}
+          {{- end }}
           # Optional API server client throttling (client-go defaults shown).
           # Both values must be greater than zero and apply to the core
           # Kubernetes and Gateway API clients, each with its own limiter.
+          # With graceful shutdown enabled, append these flags to the args list
+          # above and preserve --graceful-shutdown-timeout; do not add a second
+          # args key. When overriding args, preserve that shutdown flag as well.
           # args:
           #   - --kube-api-qps=5
           #   - --kube-api-burst=10
@@ -121,6 +155,8 @@ spec:
                   name: {{ include "aibrix.fullname" . }}-gateway-plugin-auth
                   key: bearer-token
             {{- end }}
+            - name: AIBRIX_GATEWAY_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

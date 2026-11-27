@@ -45,6 +45,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	"k8s.io/apimachinery/pkg/labels"
 	ktypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -97,6 +98,9 @@ const (
 	ReasonConfigured                = "Configured"
 	ReasonPendingReplicas           = "PendingReplicas"
 	ReasonFailedComputeScale        = "FailedComputeScale"
+	ReasonFailedGetMetrics          = "FailedGetMetrics"
+	ReasonRecoveredMetrics          = "RecoveredMetrics"
+	ReasonScaleDownHeld             = "ScaleDownHeld"
 	maxScalingHistorySize           = 5
 	minScalingHistoryRecordInterval = 5 * time.Second
 	maxMetricWindowSeconds          = int64(3600)
@@ -269,6 +273,11 @@ type PodAutoscalerReconciler struct {
 	monitor monitor.Monitor
 	now     func() time.Time
 
+	// Last reported metric source health per PodAutoscaler, so its events are
+	// raised when it changes instead of on every reconcile.
+	metricHealthMu sync.Mutex
+	metricHealth   map[ktypes.NamespacedName]metricSourceHealth
+
 	scalingTargetMu   sync.RWMutex
 	scalingTargetToPA map[string]ktypes.NamespacedName // keyStr → PA
 	paToScalingKey    map[ktypes.NamespacedName]string // PA → keyStr (for cleanup)
@@ -361,6 +370,66 @@ func (r *PodAutoscalerReconciler) buildScalingTargetKey(pa *autoscalingv1alpha1.
 	return base
 }
 
+// withFailedMetrics appends the metric sources that could not be read to a
+// scaling reason, so a rescale made while they fail still names them.
+func withFailedMetrics(reason string, failedMetrics []string) string {
+	if len(failedMetrics) == 0 {
+		return reason
+	}
+	return fmt.Sprintf("%s (%s could not be read)", reason, strings.Join(failedMetrics, ", "))
+}
+
+// metricSourceHealth is what was last reported for a PodAutoscaler's metric
+// sources: which failed, and whether a scale-down was held because of them.
+type metricSourceHealth struct {
+	failed []string
+	held   bool
+}
+
+// reportMetricSourceHealth exports the failed metric sources and the hold on
+// every reconcile, but raises events only when they change. The event recorder
+// rate-limits per object, so a warning on every pass during an outage would
+// crowd out the PodAutoscaler's other events.
+func (r *PodAutoscalerReconciler) reportMetricSourceHealth(pa *autoscalingv1alpha1.PodAutoscaler, decision *ScaleDecision) {
+	if r.monitor != nil {
+		r.monitor.RecordMetricSourceHealth(pa.Namespace, pa.Name, len(decision.FailedMetrics), decision.ScaleDownHeld)
+	}
+
+	key := ktypes.NamespacedName{Namespace: pa.Namespace, Name: pa.Name}
+	current := metricSourceHealth{failed: decision.FailedMetrics, held: decision.ScaleDownHeld}
+	r.metricHealthMu.Lock()
+	if r.metricHealth == nil {
+		r.metricHealth = make(map[ktypes.NamespacedName]metricSourceHealth)
+	}
+	previous := r.metricHealth[key]
+	if len(current.failed) == 0 && !current.held {
+		delete(r.metricHealth, key)
+	} else {
+		r.metricHealth[key] = current
+	}
+	r.metricHealthMu.Unlock()
+
+	wasFailing := sets.New(previous.failed...)
+	failing := sets.New(current.failed...)
+	configured := sets.New[string]()
+	for _, source := range pa.Spec.MetricsSources {
+		configured.Insert(source.TargetMetric)
+	}
+	if newlyFailing := failing.Difference(wasFailing); newlyFailing.Len() > 0 {
+		r.EventRecorder.Eventf(pa, corev1.EventTypeWarning, ReasonFailedGetMetrics,
+			"metric sources %s could not be read; scaling on the remaining sources", strings.Join(sets.List(newlyFailing), ", "))
+	}
+	// A source removed from the spec stops being tracked, but it did not recover.
+	if recovered := wasFailing.Difference(failing).Intersection(configured); recovered.Len() > 0 {
+		r.EventRecorder.Eventf(pa, corev1.EventTypeNormal, ReasonRecoveredMetrics,
+			"metric sources %s can be read again", strings.Join(sets.List(recovered), ", "))
+	}
+	if current.held && !previous.held {
+		r.EventRecorder.Eventf(pa, corev1.EventTypeWarning, ReasonScaleDownHeld,
+			"holding %d replicas: %s", decision.DesiredReplicas, decision.Reason)
+	}
+}
+
 // cleanupDeletedPA releases everything the controller keeps in memory for a
 // PodAutoscaler that no longer exists: its claim on the scaling target, its
 // recommendation history, its metric windows and its exported metric series.
@@ -376,6 +445,10 @@ func (r *PodAutoscalerReconciler) cleanupDeletedPA(paKey ktypes.NamespacedName) 
 	r.recommendationsMu.Lock()
 	delete(r.recommendations, paKey.String())
 	r.recommendationsMu.Unlock()
+
+	r.metricHealthMu.Lock()
+	delete(r.metricHealth, paKey)
+	r.metricHealthMu.Unlock()
 
 	if r.autoScaler != nil {
 		r.autoScaler.ForgetPodAutoscaler(paKey.Namespace, paKey.Name)
@@ -1008,15 +1081,20 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 	currentReplicas := counts.Configured
 	scaleDecision, err := r.computeScaleDecision(ctx, *pa, scaleObj, currentReplicas)
 	if err != nil {
-		setStatus(pa, counts.Observed, currentReplicas, false, ReasonFailedComputeScale, false, false, err)
+		setStatus(pa, counts.Observed, currentReplicas, false, ReasonFailedComputeScale, false, false, false, err)
 		// setStatus reports a held replica count as Stable. Say why it is held
 		// instead: like the HPA, a failure to compute a recommendation is
 		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
 		setCondition(pa, ConditionScalingActive, metav1.ConditionFalse, ReasonFailedComputeScale, "unable to compute the desired replicas: %v", err)
 		r.EventRecorder.Event(pa, corev1.EventTypeWarning, ReasonFailedComputeScale, err.Error())
+		if scaleDecision != nil {
+			// Keep the failed-source gauge current when every source failed.
+			r.reportMetricSourceHealth(pa, scaleDecision)
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
+	r.reportMetricSourceHealth(pa, scaleDecision)
 
 	// Only emit event if we should scale
 	if scaleDecision.ShouldScale {
@@ -1048,7 +1126,8 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 
 	// Step 5: Update status
 	setStatus(pa, counts.Observed, scaleDecision.DesiredReplicas,
-		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError)
+		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive,
+		scaleDecision.ScaleDownHeld, scaleError == nil, scaleError)
 
 	if scaleError != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, scaleError)
@@ -1122,7 +1201,7 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 
 // setStatus recreates the status of the given PA, updating the current and
 // desired replicas, as well as the metric statuses and optionally records a scaling decision
-func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive bool, success bool, err error) {
+func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive, scaleDownHeld bool, success bool, err error) {
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
 		ActualScale:     currentReplicas,
 		DesiredScale:    desiredReplicas,
@@ -1132,13 +1211,18 @@ func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredRe
 		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
 	}
 
-	scalingActive := desiredReplicas != currentReplicas
+	// A held scale-down is not scaling, even while observed replicas still
+	// differ from the held count. The condition is set once, so an unchanged
+	// held pass leaves its lastTransitionTime and the status alone.
+	scalingActive := desiredReplicas != currentReplicas && !scaleDownHeld
 	scalingMessage := fmt.Sprintf("desired=%d, actual=%d", desiredReplicas, currentReplicas)
 	if reason != "" {
 		scalingMessage = fmt.Sprintf("%s; reason=%s", scalingMessage, reason)
 	}
 	scalingReason := ReasonStable
-	if scalingActive {
+	if scaleDownHeld {
+		scalingReason = ReasonScaleDownHeld
+	} else if scalingActive {
 		scalingReason = ReasonReconcilingScaleDiff
 	} else if pendingGuardActive {
 		scalingReason = ReasonPendingReplicas
@@ -1232,6 +1316,11 @@ type ScaleDecision struct {
 	Reason                    string
 	Algorithm                 string
 	PendingReplicaGuardActive bool
+	// FailedMetrics names the metric sources that could not be read for this decision.
+	FailedMetrics []string
+	// ScaleDownHeld is set when hold-scale-down-on-metric-failure kept the
+	// replicas from going down because a metric source failed.
+	ScaleDownHeld bool
 }
 
 // getScaleResource retrieves the scale resource for the PodAutoscaler target
@@ -1299,23 +1388,31 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	// Use autoscaler for metric-based scaling with provided selector
 	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scalingContext, scaleObj, currentReplicas)
 	if err != nil {
+		var failedMetrics []string
+		if replicaResult != nil {
+			failedMetrics = replicaResult.FailedMetrics
+		}
 		if currentReplicas > maxReplicas {
 			return &ScaleDecision{
 				DesiredReplicas: maxReplicas,
 				ShouldScale:     true,
-				Reason:          "current replicas above maximum",
+				Reason:          withFailedMetrics("current replicas above maximum", failedMetrics),
 				Algorithm:       "boundary-check",
+				FailedMetrics:   failedMetrics,
 			}, nil
 		}
 		if currentReplicas < minReplicas {
 			return &ScaleDecision{
 				DesiredReplicas: minReplicas,
 				ShouldScale:     true,
-				Reason:          "current replicas below minimum",
+				Reason:          withFailedMetrics("current replicas below minimum", failedMetrics),
 				Algorithm:       "boundary-check",
+				FailedMetrics:   failedMetrics,
 			}, nil
 		}
-		return nil, fmt.Errorf("failed to compute metric-based replicas: %w", err)
+		// The decision carries only the failed metric sources, so the caller
+		// can still report them when every source failed.
+		return &ScaleDecision{FailedMetrics: failedMetrics}, fmt.Errorf("failed to compute metric-based replicas: %w", err)
 	}
 
 	metricDesiredReplicas := replicaResult.DesiredReplicas
@@ -1324,9 +1421,21 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		metricName = string(pa.Spec.ScalingStrategy)
 	}
 
+	// With hold-scale-down-on-metric-failure, a scale-down the remaining sources
+	// ask for while one fails is held, as Kubernetes HPA does: the failed source
+	// may be the one keeping the replicas up. Like the HPA, the held
+	// recommendation is not recorded for the cooldown windows, so data the hold
+	// does not trust cannot delay a later scale-up. Bounds still apply below.
+	scaleDownHeld := pa.Spec.ScalingStrategy != autoscalingv1alpha1.HPA &&
+		len(replicaResult.FailedMetrics) > 0 &&
+		metricDesiredReplicas < currentReplicas &&
+		scalingContext.GetHoldScaleDownOnMetricFailure()
+
 	// Apply cooldown window for KPA/APA (not for HPA which is managed by K8s)
 	desiredReplicas := metricDesiredReplicas
-	if pa.Spec.ScalingStrategy != autoscalingv1alpha1.HPA {
+	if scaleDownHeld {
+		desiredReplicas = currentReplicas
+	} else if pa.Spec.ScalingStrategy != autoscalingv1alpha1.HPA {
 		desiredReplicas = r.stabilizeRecommendation(&pa, scalingContext, metricDesiredReplicas, currentReplicas)
 	}
 
@@ -1347,11 +1456,22 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 
 	shouldScale := desiredReplicas != currentReplicas
 	if shouldScale {
-		if desiredReplicas > currentReplicas {
+		if scaleDownHeld && desiredReplicas > currentReplicas {
+			// The hold kept the replicas, so only the bounds can move them.
+			reason = withFailedMetrics("current replicas below minimum", replicaResult.FailedMetrics)
+		} else if scaleDownHeld {
+			reason = withFailedMetrics("current replicas above maximum", replicaResult.FailedMetrics)
+		} else if desiredReplicas > currentReplicas {
 			reason = fmt.Sprintf("%s above target", metricName)
 		} else {
 			reason = "All metrics below target"
+			if len(replicaResult.FailedMetrics) > 0 {
+				reason = fmt.Sprintf("Available metrics below target (%s could not be read)",
+					strings.Join(replicaResult.FailedMetrics, ", "))
+			}
 		}
+	} else if scaleDownHeld {
+		reason = fmt.Sprintf("Scale-down held (%s could not be read)", strings.Join(replicaResult.FailedMetrics, ", "))
 	} else if pendingGuardActive {
 		reason = replicaResult.Reason
 	} else {
@@ -1364,6 +1484,8 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		Reason:                    reason,
 		Algorithm:                 metricName,
 		PendingReplicaGuardActive: pendingGuardActive,
+		FailedMetrics:             replicaResult.FailedMetrics,
+		ScaleDownHeld:             scaleDownHeld && !shouldScale,
 	}, nil
 }
 

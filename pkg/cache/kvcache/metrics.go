@@ -213,9 +213,8 @@ func createKVCacheMetrics() *KVCacheMetrics {
 	}
 }
 
-// registerKVCacheMetrics registers all metrics with Prometheus
-func (m *KVCacheMetrics) register() error {
-	collectors := []prometheus.Collector{
+func (m *KVCacheMetrics) collectors() []prometheus.Collector {
+	return []prometheus.Collector{
 		m.zmqConnectionTotal,
 		m.zmqDisconnectionTotal,
 		m.zmqReconnectAttemptsTotal,
@@ -230,8 +229,11 @@ func (m *KVCacheMetrics) register() error {
 		m.zmqConnectionStatus,
 		m.zmqLastSequenceID,
 	}
+}
 
-	for _, collector := range collectors {
+// registerKVCacheMetrics registers all metrics with Prometheus
+func (m *KVCacheMetrics) register() error {
+	for _, collector := range m.collectors() {
 		if err := prometheus.Register(collector); err != nil {
 			// If already registered, it's ok (might happen in tests)
 			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
@@ -268,6 +270,27 @@ func getMetrics() *KVCacheMetrics {
 	kvCacheMetricsMu.RLock()
 	defer kvCacheMetricsMu.RUnlock()
 	return kvCacheMetrics
+}
+
+// MetricsInitialized reports whether InitializeMetrics has registered the KV
+// cache metrics.
+func MetricsInitialized() bool {
+	return getMetrics() != nil
+}
+
+// ResetMetricsForTest unregisters the KV cache metrics from the default
+// registry and clears the package state, so the next InitializeMetrics
+// registers a fresh set. Only tests call it.
+func ResetMetricsForTest() {
+	kvCacheMetricsMu.Lock()
+	defer kvCacheMetricsMu.Unlock()
+	if kvCacheMetrics != nil {
+		for _, collector := range kvCacheMetrics.collectors() {
+			prometheus.Unregister(collector)
+		}
+	}
+	kvCacheMetrics = nil
+	kvCacheMetricsOnce = sync.Once{}
 }
 
 // NewZMQClientMetrics creates a new metrics instance for a ZMQ client

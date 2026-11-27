@@ -45,8 +45,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/drain"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/statesync"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -105,6 +107,38 @@ func (o modelDiscoveryOptions) validate() error {
 	return nil
 }
 
+type discoveryCheckOptions struct {
+	interval             time.Duration
+	unreachableThreshold time.Duration
+}
+
+func (o *discoveryCheckOptions) addFlags(fs *flag.FlagSet) {
+	fs.DurationVar(&o.interval, "discovery-check-interval", 10*time.Second,
+		"Interval of the check that this replica can still read Pods from the Kubernetes API server; "+
+			"each check is bounded by half of it. 0 disables the check; otherwise at least 1s. Ignored in standalone mode.")
+	fs.DurationVar(&o.unreachableThreshold, "discovery-unreachable-threshold", 30*time.Second,
+		"Age of the last successful reachability check at which aibrix_gateway_discovery_unreachable becomes 1. "+
+			"Keep it above normal watch reconnect delays; it must be at least twice --discovery-check-interval.")
+}
+
+func (o discoveryCheckOptions) validate() error {
+	if o.interval < 0 {
+		return fmt.Errorf("--discovery-check-interval must be nonnegative, got %v", o.interval)
+	}
+	// Each check gets half the interval; below a second that leaves too little
+	// for a LIST through a loaded API server, and adds load for no benefit.
+	if o.interval > 0 && o.interval < time.Second {
+		return fmt.Errorf("--discovery-check-interval must be 0 or at least 1s, got %v", o.interval)
+	}
+	// A healthy check may run for half an interval, so a scrape during it can
+	// see an age of up to 1.5 intervals; twice the interval leaves a margin.
+	if o.interval > 0 && o.unreachableThreshold < 2*o.interval {
+		return fmt.Errorf("--discovery-unreachable-threshold (%v) must be at least twice --discovery-check-interval (%v)",
+			o.unreachableThreshold, o.interval)
+	}
+	return nil
+}
+
 func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config) *discovery.KubernetesProvider {
 	provider := discovery.NewKubernetesProvider(config).WithModelAdapters(o.watchModelAdapters)
 	if o.watchModelClaims {
@@ -125,6 +159,10 @@ func startEarlyModelListGate(enabled bool, addr string) (*gateway.ModelListGate,
 }
 
 func startGatewayHTTPServer(gate *gateway.ModelListGate, server *gateway.Server, addr string) error {
+	// A Pod that has never handled an RPC must still expose a valid idle sample
+	// so the preStop hook can finish without waiting for its entire budget.
+	metrics.SetGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight),
+		0, []string{"gateway_pod"}, metrics.GatewayPodName())
 	if gate != nil {
 		gate.SetServer(server)
 		return nil
@@ -201,12 +239,39 @@ func runRedisConnectivityCheck(timeout time.Duration) error {
 	return checkRedisConnectivity(ctx, 2*time.Second, utils.CheckRedisConnectivity)
 }
 
+func checkRedisConnectivityOrExit(timeout time.Duration) {
+	if err := runRedisConnectivityCheck(timeout); err != nil {
+		klog.Exitf("Redis connectivity check stopped: %v", err)
+	}
+}
+
+// firstError returns the first non-nil error, so flag groups are validated in
+// the order they are listed.
+func firstError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "prestop" {
+		os.Exit(drain.Run(os.Args[2:]))
+	}
+	runGateway()
+}
+
+func runGateway() {
+	var gracefulShutdownTimeout time.Duration
 	var kubeAPI kubeAPIOptions
 	kubeAPI.addFlags(flag.CommandLine)
 	var modelDiscovery modelDiscoveryOptions
 	var checkRedisTimeout time.Duration
 	modelDiscovery.addFlags(flag.CommandLine)
+	var discoveryCheck discoveryCheckOptions
+	discoveryCheck.addFlags(flag.CommandLine)
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "", "[Deprecated] Use --http-bind-address instead.")
@@ -218,20 +283,20 @@ func main() {
 		"Maximum wait for Redis with --check-redis; 0 waits indefinitely.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
+	flag.DurationVar(&gracefulShutdownTimeout, "graceful-shutdown-timeout", 20*time.Second,
+		"Maximum wait for existing gRPC requests after SIGTERM, before forcing them to stop.")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
-	if err := kubeAPI.validate(); err != nil {
-		klog.Fatal(err)
+	if gracefulShutdownTimeout <= 0 {
+		klog.Fatal("--graceful-shutdown-timeout must be positive")
 	}
-	if err := modelDiscovery.validate(); err != nil {
+	if err := firstError(kubeAPI.validate(), modelDiscovery.validate(), discoveryCheck.validate()); err != nil {
 		klog.Fatal(err)
 	}
 
 	if checkRedis {
-		if err := runRedisConnectivityCheck(checkRedisTimeout); err != nil {
-			klog.Exitf("Redis connectivity check stopped: %v", err)
-		}
+		checkRedisConnectivityOrExit(checkRedisTimeout)
 		return
 	}
 
@@ -266,9 +331,8 @@ func main() {
 		}()
 	}
 
-	// stopCh is closed either on normal return (via defer) or proactively in
-	// the signal handler before calling os.Exit. sync.Once guards against a
-	// double-close panic.
+	// Keep cache workers alive until requests drain. sync.Once guards shutdown
+	// cleanup and the normal-return defer against a double-close panic.
 	stopCh := make(chan struct{})
 	var stopOnce sync.Once
 	stopFn := func() { stopOnce.Do(func() { close(stopCh) }) }
@@ -322,13 +386,15 @@ func main() {
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
-		IsGateway:                    true,
-		EnableKVSync:                 kvSyncEnabled && remoteTokenizerEnabled,
-		RedisClients:                 redisClients,
-		ModelRouterProvider:          routing.ModelRouterFactory,
-		DiscoveryProvider:            discoveryProvider,
-		DisableModelClaimPodBindings: !standalone && !modelDiscovery.watchModelClaims,
-		ModelListMaxAge:              modelDiscovery.maxAge,
+		IsGateway:                     true,
+		EnableKVSync:                  kvSyncEnabled && remoteTokenizerEnabled,
+		RedisClients:                  redisClients,
+		ModelRouterProvider:           routing.ModelRouterFactory,
+		DiscoveryProvider:             discoveryProvider,
+		DisableModelClaimPodBindings:  !standalone && !modelDiscovery.watchModelClaims,
+		ModelListMaxAge:               modelDiscovery.maxAge,
+		DiscoveryCheckInterval:        discoveryCheck.interval,
+		DiscoveryUnreachableThreshold: discoveryCheck.unreachableThreshold,
 	})
 
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -406,27 +472,29 @@ func main() {
 
 	var gracefulStop = make(chan os.Signal, 1)
 	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(gracefulStop)
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sig := <-gracefulStop
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
+		shutdownGateway(s, gatewayServer, healthCheck, gracefulShutdownTimeout)
 		if syncManager != nil {
 			syncManager.Stop()
 		}
-		gatewayServer.Shutdown()
 		modelListGate.Shutdown()
-		s.GracefulStop()
 		if otelEnabled {
 			telApp.Shutdown()
 		}
-		// Close stopCh so that cache ticker goroutines and other consumers tied
-		// to this signal exit promptly; os.Exit below bypasses deferred calls.
 		stopFn()
-		os.Exit(0)
 	}()
 
-	if err := s.Serve(lis); err != nil {
+	if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 		panic(err)
 	}
+	// Serve can return before the signal handler finishes its cleanup. Keep
+	// Redis and cache workers available until that cleanup has completed.
+	<-shutdownDone
 }
 
 // startPprofServer serves the profiling endpoints (http.DefaultServeMux, where

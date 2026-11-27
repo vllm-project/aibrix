@@ -83,8 +83,10 @@ msgid "Requirements"
 msgstr "要求"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:37
-msgid "vLLM version 0.7.0 or later with KV cache events support"
-msgstr "vLLM 0.7.0 或更高版本，且支持 KV cache 事件"
+msgid ""
+"vLLM version 0.7.0 or later with KV cache events support, or SGLang "
+"0.5.20 or later"
+msgstr "vLLM 0.7.0 或更高版本，且支持 KV cache 事件；或 SGLang 0.5.20 或更高版本"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:38
 msgid "AIBrix gateway-plugins built with ZMQ support (``-tags=\"zmq\"``)"
@@ -210,6 +212,62 @@ msgstr "向 vLLM 容器添加以下参数："
 #: ../../source/features/scaling-performance/kv-event-sync.rst:100
 msgid "Add corresponding ports:"
 msgstr "添加对应端口："
+
+#: ../../source/features/scaling-performance/kv-event-sync.rst:113
+msgid "SGLang Configuration"
+msgstr "SGLang 配置"
+
+#: ../../source/features/scaling-performance/kv-event-sync.rst:115
+msgid ""
+"SGLang takes the publisher settings as one JSON argument. Use the same "
+"ports, and set the page size to 16 or more:"
+msgstr "SGLang 通过一个 JSON 参数接收发布器配置。使用相同的端口，并将 page size 设置为 16 或更大："
+
+#: ../../source/features/scaling-performance/kv-event-sync.rst:124
+msgid ""
+"SGLang publishes one KV block per page, and the gateway indexes and "
+"matches prefixes in blocks of the size the events carry. With a page size"
+" of 1, SGLang's default on CUDA, every token becomes its own block in the"
+" index. Pods that serve the same model should use the same block or page "
+"size."
+msgstr ""
+"SGLang 每个 page 发布一个 KV block，网关按事件携带的 block 大小索引和匹配前缀。page size 为 "
+"1（SGLang 在 CUDA 上的默认值）时，每个 token 都会成为索引中单独的一个 block。服务同一模型的 Pod 应使用相同的 "
+"block size 或 page size。"
+
+#: ../../source/features/scaling-performance/kv-event-sync.rst:126
+msgid ""
+"With ``--dp-size`` or ``--attn-dp-size`` above 1, rank ``r`` binds the "
+"event port plus ``r`` and the replay port plus ``r``. Set the replay port"
+" to 5557 plus the number of ranks so that the two ranges do not overlap. "
+"The gateway subscribes to port 5557 and requests replays from port 5558, "
+"so with more than one rank it receives only rank 0's events, without "
+"replay."
+msgstr ""
+"当 ``--dp-size`` 或 ``--attn-dp-size`` 大于 1 时，rank ``r`` 绑定事件端口加 ``r`` 和 "
+"replay 端口加 ``r`` 。请将 replay 端口设置为 5557 加 rank 数，使两个端口范围不重叠。网关订阅 5557 端口并向"
+" 5558 端口请求 replay，因此有多个 rank 时，网关只接收 rank 0 的事件，且不能 replay。"
+
+#: ../../source/features/scaling-performance/kv-event-sync.rst:128
+msgid ""
+"Without ``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``, the gateway "
+"calls ``/tokenize`` on port 8000 of a pod it treats as vLLM, such as one "
+"labeled ``model.aibrix.ai/engine: vllm`` or with container port 8000, and"
+" a model with no such pod gets the gateway's local tokenizer, whose "
+"tokens never match SGLang's blocks. SGLang's ``/tokenize`` handles the "
+"gateway's tokenize requests, so serve SGLang on port 8000 and declare it "
+"as a container port, or set that variable to the SGLang Service, for "
+"example ``http://sglang-service:30000``. From SGLang 0.5.23, chat "
+"requests match SGLang's blocks only when it uses a Jinja chat template "
+"for the model."
+msgstr ""
+"未设置 ``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT`` 时，网关会调用它视为 vLLM 的 "
+"Pod 在 8000 端口上的 ``/tokenize`` ，例如带有 ``model.aibrix.ai/engine: vllm`` "
+"标签或声明了 8000 容器端口的 Pod；没有这类 Pod 的模型会使用网关的本地 tokenizer，其 token 永远无法匹配 "
+"SGLang 的 block。SGLang 的 ``/tokenize`` 可以处理网关的 tokenize 请求，因此请让 SGLang 在 "
+"8000 端口提供服务并将其声明为容器端口，或将该变量设置为 SGLang Service，例如 ``http://sglang-"
+"service:30000`` 。从 SGLang 0.5.23 起，只有当 SGLang 为该模型使用 Jinja 聊天模板时，聊天请求才能匹配"
+" SGLang 的 block。"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:113
 msgid "Deployment"
@@ -496,8 +554,11 @@ msgid "Enable prefix cache metrics for visibility"
 msgstr "启用 prefix cache 指标以便观察"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:338
-msgid "Monitor ZMQ connection status in logs"
-msgstr "在日志中监控 ZMQ 连接状态"
+msgid ""
+"Watch the gateway's ``aibrix_kvcache_zmq_*`` metrics, labeled by "
+"``pod_key``, such as ``aibrix_kvcache_zmq_connection_status`` and "
+"``aibrix_kvcache_zmq_replay_failures_total``"
+msgstr "关注网关的 ``aibrix_kvcache_zmq_*`` 指标（以 ``pod_key`` 为标签），例如 ``aibrix_kvcache_zmq_connection_status`` 和 ``aibrix_kvcache_zmq_replay_failures_total``"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:339
 msgid "Track prefix cache hit rates in Grafana"

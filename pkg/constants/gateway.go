@@ -23,4 +23,15 @@ const (
 	// HeaderSessionKey carries a caller-owned opaque key, used by session-affinity
 	// routing and by the PD router's session-delta prefill charge.
 	HeaderSessionKey = "x-aibrix-session-key"
+
+	// EnvGatewayMaxResponseBodyBytes caps the size, in bytes, of a non-streamed
+	// response body that the gateway buffers per request before extracting token
+	// usage. Once a body grows past the cap the gateway stops buffering it: the default
+	// router streams the body, so Envoy has already sent the 200 and the earlier chunks
+	// and the request cannot be failed -- instead the remaining chunks are forwarded
+	// unchanged and token usage is skipped, so the request goes uncharged (surfaced by
+	// the gateway_response_buffer_overflow_total counter). This bounds per-request
+	// memory. A value of 0 (or negative) disables the cap, restoring the previous
+	// unbounded behavior.
+	EnvGatewayMaxResponseBodyBytes = "AIBRIX_GATEWAY_MAX_RESPONSE_BODY_BYTES"
 )

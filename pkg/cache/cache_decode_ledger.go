@@ -286,6 +286,18 @@ func (c *Store) GetPodsRunningRequestsAndDecodeLedger(pods []*v1.Pod) (map[strin
 	return c.runningRequestsWithLocalFallback(pods, live), ledger, nil
 }
 
+// GetPodsDecodeLedger reads only the decode ledger that the other live gateway
+// replicas hold on each pod, without reading the running-request hashes.
+// Callers that already hold a decision-level running-requests snapshot use this
+// to avoid a duplicate HGETALL pass over aibrix:rrq:<pod>. This gateway's own
+// ledger is not included: the caller has it in memory. The returned map is nil
+// when Redis is not configured, pods has no non-nil entries, or the read
+// failed, and has no entry for a pod no other live gateway has charged.
+func (c *Store) GetPodsDecodeLedger(pods []*v1.Pod) map[string]RemoteDecodeLoad {
+	_, ledger := c.readPodsSharedState(pods, false, true)
+	return ledger
+}
+
 // sumRemoteDecodeLedger adds up the fields of the live gateways other than this
 // one, and enqueues the dead gateways' fields for pruning (never this
 // gateway's own: it may not be in the live set yet, and it rewrites its field
@@ -330,7 +342,15 @@ func (c *Store) sumRemoteDecodeLedger(key string, fields map[string]string, live
 // and, with withLedger, the other gateways' decode ledgers, in one pipeline.
 // Both maps are nil when Redis is not configured or the read failed.
 func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map[string]int64, map[string]RemoteDecodeLoad) {
-	if c.redisClient == nil || len(pods) == 0 {
+	return c.readPodsSharedState(pods, true, withLedger)
+}
+
+// readPodsSharedState reads the live gateway set together with the requested
+// per-pod hashes (running-request counters and/or other gateways' decode
+// ledgers) in one Redis pipeline. Both maps are nil when Redis is not
+// configured or the read failed.
+func (c *Store) readPodsSharedState(pods []*v1.Pod, withRunning, withLedger bool) (map[string]int64, map[string]RemoteDecodeLoad) {
+	if c.redisClient == nil || len(pods) == 0 || (!withRunning && !withLedger) {
 		return nil, nil
 	}
 	valid := make([]*v1.Pod, 0, len(pods))
@@ -348,34 +368,44 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 	pipe := c.readClient().Pipeline()
 	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	podKeys := make([]string, len(valid))
-	redisKeys := make([]string, len(valid))
-	hashCmds := make([]*redis.MapStringStringCmd, len(valid))
+	var redisKeys []string
+	var hashCmds []*redis.MapStringStringCmd
+	if withRunning {
+		redisKeys = make([]string, len(valid))
+		hashCmds = make([]*redis.MapStringStringCmd, len(valid))
+	}
 	var ledgerCmds []*redis.MapStringStringCmd
 	if withLedger {
 		ledgerCmds = make([]*redis.MapStringStringCmd, len(valid))
 	}
 	for i, pod := range valid {
 		podKeys[i] = utils.GeneratePodKey(pod.Namespace, pod.Name)
-		redisKeys[i] = runningRequestsKey(pod.Namespace, pod.Name)
-		hashCmds[i] = pipe.HGetAll(ctx, redisKeys[i])
+		if withRunning {
+			redisKeys[i] = runningRequestsKey(pod.Namespace, pod.Name)
+			hashCmds[i] = pipe.HGetAll(ctx, redisKeys[i])
+		}
 		if withLedger {
 			ledgerCmds[i] = pipe.HGetAll(ctx, decodeLedgerKey(podKeys[i]))
 		}
 	}
-	// With the remote running reader on, this read also refreshes its entries, stamped with the
-	// read's start like a sweep batch, from the fields read below.
-	reader := c.remoteRunningReader.Load()
+	// With the remote running reader on, a running-requests read also refreshes
+	// its entries, stamped with the read's start like a sweep batch, from the
+	// fields read below.
+	var reader *remoteRunningReader
 	var readAt time.Time
-	if reader != nil {
-		readAt = c.snapshotNow()
+	if withRunning {
+		reader = c.remoteRunningReader.Load()
+		if reader != nil {
+			readAt = c.snapshotNow()
+		}
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		klog.V(4).ErrorS(err, "failed to batch read running-requests counters", "pod_count", len(valid))
+		klog.V(4).ErrorS(err, "failed to batch read shared routing state", "pod_count", len(valid), "with_running", withRunning, "with_ledger", withLedger)
 		return nil, nil
 	}
 	liveGateways, err := liveCmd.Result()
 	if err != nil {
-		klog.V(4).ErrorS(err, "failed to read live gateways for running-requests counters")
+		klog.V(4).ErrorS(err, "failed to read live gateways for shared routing state")
 		return nil, nil
 	}
 	live := make(map[string]struct{}, len(liveGateways)+1)
@@ -383,33 +413,36 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 		live[gw] = struct{}{}
 	}
 
-	// See readPodRunningRequests: an empty live set does not make a hash's sum
-	// untrustworthy -- a hash whose only-ever contributor(s) have gone stale
-	// correctly sums to zero.
-	counts := make(map[string]int64, len(valid))
-	for i, cmd := range hashCmds {
-		fields, err := cmd.Result()
-		if err != nil {
-			continue
-		}
-		if len(fields) == 0 {
-			if reader != nil {
-				// An empty hash is a read of 0 for the other gateways' share.
-				reader.publish(podKeys[i], 0, readAt)
+	var counts map[string]int64
+	if withRunning {
+		// See readPodRunningRequests: an empty live set does not make a hash's sum
+		// untrustworthy -- a hash whose only-ever contributor(s) have gone stale
+		// correctly sums to zero.
+		counts = make(map[string]int64, len(valid))
+		for i, cmd := range hashCmds {
+			fields, err := cmd.Result()
+			if err != nil {
+				continue
 			}
-			continue
+			if len(fields) == 0 {
+				if reader != nil {
+					// An empty hash is a read of 0 for the other gateways' share.
+					reader.publish(podKeys[i], 0, readAt)
+				}
+				continue
+			}
+			// See overlaySelfRunningRequests: this gateway's own field must never be
+			// trusted stale just because it already exists in the hash.
+			c.overlaySelfRunningRequests(valid[i].Namespace, valid[i].Name, fields, live)
+			total, otherPositive, excluded := sumLiveFieldsAndOther(fields, live)
+			if reader != nil {
+				reader.publish(podKeys[i], otherPositive, readAt)
+			}
+			if len(excluded) > 0 {
+				c.enqueueDeadRunningRequestsPrune(redisKeys[i], excluded)
+			}
+			counts[podKeys[i]] = total
 		}
-		// See overlaySelfRunningRequests: this gateway's own field must never be
-		// trusted stale just because it already exists in the hash.
-		c.overlaySelfRunningRequests(valid[i].Namespace, valid[i].Name, fields, live)
-		total, otherPositive, excluded := sumLiveFieldsAndOther(fields, live)
-		if reader != nil {
-			reader.publish(podKeys[i], otherPositive, readAt)
-		}
-		if len(excluded) > 0 {
-			c.enqueueDeadRunningRequestsPrune(redisKeys[i], excluded)
-		}
-		counts[podKeys[i]] = total
 	}
 	if !withLedger {
 		return counts, nil

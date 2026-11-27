@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -335,10 +336,11 @@ func suppressKlogForBenchmark(b *testing.B) {
 }
 
 // BenchmarkFilterPrefillDecodePods times one full PD selection for a request:
-// policy Prepare (outside selectMu) plus everything the router does while it
-// holds selectMu (imbalance checks, prefill and decode scoring, final pairing,
-// tracker registration). With least_request the Prepare step is trivial, so
-// that sub-benchmark is effectively the cost of the selectMu critical section.
+// policy Prepare (outside the model's selection lock) plus everything the
+// router does while it holds the stripe lock (imbalance checks, prefill and
+// decode scoring, final pairing, tracker registration). With least_request the
+// Prepare step is trivial, so that sub-benchmark is effectively the cost of
+// the selection critical section.
 // 4 rolesets x 2 replicas = 8 prefill + 8 decode pods, all equally loaded so
 // no imbalance fast path fires and every pod is scored.
 func BenchmarkFilterPrefillDecodePods(b *testing.B) {
@@ -447,4 +449,222 @@ func BenchmarkFilterPrefillDecodePods(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkFilterPrefillDecodePods_ParallelMultiModel measures concurrent PD
+// selection throughput across multiple independent models sharing one pdRouter.
+func BenchmarkFilterPrefillDecodePods_ParallelMultiModel(b *testing.B) {
+	suppressKlogForBenchmark(b)
+
+	const (
+		modelCount   = 8
+		rolesetCount = 8
+		replicaCount = 4
+	)
+
+	modelNames := make([]string, modelCount)
+	modelPods := make([][]*v1.Pod, modelCount)
+	allPods := make([]*v1.Pod, 0, modelCount*rolesetCount*replicaCount*2)
+	podMetrics := make(map[string]map[string]metrics.MetricValue, modelCount*rolesetCount*replicaCount)
+
+	for m := 0; m < modelCount; m++ {
+		modelNames[m] = fmt.Sprintf("benchmark-model-%d", m)
+		prefills := benchmarkPDPods(VLLMEngine, "prefill", rolesetCount, replicaCount)
+		decodes := benchmarkPDPods(VLLMEngine, "decode", rolesetCount, replicaCount)
+		for _, p := range prefills {
+			p.Name = fmt.Sprintf("m%d-%s", m, p.Name)
+		}
+		for _, p := range decodes {
+			p.Name = fmt.Sprintf("m%d-%s", m, p.Name)
+			podMetrics[p.Name] = map[string]metrics.MetricValue{
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 2},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 512},
+				metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
+			}
+		}
+		ready := append(append([]*v1.Pod{}, prefills...), decodes...)
+		modelPods[m] = ready
+		allPods = append(allPods, ready...)
+	}
+
+	c := cache.NewWithPodsMetricsForTest(allPods, modelNames[0], podMetrics)
+	tracker := pd.NewPrefillRequestTracker()
+	pending := pd.NewPendingDecodeTracker()
+	router := &pdRouter{
+		cache:                 c,
+		prefillPolicy:         pd.NewLeastRequestPrefillPolicy(),
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pending,
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+		selectionCounts:       map[string]int64{},
+	}
+
+	var workerSeq atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		w := workerSeq.Add(1) - 1
+		m := int(w % modelCount)
+		model := modelNames[m]
+		ready := modelPods[m]
+		var iter uint64
+		for pb.Next() {
+			iter++
+			reqID := fmt.Sprintf("bench-mm-%d-%d", w, iter)
+			ctx := types.NewRoutingContext(context.Background(), RouterPD, model, "hello", reqID, "bench-user")
+			ctx.Engine = VLLMEngine
+			prefillPod, decodePod, err := router.filterPrefillDecodePods(ctx, ready)
+			if err != nil {
+				b.Fatalf("filterPrefillDecodePods: %v", err)
+			}
+			if prefillPod == nil || decodePod == nil {
+				b.Fatal("filterPrefillDecodePods returned a nil pod")
+			}
+			tracker.RemovePrefillRequest(reqID)
+			pending.RemovePendingDecode(reqID)
+			ctx.Delete()
+		}
+	})
+}
+
+// BenchmarkFilterPrefillDecodePods_LargeFleet measures single-model PD selection
+// throughput (serial and parallel) on 500-pod fleets (250P + 250D) across two
+// contrasting topologies (50 rolesets x 5 replicas and 1 roleset x 250 replicas)
+// and three policy pairings (prefix_cache+load_balancing,
+// hybrid_cache_load+token_load, and conductor+conductor).
+func BenchmarkFilterPrefillDecodePods_LargeFleet(b *testing.B) {
+	suppressKlogForBenchmark(b)
+	const model = "large-fleet-model"
+
+	topologies := []struct {
+		name         string
+		rolesetCount int
+		replicaCount int
+	}{
+		{"50rsx5", 50, 5},
+		{"1rsx250", 1, 250},
+	}
+
+	prompt := strings.Repeat("disaggregated scale benchmark prompt ", 32)
+	body := randReqBody(4000)
+
+	for _, topo := range topologies {
+		prefillPods := benchmarkPDPods(VLLMEngine, "prefill", topo.rolesetCount, topo.replicaCount)
+		decodePods := benchmarkPDPods(VLLMEngine, "decode", topo.rolesetCount, topo.replicaCount)
+		readyPods := append(append([]*v1.Pod{}, prefillPods...), decodePods...)
+
+		podMetrics := make(map[string]map[string]metrics.MetricValue, len(decodePods))
+		for i, pod := range decodePods {
+			podMetrics[pod.Name] = map[string]metrics.MetricValue{
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: float64(2 + i%3)},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: float64(500 + (i%5)*20)},
+				metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
+			}
+		}
+		c := cache.NewWithPodsMetricsForTest(readyPods, model, podMetrics)
+		prefixTable := prefixcacheindexer.NewPrefixHashTable()
+		tokenTracker := pd.NewTokenLoadTracker()
+
+		seedTokens, err := prefixcache.NewTokenizer().TokenizeInputText(prompt)
+		if err != nil {
+			b.Fatalf("tokenize prompt: %v", err)
+		}
+		seedHashes := prefixTable.GetPrefixHashes(seedTokens)
+		for i := 0; i < 4 && i < len(prefillPods); i++ {
+			prefixTable.AddPrefix(seedHashes, model, utils.GeneratePodKey(prefillPods[i].Namespace, prefillPods[i].Name))
+		}
+
+		policies := []struct {
+			name    string
+			prefill pd.PrefillScorePolicy
+			decode  pd.DecodeScorePolicy
+		}{
+			{"prefix_cache+load_balancing", newPrefixCachePrefillPolicy(prefixTable), pd.LoadBalancingDecodePolicy{}},
+			{"hybrid_cache_load+token_load", newHybridCacheLoadPrefillPolicy(prefixTable, tokenTracker), pd.TokenLoadDecodePolicy{}},
+			{"conductor+conductor", newConductorPrefillPolicy(prefixTable, c), pd.ConductorDecodePolicy{}},
+		}
+
+		for _, pol := range policies {
+			b.Run(topo.name+"/"+pol.name+"/serial", func(b *testing.B) {
+				runLargeFleetPDBenchSerial(b, c, prefixTable, tokenTracker, pol.prefill, pol.decode, model, prompt, body, readyPods)
+			})
+			b.Run(topo.name+"/"+pol.name+"/parallel_single_model", func(b *testing.B) {
+				runLargeFleetPDBenchParallel(b, c, prefixTable, tokenTracker, pol.prefill, pol.decode, model, prompt, body, readyPods)
+			})
+		}
+	}
+}
+
+func runLargeFleetPDBenchSerial(b *testing.B, c cache.Cache, prefixTable *prefixcacheindexer.PrefixHashTable, tokenTracker *pd.TokenLoadTracker, prefillPol pd.PrefillScorePolicy, decodePol pd.DecodeScorePolicy, model, prompt string, body []byte, readyPods []*v1.Pod) {
+	b.Helper()
+	tracker := pd.NewPrefillRequestTracker()
+	pending := pd.NewPendingDecodeTracker()
+	r := &pdRouter{
+		cache:                 c,
+		prefillPolicy:         prefillPol,
+		decodePolicy:          decodePol,
+		prefixCacheIndexer:    prefixTable,
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pending,
+		tokenLoadTracker:      tokenTracker,
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+		selectionCounts:       map[string]int64{},
+	}
+	ctx := types.NewRoutingContext(context.Background(), RouterPD, model, prompt, "bench-large-0", "bench-user")
+	defer ctx.Delete()
+	ctx.Engine = VLLMEngine
+	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqBody = body
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p, d, err := r.filterPrefillDecodePods(ctx, readyPods)
+		if err != nil || p == nil || d == nil {
+			b.Fatalf("filterPrefillDecodePods: err=%v p=%v d=%v", err, p, d)
+		}
+		r.pendingPrefixCredits.Delete(ctx.TrackerKey())
+		tracker.RemovePrefillRequest(ctx.TrackerKey())
+		pending.RemovePendingDecode(ctx.TrackerKey())
+		tokenTracker.ReleaseAll(ctx.TrackerKey())
+	}
+}
+
+func runLargeFleetPDBenchParallel(b *testing.B, c cache.Cache, prefixTable *prefixcacheindexer.PrefixHashTable, tokenTracker *pd.TokenLoadTracker, prefillPol pd.PrefillScorePolicy, decodePol pd.DecodeScorePolicy, model, prompt string, body []byte, readyPods []*v1.Pod) {
+	b.Helper()
+	tracker := pd.NewPrefillRequestTracker()
+	pending := pd.NewPendingDecodeTracker()
+	r := &pdRouter{
+		cache:                 c,
+		prefillPolicy:         prefillPol,
+		decodePolicy:          decodePol,
+		prefixCacheIndexer:    prefixTable,
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pending,
+		tokenLoadTracker:      tokenTracker,
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+		selectionCounts:       map[string]int64{},
+	}
+	var seq atomic.Uint64
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			id := fmt.Sprintf("bench-large-%d", seq.Add(1))
+			ctx := types.NewRoutingContext(context.Background(), RouterPD, model, prompt, id, "bench-user")
+			ctx.Engine = VLLMEngine
+			ctx.ReqPath = "/v1/chat/completions"
+			ctx.ReqBody = body
+			p, d, err := r.filterPrefillDecodePods(ctx, readyPods)
+			if err != nil || p == nil || d == nil {
+				b.Errorf("filterPrefillDecodePods: err=%v p=%v d=%v", err, p, d)
+			}
+			r.pendingPrefixCredits.Delete(ctx.TrackerKey())
+			tracker.RemovePrefillRequest(ctx.TrackerKey())
+			pending.RemovePendingDecode(ctx.TrackerKey())
+			tokenTracker.ReleaseAll(ctx.TrackerKey())
+			ctx.Delete()
+		}
+	})
 }

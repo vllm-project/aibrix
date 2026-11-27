@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -647,6 +648,34 @@ func TestSumLiveFields_ClampsNegativeAtZero(t *testing.T) {
 	total, excluded := sumLiveFields(fields, live)
 	require.Zero(t, total)
 	require.Empty(t, excluded)
+}
+
+func TestSumLiveFieldsAndOther_SaturatesTotal(t *testing.T) {
+	fields := map[string]string{
+		runningRequestsGatewayInstanceID: "2",
+		"gw-live":                        strconv.FormatInt(math.MaxInt64-1, 10),
+		"gw-dead":                        "5",
+	}
+	live := map[string]struct{}{runningRequestsGatewayInstanceID: {}, "gw-live": {}}
+
+	total, otherPositive, excluded := sumLiveFieldsAndOther(fields, live)
+	require.Equal(t, int64(math.MaxInt64), total)
+	require.Equal(t, int64(math.MaxInt64-1), otherPositive)
+	require.Equal(t, []string{"gw-dead"}, excluded)
+}
+
+func TestSumLiveFieldsAndOther_SaturatesOtherPositive(t *testing.T) {
+	remoteCount := strconv.FormatInt(math.MaxInt64-1, 10)
+	fields := map[string]string{
+		runningRequestsGatewayInstanceID: "2",
+		"gw-a":                           remoteCount,
+		"gw-b":                           remoteCount,
+	}
+	live := map[string]struct{}{runningRequestsGatewayInstanceID: {}, "gw-a": {}, "gw-b": {}}
+
+	total, otherPositive, _ := sumLiveFieldsAndOther(fields, live)
+	require.Equal(t, int64(math.MaxInt64), total)
+	require.Equal(t, int64(math.MaxInt64), otherPositive)
 }
 
 // The short liveness window drives fast exclusion from a sum, but must not be

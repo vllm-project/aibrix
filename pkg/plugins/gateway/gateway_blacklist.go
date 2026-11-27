@@ -17,6 +17,7 @@ limitations under the License.
 package gateway
 
 import (
+	"net/http"
 	"sync"
 	"time"
 
@@ -94,6 +95,38 @@ func (s *Server) unregisterFromCache() {
 // blacklist.PodBlacklist.OnPodFlakyReAdd.
 func (s *Server) OnPodFlakyReAdd(pod *v1.Pod) {
 	s.podBlacklist.OnPodFlakyReAdd(pod)
+}
+
+// recordPodResponse reports the upstream status of st's request to the pod blacklist, which
+// blocks a pod after enough failing statuses in a row (see blacklist.PodBlacklist.RecordResponse).
+// It is called once, when the response headers arrive, and it is the only place the gateway
+// reports a request's outcome.
+//
+// The stream's own ending is deliberately not reported (handleRecvError records nothing): Envoy
+// half-closes and resets the ext_proc stream together when a downstream client leaves, so an EOF
+// or a cancel cannot be told from an upstream failure. A response that began with 200 and then
+// broke mid-body is therefore counted as the success its headers said it was.
+//
+// This sees only the response headers Envoy sends to ext_proc. That needs the response header
+// mode to be SEND, which is Envoy's default and what the shipped manifests leave in place (the
+// Helm Envoy config sets it explicitly, the EnvoyExtensionPolicies set only body modes); a custom
+// chain that sets SKIP turns this source off without an error. It also means a response Envoy
+// generates itself, a connect failure, a reset before any response or a timeout, is not seen on
+// the pinned Envoy, which skips ext_proc for its own local replies: only a status the engine, or
+// a proxy in front of it, sent counts.
+//
+// Only a request routed to a pod is reported; one whose routing has not finished, or that
+// failed before it, has no pod to blame. HasRouted is what guards TargetPod, which would
+// otherwise wait for a pod that is never set.
+func (s *Server) recordPodResponse(st *processState) {
+	if !blacklist.Enabled || st.routerCtx == nil || !st.routerCtx.HasRouted() {
+		return
+	}
+	code := http.StatusOK
+	if st.isRespError {
+		code = st.respErrorCode
+	}
+	s.podBlacklist.RecordResponse(st.routerCtx.TargetPod(), code)
 }
 
 // getGlobalRunningRequestsByPod is the live cross-gateway running-request count of
@@ -218,20 +251,50 @@ func (s *Server) excludeBlacklisted(routeCtx *types.RoutingContext, pods []*v1.P
 	return pods
 }
 
+// scoutBlacklistFilter returns a cap-aware blacklist filter for the candidate stage's bounded
+// scout, or nil when the blacklist is off or has no excluded pods (so the stage skips the check
+// at zero cost). Filtering the 4K scout before estimation stops blacklisted pods that have
+// drained to zero load from winning the K/2 ranked slots and pushing decisions into the O(N)
+// reselect path (#3541).
+//
+// The exclusion cap is checked on the scout itself: when more than
+// AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT of the scout is excluded (or all of it), the scout
+// is returned unfiltered so excludeBlacklistedCandidates still sees it and enforces the fleet
+// cap. Because the scout is 4K pods (or the whole fleet when N <= 8K), its cap check stays O(K)
+// and is tighter than the K-candidate check that follows.
+func (s *Server) scoutBlacklistFilter() func([]*v1.Pod) []*v1.Pod {
+	if !s.podBlacklist.HasExcluded() {
+		return nil
+	}
+	return s.filterBlacklistedScout
+}
+
+func (s *Server) filterBlacklistedScout(scout []*v1.Pod) []*v1.Pod {
+	filtered := s.podBlacklist.FilterBlacklisted(scout)
+	if blacklistFallbackReason(len(filtered), len(scout)) != "" {
+		return scout
+	}
+	return filtered
+}
+
 // excludeBlacklistedCandidates is excludeBlacklisted for the candidates the candidate stage
 // picked out of ready. It looks up the candidates only, so a decision costs O(K) lookups
 // however many pods are ready or tracked; when the stage did not narrow, candidates is the
 // ready list itself and this is excludeBlacklisted.
 //
+// The candidate stage already soft-filters its 4K scout through scoutBlacklistFilter before
+// ranking, so under the cap the K/2 ranked slots are not filled by drained excluded pods; this
+// pass remains the guarantee over the final K candidates (including the random half).
+//
 // A pod the filter drops is not replaced, so a few excluded candidates leave the router a
 // smaller set. When every candidate is excluded, or too many (blacklistFallbackReason), but
 // the ready pods as a whole are not, the stage runs again over the ready pods that are not
 // excluded: the request must not go to an excluded pod while healthy ones exist, and an
-// unlucky sample is not the fleet. That pass looks up every ready pod, but it is reached only
-// when the candidates are mostly excluded, which for K candidates sampled from the fleet
-// means most of it is. When the fleet itself is over the cap the request is routed across the
-// candidates unfiltered. The second run is routing.ReselectCandidates, so a request is still
-// counted as narrowed once.
+// unlucky sample is not the fleet. That pass looks up every ready pod and is counted by
+// metrics.GatewayPodBlacklistReselectTotal, but with scoutBlacklistFilter active it is reached
+// only near the cap or on an unlucky sample. When the fleet itself is over the cap the request
+// is routed across the candidates unfiltered. The second run is routing.ReselectCandidates, so
+// a request is still counted as narrowed once.
 func (s *Server) excludeBlacklistedCandidates(routeCtx *types.RoutingContext, router types.Router, ready, candidates []*v1.Pod) []*v1.Pod {
 	filtered := s.podBlacklist.FilterBlacklisted(candidates)
 	reason := blacklistFallbackReason(len(filtered), len(candidates))
@@ -241,9 +304,13 @@ func (s *Server) excludeBlacklistedCandidates(routeCtx *types.RoutingContext, ro
 	scope, kept := candidates, len(filtered)
 	if len(candidates) < len(ready) {
 		allowed := s.podBlacklist.FilterBlacklisted(ready)
-		if reason = blacklistFallbackReason(len(allowed), len(ready)); reason == "" {
+		fleetReason := blacklistFallbackReason(len(allowed), len(ready))
+		if fleetReason == "" {
+			metrics.EmitMetricToPrometheus(routeCtx, nil, metrics.GatewayPodBlacklistReselectTotal,
+				&metrics.SimpleMetricValue{Value: 1}, map[string]string{"reason": reason})
 			return routing.ReselectCandidates(routeCtx, s.cache, router, allowed)
 		}
+		reason = fleetReason
 		scope, kept = ready, len(allowed)
 	}
 	s.logBlacklistFallback(routeCtx, scope, kept, reason)

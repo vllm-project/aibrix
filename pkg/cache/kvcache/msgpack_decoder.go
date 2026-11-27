@@ -286,6 +286,11 @@ func parseBlockStored(fields eventFields) (KVEvent, error) {
 	// Flatten tokenIDs into []uint32
 	tokenIDs := make([]uint32, len(rawTokenIDs))
 	for i, v := range rawTokenIDs {
+		// SGLang with EAGLE keys its radix tree by bigrams and sends each
+		// position as [token, next token].
+		if pair, ok := v.([]interface{}); ok && len(pair) == 2 {
+			v = pair[0]
+		}
 		n, err := parseUint32(v)
 		if err != nil {
 			return nil, fmt.Errorf("token_ids[%d]: %w", i, err)

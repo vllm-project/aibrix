@@ -49,6 +49,17 @@ controllerManager:
 
 gatewayPlugin:
   replicaCount: 1
+  # Requires a gateway image containing the standalone /prestop binary.
+  # Only supported with a separate Envoy deployment (envoyAsSideCar=false).
+  gracefulShutdown:
+    enabled: false
+    # Includes the hook, gRPC drain, and at least 10 seconds for cleanup.
+    terminationGracePeriodSeconds: 340
+    propagationDelaySeconds: 10
+    timeoutSeconds: 300
+    grpcDrainTimeoutSeconds: 30
+    pollIntervalSeconds: 2
+    metricsURL: http://127.0.0.1:8080/metrics
   imagePullSecrets: []
   initContainer:
     image:
@@ -186,6 +197,13 @@ gateway:
     ports:
       http: 10080
   envoyProxy:
+    # Uses Envoy Gateway's native shutdown-manager (independent deployment only).
+    # Requires Envoy Gateway >= v1.2.0 with matching EnvoyProxy CRDs.
+    gracefulShutdown:
+      enabled: false
+      terminationGracePeriodSeconds: 330
+      drainTimeoutSeconds: 300
+      minDrainDurationSeconds: 10
     accessLog:
       # Add request/response timing and ext_proc fields to the default JSON log.
       # Applies to Envoy Gateway-managed proxies; uses Envoy v1.35+ ext_proc fields.

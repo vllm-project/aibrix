@@ -32,6 +32,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
@@ -366,4 +367,207 @@ func Test_selectTargetPod_CandidateStageRerunIsCountedOnce(t *testing.T) {
 	}
 
 	assert.Equal(t, float64(requests), candidateSelectionsFor(t, "m")-before)
+}
+
+// newLoadedCandidateBlacklistFleet builds a fleet where healthy pods carry active load
+// (running requests 1..16, KV cache 10%..69%) and blacklisted pods have drained to 0 load,
+// matching their real state shortly after circuit-breaking (#3541).
+func newLoadedCandidateBlacklistFleet(t *testing.T, n, k, blacklistedPct int) (*candidateBlacklistFleet, map[string]bool) {
+	t.Helper()
+	pods := make([]*v1.Pod, n)
+	podMetrics := make(map[string]map[string]metrics.MetricValue, n)
+	excludedAddrs := make(map[string]bool)
+	nBlacklisted := n * blacklistedPct / 100
+
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("pod-%03d", i)
+		pods[i] = &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: "ns",
+				Labels: map[string]string{constants.ModelLabelPort: "8000"},
+			},
+			Status: v1.PodStatus{
+				PodIP:      fmt.Sprintf("10.0.%d.%d", i/256, i%256),
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+		isBL := i < nBlacklisted
+		running, kv := 0.0, 0.0
+		if !isBL {
+			running = float64(1 + (i % 16))
+			kv = float64(10+(i*13)%60) / 100.0
+		}
+		podMetrics[name] = map[string]metrics.MetricValue{
+			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: running},
+			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: float64(1500 + (i*37)%1500)},
+			metrics.KVCacheUsagePerc:            &metrics.SimpleMetricValue{Value: kv},
+		}
+	}
+
+	store := cache.NewWithPodsMetricsForTest(pods, "m", podMetrics)
+	store = cache.InitWithPodsModelMetrics(store, podMetrics)
+	rm := routing.NewRouterManagerWithCache(store)
+	rm.Init()
+	raw := json.RawMessage(fmt.Sprintf(`{"candidate":{"k":%d}}`, k))
+	f := &candidateBlacklistFleet{
+		t:       t,
+		server:  &Server{cache: store, routerManager: rm, podBlacklist: blacklist.PodBlacklist{}},
+		pods:    pods,
+		profile: &types.ResolvedConfigProfile{RoutingConfig: raw, Routing: configprofiles.ParseRoutingConfig(raw)},
+	}
+	f.blacklist(func(i int) bool { return i < nBlacklisted })
+	for i := 0; i < nBlacklisted; i++ {
+		excludedAddrs[f.addrOf(i)] = true
+	}
+	return f, excludedAddrs
+}
+
+func (f *candidateBlacklistFleet) routeWith(algo types.RoutingAlgorithm) (string, error) {
+	f.t.Helper()
+	ctx := types.NewRoutingContext(context.Background(), algo, "m", "hello", "req", "")
+	defer ctx.Delete()
+	ctx.ConfigProfile = f.profile
+	return f.server.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: f.pods}, "")
+}
+
+// On a loaded fleet where healthy pods carry running requests and blacklisted pods have drained
+// to zero, filtering the 4K scout before ranking keeps blacklisted pods out of the K/2 ranked
+// slots and avoids pushing decisions below the cap into the O(N) full-fleet reselect (#3541).
+func Test_selectTargetPod_CandidateStageLoadedFleetUnderCapDoesNotPoisonRankedSlots(t *testing.T) {
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(50))
+	const (
+		n        = 500
+		k        = 16
+		ranked   = k / 2
+		requests = 300
+	)
+
+	for _, algo := range []types.RoutingAlgorithm{least.RouterLeastRequest, routing.RouterLoadBalance} {
+		for _, pct := range []int{15, 20} {
+			t.Run(fmt.Sprintf("%s_%dpct_blacklisted", algo, pct), func(t *testing.T) {
+				f, excludedAddrs := newLoadedCandidateBlacklistFleet(t, n, k, pct)
+				fallbacks := captureBlacklistMetricCounts(t, metrics.GatewayPodBlacklistFallbackTotal)
+				reselects := captureBlacklistMetricCounts(t, metrics.GatewayPodBlacklistReselectTotal)
+
+				// 1. Direct candidate-stage check: zero blacklisted pods in the K/2 ranked slots.
+				rankedBL := 0
+				for i := 0; i < requests; i++ {
+					ctx := types.NewRoutingContext(context.Background(), algo, "m", "hello", "req", "")
+					ctx.ConfigProfile = f.profile
+					routing.ResolveRoutingOverrides(ctx)
+					router, err := f.server.routerManager.Select(ctx)
+					require.NoError(t, err)
+					cands := routing.SelectCandidates(ctx, f.server.cache, router, f.pods, f.server.scoutBlacklistFilter())
+					ctx.Delete()
+					require.Len(t, cands, k)
+					for _, pod := range cands[:ranked] {
+						if f.server.podBlacklist.IsBlacklisted(pod) {
+							rankedBL++
+						}
+					}
+				}
+				assert.Zero(t, rankedBL, "drained blacklisted pods must not occupy any K/2 ranked slot")
+
+				// 2. End-to-end routing: never routes to a blacklisted pod and never falls to reselect.
+				for i := 0; i < requests; i++ {
+					addr, err := f.routeWith(algo)
+					require.NoError(t, err)
+					require.False(t, excludedAddrs[addr], "request %d was routed to excluded pod %s", i, addr)
+				}
+				assert.Zero(t, reselects.get(fallbackOverCap), "under the cap, loaded fleet must not trigger over_cap reselects")
+				assert.Zero(t, reselects.get(fallbackAllExcluded), "under the cap, loaded fleet must not trigger all_excluded reselects")
+				assert.Zero(t, fallbacks.get(fallbackOverCap))
+				assert.Zero(t, fallbacks.get(fallbackAllExcluded))
+			})
+		}
+	}
+}
+
+// On a loaded fleet past the exclusion cap (60% blacklisted > 50% default cap), the scout filter
+// must judge the cap on the scout and leave it unfiltered when over cap, so decisions still route
+// across blacklisted pods instead of concentrating all traffic on the remaining healthy minority.
+func Test_selectTargetPod_CandidateStageLoadedFleetOverCapRoutesAcrossBlacklistedPods(t *testing.T) {
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(50))
+	const (
+		n        = 500
+		k        = 16
+		requests = 400
+	)
+
+	f, excludedAddrs := newLoadedCandidateBlacklistFleet(t, n, k, 60)
+	fallbacks := captureFallbackCounts(t)
+
+	toExcluded := 0
+	for i := 0; i < requests; i++ {
+		addr, err := f.routeWith(least.RouterLeastRequest)
+		require.NoError(t, err)
+		if excludedAddrs[addr] {
+			toExcluded++
+		}
+	}
+
+	// With 60% of 500 pods blacklisted and a 64-pod scout, ~94% of scouts exceed the 50% cap
+	// and fall through to route across the zero-load blacklisted pods. Without the scout cap
+	// check, toExcluded drops to 0.
+	assert.GreaterOrEqual(t, toExcluded, requests*3/4,
+		"past the cap, most requests must still route across blacklisted pods (got %d/%d)", toExcluded, requests)
+	assert.GreaterOrEqual(t, fallbacks.get(fallbackOverCap), requests*3/4,
+		"over_cap fallback must be counted")
+	assert.Zero(t, fallbacks.get(fallbackAllExcluded))
+}
+
+// When the candidate set hits all_excluded or over_cap while the fleet as a whole stays within
+// the cap, excludeBlacklistedCandidates re-runs the stage over all healthy pods and increments
+// gateway_pod_blacklist_reselect_total with the candidate-level reason.
+func Test_excludeBlacklistedCandidates_CountsReselect(t *testing.T) {
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(50))
+	fallbacks := captureBlacklistMetricCounts(t, metrics.GatewayPodBlacklistFallbackTotal)
+	reselects := captureBlacklistMetricCounts(t, metrics.GatewayPodBlacklistReselectTotal)
+
+	// 40 pods with 10 blacklisted (25% fleet, under the 50% cap).
+	f := newCandidateBlacklistFleet(t, 40, 8)
+	f.blacklist(func(i int) bool { return i < 10 })
+
+	ctx := types.NewRoutingContext(context.Background(), routing.RouterRandom, "m", "hello", "req", "")
+	t.Cleanup(ctx.Delete)
+	ctx.ConfigProfile = f.profile
+	routing.ResolveRoutingOverrides(ctx)
+	router, err := f.server.routerManager.Select(ctx)
+	require.NoError(t, err)
+
+	// Case 1: all 8 candidates are blacklisted -> all_excluded reselect.
+	allBL := f.pods[:8]
+	got := f.server.excludeBlacklistedCandidates(ctx, router, f.pods, allBL)
+	require.Len(t, got, 8)
+	for _, pod := range got {
+		assert.False(t, f.server.podBlacklist.IsBlacklisted(pod))
+	}
+	assert.Equal(t, 1, reselects.get(fallbackAllExcluded))
+	assert.Zero(t, reselects.get(fallbackOverCap))
+
+	// Case 2: 5 of 8 candidates are blacklisted (62.5% > 50% cap) -> over_cap reselect.
+	overCapCands := append(append([]*v1.Pod{}, f.pods[:5]...), f.pods[10:13]...)
+	got = f.server.excludeBlacklistedCandidates(ctx, router, f.pods, overCapCands)
+	require.Len(t, got, 8)
+	for _, pod := range got {
+		assert.False(t, f.server.podBlacklist.IsBlacklisted(pod))
+	}
+	assert.Equal(t, 1, reselects.get(fallbackOverCap))
+	assert.Zero(t, fallbacks.get(fallbackAllExcluded), "reselect did not ignore the blacklist")
+	assert.Zero(t, fallbacks.get(fallbackOverCap), "reselect did not ignore the blacklist")
+}
+
+// When the blacklist is off or has no excluded pods, scoutBlacklistFilter returns nil so the
+// candidate stage pays zero lookup cost.
+func Test_scoutBlacklistFilter_NilWhenNoExclusions(t *testing.T) {
+	f := newCandidateBlacklistFleet(t, 20, 4)
+	assert.Nil(t, f.server.scoutBlacklistFilter(), "empty blacklist must return nil filter")
+
+	f.blacklist(func(i int) bool { return i == 0 })
+	assert.NotNil(t, f.server.scoutBlacklistFilter(), "active exclusion must supply a filter")
+
+	prev := blacklist.Enabled
+	blacklist.Enabled = false
+	defer func() { blacklist.Enabled = prev }()
+	assert.Nil(t, f.server.scoutBlacklistFilter(), "disabled blacklist must return nil filter")
 }

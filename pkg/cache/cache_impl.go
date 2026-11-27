@@ -18,6 +18,7 @@ package cache
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"sync/atomic"
@@ -205,7 +206,7 @@ func (c *Store) GetMetricRecordByPodModel(podName, podNamespace, modelName, metr
 		return MetricRecord{}, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
-	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
+	return c.getPodMetricImpl(podName, metaPod.modelMetricStore(modelName), c.getPodModelMetricName(modelName, metricName))
 }
 
 // AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: instead of
@@ -319,7 +320,10 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 // With the remote running reader on, the other gateways' counts come from it instead.
 func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 	reader := c.remoteRunningReader.Load()
-	snap := c.gatewayRemoteRunning.Load()
+	var snap *remoteRunningSnapshot
+	if reader == nil {
+		snap = c.gatewayRemoteRunning.Load()
+	}
 	now := c.snapshotNow()
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {
@@ -334,13 +338,20 @@ func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 		count := int64(atomic.LoadInt32(&metaPod.runningRequests))
 		if reader != nil {
 			remote, _ := reader.freshCount(podKey, now)
-			count += remote
+			count = addSaturatedInt64(count, remote)
 		} else if snap != nil {
-			count += snap.freshCount(podKey, now)
+			count = addSaturatedInt64(count, snap.freshCount(podKey, now))
 		}
 		result[podKey] = count
 	}
 	return result
+}
+
+func addSaturatedInt64(base, add int64) int64 {
+	if add > 0 && base > math.MaxInt64-add {
+		return math.MaxInt64
+	}
+	return base + add
 }
 
 // GetPodsReadySince implements PodReadySinceProvider. It is a local read with no Redis: ramp

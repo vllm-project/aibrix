@@ -1,0 +1,132 @@
+suite: Test Envoy Graceful Shutdown
+templates:
+  - gateway-instance/gateway.yaml
+tests:
+  - it: patches readiness stabilization into the generated Deployment
+    set:
+      gateway.envoyProxy.gracefulShutdown.enabled: true
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.minReadySeconds
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.minReadySeconds
+          value: 10
+  - it: preserves Envoy Gateway defaults when disabled
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.minReadySeconds
+      - notExists:
+          path: spec.shutdown
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.terminationGracePeriodSeconds
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.strategy.rollingUpdate.maxUnavailable
+          value: 1
+  - it: accepts a null graceful shutdown configuration
+    set:
+      gateway.envoyProxy.gracefulShutdown: null
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.shutdown
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.minReadySeconds
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.strategy.rollingUpdate.maxUnavailable
+          value: 1
+  - it: configures native draining and keeps a ready replica during rollout
+    set:
+      gateway.envoyProxy.gracefulShutdown.enabled: true
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - equal:
+          path: spec.shutdown
+          value:
+            drainTimeout: 300s
+            minDrainDuration: 10s
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.terminationGracePeriodSeconds
+          value: 330
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.strategy.rollingUpdate
+          value:
+            maxUnavailable: 0
+            maxSurge: 1
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.containers[0].lifecycle
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.containers[1].lifecycle
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.containers[1].args
+  - it: allows independent Envoy drain budgets
+    set:
+      gateway.envoyProxy.gracefulShutdown:
+        enabled: true
+        terminationGracePeriodSeconds: 180
+        drainTimeoutSeconds: 150
+        minDrainDurationSeconds: 5
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - equal:
+          path: spec.shutdown
+          value:
+            drainTimeout: 150s
+            minDrainDuration: 5s
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.terminationGracePeriodSeconds
+          value: 180
+  - it: rejects a drain consuming the readiness wait and cleanup budget
+    set:
+      gateway.envoyProxy.gracefulShutdown.enabled: true
+      gateway.envoyProxy.gracefulShutdown.terminationGracePeriodSeconds: 300
+      gateway.envoyProxy.gracefulShutdown.drainTimeoutSeconds: 290
+    asserts:
+      - failedTemplate:
+          errorMessage: gateway.envoyProxy.gracefulShutdown requires terminationGracePeriodSeconds > drainTimeoutSeconds + 10 and drainTimeoutSeconds > minDrainDurationSeconds.
+  - it: permits a zero minimum duration
+    set:
+      gateway.envoyProxy.gracefulShutdown.enabled: true
+      gateway.envoyProxy.gracefulShutdown.minDrainDurationSeconds: 0
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - equal:
+          path: spec.shutdown.minDrainDuration
+          value: 0s
+  - it: rejects a minimum duration consuming the entire drain timeout
+    set:
+      gateway.envoyProxy.gracefulShutdown.enabled: true
+      gateway.envoyProxy.gracefulShutdown.drainTimeoutSeconds: 270
+      gateway.envoyProxy.gracefulShutdown.minDrainDurationSeconds: 270
+    asserts:
+      - failedTemplate:
+          errorMessage: gateway.envoyProxy.gracefulShutdown requires terminationGracePeriodSeconds > drainTimeoutSeconds + 10 and drainTimeoutSeconds > minDrainDurationSeconds.
+  - it: leaves an external gateway untouched
+    set:
+      gateway.enable: false
+      gateway.envoyProxy.gracefulShutdown.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: leaves sidecar mode untouched
+    set:
+      gateway.enable: false
+      gateway.envoyAsSideCar: true
+      gatewayPlugin.gracefulShutdown.enabled: false
+      gateway.envoyProxy.gracefulShutdown.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0

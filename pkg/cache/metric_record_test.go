@@ -103,7 +103,12 @@ func TestMetricRecordWorkerFailureDoesNotRefreshSamples(t *testing.T) {
 	oldTimeout := podMetricsFetchTimeout
 	podMetricsFetchTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { podMetricsFetchTimeout = oldTimeout })
-	scrape := func() { jobs := make(chan *Pod, 1); jobs <- pod; close(jobs); c.worker(jobs) }
+	scrape := func() {
+		jobs := make(chan podMetricsJob, 1)
+		jobs <- podMetricsJob{Pod: pod}
+		close(jobs)
+		c.worker(jobs)
+	}
 	scrape()
 	first, err := c.GetMetricRecordByPodModel(pod.Name, pod.Namespace, "model", metrics.KVCacheUsagePerc)
 	require.NoError(t, err)
@@ -188,8 +193,8 @@ func MetricRecordWorkerForTest(port string) (*Store, *v1.Pod, func()) {
 	c := NewWithPodsForTest([]*v1.Pod{pod.Pod}, "model")
 	meta, _ := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
 	return c, pod.Pod, func() {
-		jobs := make(chan *Pod, 1)
-		jobs <- meta
+		jobs := make(chan podMetricsJob, 1)
+		jobs <- podMetricsJob{Pod: meta}
 		close(jobs)
 		c.worker(jobs)
 	}

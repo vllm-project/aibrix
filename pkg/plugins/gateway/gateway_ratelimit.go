@@ -24,6 +24,7 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -40,7 +41,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		if code == envoyTypePb.StatusCode_TooManyRequests {
 			errorHeader, errorCode = HeaderErrorRPMExceeded, ErrorCodeRateLimitExceeded
 		}
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: errorHeader, RawValue: []byte("true"),
@@ -58,7 +59,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		if code == envoyTypePb.StatusCode_TooManyRequests {
 			errorHeader, errorCode = HeaderErrorTPMExceeded, ErrorCodeRateLimitExceeded
 		}
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: errorHeader, RawValue: []byte("true"),
@@ -68,7 +69,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 
 	rpm, code, err := s.incrRPM(ctx, user.Name)
 	if err != nil {
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorIncrRPM, RawValue: []byte("true"),
@@ -83,7 +84,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 			klog.ErrorS(derr, "fail to refund rejected RPM increment for user", "user", user.Name)
 		}
 		exceeded := fmt.Errorf("user: %v has exceeded RPM: %v", user.Name, user.Rpm)
-		return 0, generateErrorResponse(
+		return 0, errresp.GenerateErrorResponse(
 			envoyTypePb.StatusCode_TooManyRequests,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
@@ -144,7 +145,7 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 	newVal, err := s.modelRateLimiter.Incr(ctx, key, 1, window...)
 	if err != nil {
 		klog.ErrorS(err, "fail to increment RPS for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
@@ -157,7 +158,7 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 		if profile, ok := routingCtx.RespHeaders[HeaderAIBrixConfigProfile]; ok {
 			headers = append(headers, HeaderAIBrixConfigProfile, profile)
 		}
-		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
+		return errresp.BuildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
 			ErrorCodeRateLimitExceeded, "", headers...)
 	}
