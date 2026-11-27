@@ -61,6 +61,13 @@ const (
 	// Example: "claim.model.aibrix.ai/pool-policy": '{"reclaim":{"mode":"kv-first","capacityBytes":17179869184}}'
 	ModelPoolPolicyAnnotationKey = "claim.model.aibrix.ai/pool-policy"
 
+	// ModelPoolActivationTimeoutAnnotationKey holds, on the warm Deployment,
+	// how long an instance may stay Activating with a live engine before the
+	// controller fails it, as a Go duration. It is a key of its own, not part
+	// of the pool policy, so that a controller that does not know it ignores it.
+	// Example: "claim.model.aibrix.ai/activation-timeout": "1h"
+	ModelPoolActivationTimeoutAnnotationKey = "claim.model.aibrix.ai/activation-timeout"
+
 	// ModelClaimPodAnnotationPrefix marks, on a warm GPU pod, that a ModelClaim
 	// has been activated on it. The key is suffixed with the ModelClaim object
 	// name, which the CRD limits to the 63 characters that the name part of a

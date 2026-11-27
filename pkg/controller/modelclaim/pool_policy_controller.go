@@ -45,9 +45,9 @@ type poolPolicyManager struct {
 	activity  map[string]poolActivityRecord
 	config    map[types.NamespacedName]poolConfigRecord
 	lastSweep time.Time
-	// invalidActivation is, for each pool whose activation section is not
-	// valid, the annotation that was reported.
-	invalidActivation map[types.NamespacedName]string
+	// invalidActivationTimeout is, for each pool whose activation timeout is
+	// not valid, the value that was reported.
+	invalidActivationTimeout map[types.NamespacedName]string
 }
 
 type poolActivityRecord struct {
@@ -108,27 +108,26 @@ func (m *poolPolicyManager) forgetConfig(pool types.NamespacedName) bool {
 	defer m.mu.Unlock()
 	_, known := m.config[pool]
 	delete(m.config, pool)
-	delete(m.invalidActivation, pool)
 	return known
 }
 
-// observeActivation records whether a pool's activation section is valid, and
-// reports whether a warning is due: once for each annotation whose section is
+// observeActivationTimeout records whether a pool's activation timeout is
+// valid, and reports whether a warning is due: once for each value that is
 // not.
-func (m *poolPolicyManager) observeActivation(pool types.NamespacedName, raw string, valid bool) bool {
+func (m *poolPolicyManager) observeActivationTimeout(pool types.NamespacedName, raw string, valid bool) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if valid {
-		delete(m.invalidActivation, pool)
+		delete(m.invalidActivationTimeout, pool)
 		return false
 	}
-	if reported, known := m.invalidActivation[pool]; known && reported == raw {
+	if reported, known := m.invalidActivationTimeout[pool]; known && reported == raw {
 		return false
 	}
-	if m.invalidActivation == nil {
-		m.invalidActivation = map[types.NamespacedName]string{}
+	if m.invalidActivationTimeout == nil {
+		m.invalidActivationTimeout = map[types.NamespacedName]string{}
 	}
-	m.invalidActivation[pool] = raw
+	m.invalidActivationTimeout[pool] = raw
 	return true
 }
 
@@ -248,6 +247,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicies(
 			continue
 		}
 		seen[key] = struct{}{}
+		r.reportInvalidActivationTimeout(deployment, manager)
 		policy := r.resolvePoolPolicy(deployment, manager)
 		if policy == nil {
 			continue
@@ -333,17 +333,6 @@ func lifecycleOf(deployment *appsv1.Deployment) *poolLifecyclePolicy {
 	return policy.Lifecycle
 }
 
-// activationTimeoutOf is how long a pool lets an instance stay Activating with
-// a live engine: its activation.timeoutSeconds, or defaultActivationTimeout
-// when the policy sets none or its activation section is not valid.
-func activationTimeoutOf(deployment *appsv1.Deployment) time.Duration {
-	activation, err := activationOf(deployment.Annotations[constants.ModelPoolPolicyAnnotationKey])
-	if err != nil || activation == nil {
-		return defaultActivationTimeout
-	}
-	return time.Duration(activation.TimeoutSeconds) * time.Second
-}
-
 // activationTimeoutFor is the activation timeout of a pod's pool. A pod whose
 // pool cannot be found has the default.
 func (r *ModelClaimReconciler) activationTimeoutFor(ctx context.Context, pod *corev1.Pod) time.Duration {
@@ -378,7 +367,6 @@ func (r *ModelClaimReconciler) resolvePoolPolicy(
 		}
 		return nil
 	}
-	r.reportInvalidActivation(deployment, raw, manager)
 	policy, err := parsePoolPolicy(raw)
 	if err != nil {
 		errorClass := poolPolicyErrorClass(err)
@@ -400,24 +388,6 @@ func (r *ModelClaimReconciler) resolvePoolPolicy(
 			constants.ModelPoolPolicyAnnotationKey)
 	}
 	return policy
-}
-
-// reportInvalidActivation raises an Event once for each annotation whose
-// activation section is not valid. The section is ignored then: the pool has
-// the default timeout, and the rest of its policy applies.
-func (r *ModelClaimReconciler) reportInvalidActivation(
-	deployment *appsv1.Deployment,
-	raw string,
-	manager *poolPolicyManager,
-) {
-	pool := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
-	_, err := activationOf(raw)
-	if !manager.observeActivation(pool, raw, err == nil) {
-		return
-	}
-	r.Recorder.Eventf(deployment, corev1.EventTypeWarning, "InvalidPoolPolicy",
-		"invalid activation in %s annotation (%s), so the default activation timeout of %s applies: %v",
-		constants.ModelPoolPolicyAnnotationKey, poolPolicyErrorClass(err), defaultActivationTimeout, err)
 }
 
 func (r *ModelClaimReconciler) reconcilePoolPolicy(

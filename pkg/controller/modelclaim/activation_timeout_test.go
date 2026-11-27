@@ -25,10 +25,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -152,7 +150,7 @@ func TestAnEngineThatNeverGetsReadyFailsAfterTheActivationTimeout(t *testing.T) 
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 
 	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
 }
 
 // A first boot counts from its start. A pass sees the engine as soon as it
@@ -167,7 +165,7 @@ func TestAFirstBootThatNeverGetsReadyFailsAtTheTimeoutFromItsStart(t *testing.T)
 	assert.Empty(t, runtime.deactivateCalls)
 
 	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
 }
 
 // A ready engine whose KV limit never takes is not routed, and fails the same
@@ -183,7 +181,7 @@ func TestAReadyEngineWhoseLimitNeverTakesFailsAfterTheActivationTimeout(t *testi
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 
 	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
 }
 
 // An engine the runtime still reports restarting or stopping is never timed
@@ -233,7 +231,7 @@ func TestAnEngineThatGetsReadyLateStartsItsTimeoutOver(t *testing.T) {
 	assert.Empty(t, runtime.deactivateCalls, "the time before it got ready does not count")
 
 	events := passAt(t, r, clock, pm.Name, 10*time.Minute+defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
 }
 
 // A restart dates the engine anew, and its timeout counts from the restart.
@@ -249,7 +247,7 @@ func TestAnEngineRestartStartsItsActivationTimeoutOver(t *testing.T) {
 	assert.Empty(t, runtime.deactivateCalls, "the time before the restart does not count")
 
 	events := passAt(t, r, clock, pm.Name, 9*time.Minute+defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
 }
 
 // An engine that served for hours and then lost its route, held to more KV
@@ -278,10 +276,11 @@ func TestAnEngineThatServedAndLostItsRouteGetsTheWholeTimeout(t *testing.T) {
 	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 
-// A pool sets its own timeout in its policy, which can be shorter than the
+// A pool sets its own timeout in its annotation, which can be shorter than the
 // five minutes after which a boot is looked at less often.
 func TestAPoolSetsItsActivationTimeout(t *testing.T) {
-	deployment, replicaSet, pod := warmPoolObjects(`{"activation":{"timeoutSeconds":60}}`)
+	deployment, replicaSet, pod := warmPoolObjects("")
+	deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey] = "1m"
 	pm := claimWithCost(700, 100)
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
 		Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 300,
@@ -309,7 +308,7 @@ func TestAStopThatIsNotTakenIsAskedAgain(t *testing.T) {
 
 	passesTill(t, r, clock, pm.Name, 0, defaultActivationTimeout)
 	events := passAt(t, r, clock, pm.Name, defaultActivationTimeout)
-	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
 
 	events = passAt(t, r, clock, pm.Name, defaultActivationTimeout+10*time.Second)
 	require.Len(t, runtime.deactivateCalls, 2, "the stop is asked again")
@@ -343,7 +342,7 @@ func TestATimedOutInstanceFailsBeforeItsEngineIsStopped(t *testing.T) {
 	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"state":"activating"`)
 
 	events = passAt(t, r, clock, pm.Name, defaultActivationTimeout+10*time.Second)
-	assertTimedOut(t, r, runtime, pm.Name, events, "15m0s")
+	assertTimedOut(t, r, runtime, pm.Name, events, "30m0s")
 }
 
 // A route that cannot be written after the failure does not bring the engine
@@ -475,85 +474,103 @@ func TestEngineToStop(t *testing.T) {
 
 func TestActivationTimeoutOfAPool(t *testing.T) {
 	cases := map[string]struct {
-		policy string
-		want   time.Duration
+		timeout string
+		want    time.Duration
 	}{
-		"no policy":               {"", defaultActivationTimeout},
-		"a policy without it":     {`{"lifecycle":{"sleepAfterSeconds":60}}`, defaultActivationTimeout},
-		"its own timeout":         {`{"activation":{"timeoutSeconds":600}}`, 10 * time.Minute},
-		"beside a lifecycle":      {`{"lifecycle":{"sleepAfterSeconds":60},"activation":{"timeoutSeconds":90}}`, 90 * time.Second},
-		"beside a bad lifecycle":  {`{"lifecycle":{"sleepAfterSeconds":-1},"activation":{"timeoutSeconds":90}}`, 90 * time.Second},
-		"beside an unknown field": {`{"lifecyle":{},"activation":{"timeoutSeconds":90}}`, 90 * time.Second},
-		"one that is not valid":   {`{"activation":{"timeoutSeconds":0}}`, defaultActivationTimeout},
-		"not JSON":                {`{"activation":`, defaultActivationTimeout},
+		"none":                 {"", defaultActivationTimeout},
+		"its own":              {"10m", 10 * time.Minute},
+		"in seconds":           {"90s", 90 * time.Second},
+		"zero":                 {"0s", defaultActivationTimeout},
+		"negative":             {"-5m", defaultActivationTimeout},
+		"without a unit":       {"30", defaultActivationTimeout},
+		"not a duration":       {"soon", defaultActivationTimeout},
+		"more than a duration": {"9999999999h", defaultActivationTimeout},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{constants.ModelPoolPolicyAnnotationKey: tc.policy},
-			}}
+			deployment, _, _ := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+			if tc.timeout != "" {
+				deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey] = tc.timeout
+			}
 			assert.Equal(t, tc.want, activationTimeoutOf(deployment))
 		})
 	}
 }
 
-func TestAnActivationTimeoutMustBePositive(t *testing.T) {
-	for _, raw := range []string{
-		`{"activation":{"timeoutSeconds":0}}`,
-		`{"activation":{"timeoutSeconds":-5}}`,
-		`{"activation":{}}`,
-		// One second more than a time.Duration holds.
-		`{"activation":{"timeoutSeconds":9223372037}}`,
-	} {
-		_, err := activationOf(raw)
-		var configErr *poolPolicyConfigError
-		require.ErrorAs(t, err, &configErr, raw)
-		assert.Equal(t, poolPolicyErrorInvalidTimeout, configErr.class, raw)
-		assert.Contains(t, err.Error(), "activation.timeoutSeconds must be positive and at most 9223372036", raw)
+// The timeout is a positive Go duration, and an empty value sets none.
+func TestAnActivationTimeoutMustBeAPositiveDuration(t *testing.T) {
+	for _, raw := range []string{"0s", "-5m", "30", "soon", "9999999999h"} {
+		_, err := parseActivationTimeout(raw)
+		assert.Error(t, err, raw)
 	}
-	// The longest timeout that a time.Duration holds is taken as it is.
-	longest, err := activationOf(`{"activation":{"timeoutSeconds":9223372036}}`)
+	timeout, err := parseActivationTimeout("1h30m")
 	require.NoError(t, err)
-	assert.Equal(t, int64(9223372036), longest.TimeoutSeconds)
-	assert.Positive(t, activationTimeoutOf(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-		Annotations: map[string]string{constants.ModelPoolPolicyAnnotationKey: `{"activation":{"timeoutSeconds":9223372036}}`},
-	}}))
-	_, err = activationOf(`{"activation":{"timeout":60}}`)
-	var configErr *poolPolicyConfigError
-	require.ErrorAs(t, err, &configErr)
-	assert.Equal(t, poolPolicyErrorUnknownField, configErr.class)
-	none, err := activationOf(`{"activation":null}`)
+	assert.Equal(t, 90*time.Minute, timeout)
+	timeout, err = parseActivationTimeout("")
 	require.NoError(t, err)
-	assert.Nil(t, none)
+	assert.Zero(t, timeout)
 }
 
-// An activation section that is not valid is ignored, and said so once. The
-// rest of the policy still applies.
-func TestAnInvalidActivationLeavesTheSleepPolicyInForce(t *testing.T) {
-	invalid := `{"lifecycle":{"sleepAfterSeconds":60},"activation":{"timeoutSeconds":0}}`
-	deployment, _, _ := warmPoolObjects(invalid)
+// A timeout that is not valid is said once for each value, and the pool gets
+// the default. Its pool policy is not touched.
+func TestAnInvalidActivationTimeoutIsReportedOnce(t *testing.T) {
+	deployment, _, _ := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey] = "0s"
 	r, _ := newReconciler(t)
 	manager := newPoolPolicyManager(time.Now)
 
+	r.reportInvalidActivationTimeout(deployment, manager)
+	events := drainEvents(t, r)
+	require.Len(t, events, 1)
+	assert.Contains(t, events[0], "InvalidActivationTimeout")
+	assert.Contains(t, events[0], "the default activation timeout of 30m0s applies")
+	assert.Equal(t, defaultActivationTimeout, activationTimeoutOf(deployment))
 	policy := r.resolvePoolPolicy(deployment, manager)
 	require.NotNil(t, policy, "the sleep policy applies")
 	require.NotNil(t, policy.Lifecycle)
-	assert.Equal(t, int64(60), policy.Lifecycle.SleepAfterSeconds)
-	events := drainEvents(t, r)
-	require.Len(t, events, 1)
-	assert.Contains(t, events[0], "InvalidPoolPolicy")
-	assert.Contains(t, events[0], "the default activation timeout of 15m0s applies")
-	assert.Equal(t, defaultActivationTimeout, activationTimeoutOf(deployment))
+	assert.Empty(t, drainEvents(t, r), "the pool policy is valid")
 
-	require.NotNil(t, r.resolvePoolPolicy(deployment, manager))
-	assert.Empty(t, drainEvents(t, r), "the same annotation is not reported again")
+	r.reportInvalidActivationTimeout(deployment, manager)
+	assert.Empty(t, drainEvents(t, r), "the same value is not reported again")
 
-	deployment.Annotations[constants.ModelPoolPolicyAnnotationKey] = `{"lifecycle":{"sleepAfterSeconds":60},"activation":{"timeoutSeconds":90}}`
-	require.NotNil(t, r.resolvePoolPolicy(deployment, manager))
+	deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey] = "45m"
+	r.reportInvalidActivationTimeout(deployment, manager)
 	assert.Empty(t, drainEvents(t, r))
-	deployment.Annotations[constants.ModelPoolPolicyAnnotationKey] = invalid
-	r.resolvePoolPolicy(deployment, manager)
-	assert.Len(t, drainEvents(t, r), 1, "a section that is not valid again is reported again")
+	assert.Equal(t, 45*time.Minute, activationTimeoutOf(deployment))
+	deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey] = "0s"
+	r.reportInvalidActivationTimeout(deployment, manager)
+	assert.Len(t, drainEvents(t, r), 1, "a value that is not valid again is reported again")
+}
+
+// A pass over a claim checks the timeout of its pool, and reports one that is
+// not valid once.
+func TestAPassReportsAnInvalidActivationTimeout(t *testing.T) {
+	deployment, replicaSet, pod := warmPoolObjects("")
+	deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey] = "soon"
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 300,
+	}}
+	_, snapshot := sizedWarmPod(pod.Name, pod.Status.PodIP, 1000)
+	t0 := time.Unix(1_700_000_000, 0)
+	snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(t0, 0)}
+	r, runtime := newReconciler(t, pm, deployment, replicaSet, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	clock := &stuckAt{t0: t0, snapshot: snapshot}
+
+	events := passAt(t, r, clock, pm.Name, 0)
+	assert.Equal(t, 1, eventsNamed(events, "InvalidActivationTimeout"))
+	events = passAt(t, r, clock, pm.Name, 10*time.Second)
+	assert.Zero(t, eventsNamed(events, "InvalidActivationTimeout"), "the same value is said once")
+}
+
+// The pool policy has no activation section. It is an unknown field there, as
+// on a controller that predates the timeout.
+func TestAPoolPolicyHasNoActivationSection(t *testing.T) {
+	_, err := parsePoolPolicy(`{"activation":{"timeoutSeconds":60}}`)
+	var configErr *poolPolicyConfigError
+	require.ErrorAs(t, err, &configErr)
+	assert.Equal(t, poolPolicyErrorUnknownField, configErr.class)
 }
 
 // A clock not seen for a while is dropped, so the instances of claims that

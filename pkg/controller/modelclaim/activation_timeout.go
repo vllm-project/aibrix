@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -34,6 +35,10 @@ import (
 // because its engine did not become routable within its pool's activation
 // timeout.
 const instanceReasonActivationTimedOut = "ActivationTimedOut"
+
+// defaultActivationTimeout is how long an instance may stay Activating with a
+// live engine, when its pool does not say.
+const defaultActivationTimeout = 30 * time.Minute
 
 // stuckActivationForgetAfter is how long a stuck instance may go unseen before
 // its clock is dropped. A stuck instance is looked at every pass, so one not
@@ -236,6 +241,48 @@ func (r *ModelClaimReconciler) timedOutEngineRuns(
 		return false
 	}
 	return engineToStop(snapshotModelForClaim(snapshot, pm, servedModelName(pm)))
+}
+
+// activationTimeoutOf is how long a pool lets an instance stay Activating with
+// a live engine: the duration in its activation-timeout annotation, or
+// defaultActivationTimeout when it has none or the value is not valid.
+func activationTimeoutOf(deployment *appsv1.Deployment) time.Duration {
+	timeout, err := parseActivationTimeout(deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey])
+	if err != nil || timeout == 0 {
+		return defaultActivationTimeout
+	}
+	return timeout
+}
+
+// parseActivationTimeout reads the value of an activation-timeout annotation.
+// An empty value sets nothing. Any other must be a positive Go duration, such
+// as 30m.
+func parseActivationTimeout(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, err
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("%q is not a positive duration", raw)
+	}
+	return timeout, nil
+}
+
+// reportInvalidActivationTimeout raises an Event once for each activation
+// timeout on a pool that is not valid. The pool then has the default.
+func (r *ModelClaimReconciler) reportInvalidActivationTimeout(deployment *appsv1.Deployment, manager *poolPolicyManager) {
+	pool := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
+	raw := deployment.Annotations[constants.ModelPoolActivationTimeoutAnnotationKey]
+	_, err := parseActivationTimeout(raw)
+	if !manager.observeActivationTimeout(pool, raw, err == nil) {
+		return
+	}
+	r.Recorder.Eventf(deployment, corev1.EventTypeWarning, "InvalidActivationTimeout",
+		"invalid %s annotation %q, so the default activation timeout of %s applies: %v",
+		constants.ModelPoolActivationTimeoutAnnotationKey, raw, defaultActivationTimeout, err)
 }
 
 // activationTimeoutMessage says why an instance failed on its activation

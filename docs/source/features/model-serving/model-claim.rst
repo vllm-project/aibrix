@@ -534,10 +534,9 @@ pool:
        ``sleepAfterSeconds`` when that is set.
 
 A policy with an unknown field or an invalid value is turned off, and the
-Deployment gets an ``InvalidPoolPolicy`` Event. An invalid ``activation``
-section is the one exception, described in `Failures`_. The policy also
-accepts a deprecated ``reclaim`` section, which has no effect on claims that
-declare ``perGPU``.
+Deployment gets an ``InvalidPoolPolicy`` Event. The policy also accepts a
+deprecated ``reclaim`` section, which has no effect on claims that declare
+``perGPU``.
 
 The controller puts a model to sleep once it has been idle for
 ``sleepAfterSeconds``. It first takes the model off the route and checks again
@@ -627,12 +626,12 @@ cannot move. The engine's ``last_error`` in the runtime snapshot says why it
 crashed.
 
 An engine can also stay off the route without crashing, because it never gets
-ready or its KV limit does not take. The controller gives such an engine 15
+ready or its KV limit does not take. The controller gives such an engine 30
 minutes, and it measures that time in two ways. One count starts at the
 engine's last change of state, such as its start, getting ready or a restart,
 as the runtime agent reports it. The other starts when the controller first
 sees the engine off the route. The shorter count decides, so an engine that
-served for hours and then lost its route still gets the full 15 minutes. The
+served for hours and then lost its route still gets the full 30 minutes. The
 controller keeps the second count in memory. A restart of the controller starts
 it over, which can only delay a timeout.
 
@@ -641,13 +640,17 @@ When the time is up, the claim reads ``Failed`` and gets an
 again until the runtime agent takes the stop. After that, if another Pod has
 room, the controller starts the claim there.
 
-A pool sets its own timeout in its policy annotation with
-``activation.timeoutSeconds``, for example
-``{"activation":{"timeoutSeconds":3600}}``. Raise it for a model that takes
-long to load, such as one that downloads its weights when it starts. If the
-``activation`` section is not valid, the Deployment gets an
-``InvalidPoolPolicy`` Event, and the timeout stays at 15 minutes. The rest of
-the policy still applies.
+A pool sets its own timeout in an annotation on its Deployment:
+
+.. code-block:: bash
+
+   kubectl -n default annotate deployment/warm-runtime-pool --overwrite \
+     claim.model.aibrix.ai/activation-timeout=1h
+
+Raise it for a model that takes long to load, such as one that downloads its
+weights when it starts. The value is a duration such as ``45m`` or ``2h``. If
+it is not a positive duration, the Deployment gets an
+``InvalidActivationTimeout`` Event, and the timeout stays at 30 minutes.
 
 If the runtime agent crashes, its engines keep running. The image restarts the
 agent, which takes the engines back from ``/var/run/aibrix`` with their ports
@@ -813,7 +816,7 @@ to ask the controller for a wake.
 Labels and annotations
 ----------------------
 
-You set the first four keys. AIBrix writes the others, so leave them alone.
+You set the first five keys. AIBrix writes the others, so leave them alone.
 
 .. list-table::
    :header-rows: 1
@@ -835,8 +838,12 @@ You set the first four keys. AIBrix writes the others, so leave them alone.
    * - ``claim.model.aibrix.ai/pool-policy``
      - Annotation on the pool's Deployment
      - You
-     - The sleep policy and the activation timeout, as JSON. See
-       `Sleep and wake`_ and `Failures`_.
+     - The sleep policy, as JSON. See `Sleep and wake`_.
+   * - ``claim.model.aibrix.ai/activation-timeout``
+     - Annotation on the pool's Deployment
+     - You
+     - How long an engine may take to get on the route, such as ``1h``. See
+       `Failures`_.
    * - ``aibrix.ai/metrics: modelclaim-runtime``
      - Label on the pool's metrics Service
      - You

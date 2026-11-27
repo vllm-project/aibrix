@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -40,7 +39,6 @@ const (
 	poolPolicyErrorInvalidCapacity = "invalid_capacity"
 	poolPolicyErrorInvalidFloor    = "invalid_floor"
 	poolPolicyErrorInvalidSleep    = "invalid_sleep_window"
-	poolPolicyErrorInvalidTimeout  = "invalid_activation_timeout"
 )
 
 var errPoolKVUsageExceedsCapacity = errors.New(
@@ -79,30 +77,10 @@ func poolPolicyDecodeErrorClass(err error) string {
 // poolPolicy is intentionally configured by one JSON Deployment annotation,
 // not another resource. Reclaim adjusts kvcached ceilings; lifecycle parks an
 // idle engine with vLLM sleep after request observations establish idleness.
-// Activation bounds how long an engine may take to become routable.
 type poolPolicy struct {
 	Reclaim   *poolReclaimPolicy   `json:"reclaim,omitempty"`
 	Lifecycle *poolLifecyclePolicy `json:"lifecycle,omitempty"`
-	// Activation is read on its own, by activationOf. An activation section
-	// that is not valid then leaves the rest of the policy in force.
-	Activation json.RawMessage `json:"activation,omitempty"`
 }
-
-// poolActivationPolicy bounds how long an engine may take to become routable.
-type poolActivationPolicy struct {
-	// TimeoutSeconds is how long an instance may stay Activating with a live
-	// engine. The instance then fails, and its engine is stopped.
-	TimeoutSeconds int64 `json:"timeoutSeconds"`
-}
-
-// defaultActivationTimeout is how long an instance may stay Activating with a
-// live engine, when the pool does not say.
-const defaultActivationTimeout = 15 * time.Minute
-
-// maxActivationTimeoutSeconds is the longest timeout a time.Duration holds. A
-// longer one would wrap around to a negative duration, which every engine
-// would exceed at once.
-const maxActivationTimeoutSeconds = math.MaxInt64 / int64(time.Second)
 
 type poolReclaimPolicy struct {
 	Mode                   string `json:"mode,omitempty"`
@@ -192,38 +170,6 @@ func parsePoolPolicy(raw string) (*poolPolicy, error) {
 		}
 	}
 	return policy, nil
-}
-
-// activationOf reads the activation section of a pool policy annotation on its
-// own, so that it applies even when another section is not valid. It returns
-// nil when there is none. An annotation that is not JSON has none to read,
-// and the pool policy reports it.
-func activationOf(raw string) (*poolActivationPolicy, error) {
-	var doc struct {
-		Activation json.RawMessage `json:"activation"`
-	}
-	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-		return nil, nil
-	}
-	if len(doc.Activation) == 0 || string(doc.Activation) == "null" {
-		return nil, nil
-	}
-	decoder := json.NewDecoder(bytes.NewReader(doc.Activation))
-	decoder.DisallowUnknownFields()
-	activation := &poolActivationPolicy{}
-	if err := decoder.Decode(activation); err != nil {
-		return nil, &poolPolicyConfigError{
-			class: poolPolicyDecodeErrorClass(err),
-			err:   fmt.Errorf("decode activation: %w", err),
-		}
-	}
-	if activation.TimeoutSeconds <= 0 || activation.TimeoutSeconds > maxActivationTimeoutSeconds {
-		return nil, &poolPolicyConfigError{
-			class: poolPolicyErrorInvalidTimeout,
-			err:   fmt.Errorf("activation.timeoutSeconds must be positive and at most %d", maxActivationTimeoutSeconds),
-		}
-	}
-	return activation, nil
 }
 
 // validateLifecycle checks the lifecycle figures. A lifecycle has to do

@@ -925,15 +925,13 @@ msgstr ""
 #: ../../source/features/model-serving/model-claim.rst:455
 msgid ""
 "A policy with an unknown field or an invalid value is turned off, and the"
-" Deployment gets an ``InvalidPoolPolicy`` Event. An invalid "
-"``activation`` section is the one exception, described in `Failures`_. "
-"The policy also accepts a deprecated ``reclaim`` section, which has no "
-"effect on claims that declare ``perGPU``."
+" Deployment gets an ``InvalidPoolPolicy`` Event. The policy also accepts "
+"a deprecated ``reclaim`` section, which has no effect on claims that "
+"declare ``perGPU``."
 msgstr ""
 "如果策略含有未知字段或无效值，策略会被关闭，Deployment 上会产生一个 "
-"``InvalidPoolPolicy`` Event。无效的 ``activation`` 部分是唯一的例外，见 "
-"`故障`_。策略还接受一个已弃用的 ``reclaim`` 部分，它对声明了 ``perGPU`` "
-"的 claim 不起作用。"
+"``InvalidPoolPolicy`` Event。策略还接受一个已弃用的 ``reclaim`` 部分，"
+"它对声明了 ``perGPU`` 的 claim 不起作用。"
 
 #: ../../source/features/model-serving/model-claim.rst:460
 msgid ""
@@ -1130,20 +1128,20 @@ msgstr ""
 msgid ""
 "An engine can also stay off the route without crashing, because it never "
 "gets ready or its KV limit does not take. The controller gives such an "
-"engine 15 minutes, and it measures that time in two ways. One count "
+"engine 30 minutes, and it measures that time in two ways. One count "
 "starts at the engine's last change of state, such as its start, getting "
 "ready or a restart, as the runtime agent reports it. The other starts "
 "when the controller first sees the engine off the route. The shorter "
 "count decides, so an engine that served for hours and then lost its route"
-" still gets the full 15 minutes. The controller keeps the second count in"
+" still gets the full 30 minutes. The controller keeps the second count in"
 " memory. A restart of the controller starts it over, which can only delay"
 " a timeout."
 msgstr ""
 "引擎也可能没有崩溃，却一直不在路由中，原因是它始终没有就绪，或者它的 KV "
-"上限没有生效。控制器给这样的引擎 15 分钟，并用两种方式计时。"
+"上限没有生效。控制器给这样的引擎 30 分钟，并用两种方式计时。"
 "一种从引擎最近一次状态变化算起，例如启动、就绪或重启，以 runtime agent "
 "报告的为准。另一种从控制器第一次看到该引擎不在路由中时算起。"
-"以较短的计时为准，所以一个服务了几个小时后才离开路由的引擎，仍有完整的 15 "
+"以较短的计时为准，所以一个服务了几个小时后才离开路由的引擎，仍有完整的 30 "
 "分钟。控制器只在内存中保存第二种计时。控制器重启后，这个计时会重新开始，"
 "因此只会让超时来得更晚。"
 
@@ -1159,20 +1157,19 @@ msgstr ""
 "如果另一个 Pod 有空间，控制器会在那里启动 claim。"
 
 #: ../../source/features/model-serving/model-claim.rst:644
+msgid "A pool sets its own timeout in an annotation on its Deployment:"
+msgstr "热池可以在其 Deployment 的注解中设置自己的时限："
+
+#: ../../source/features/model-serving/model-claim.rst:650
 msgid ""
-"A pool sets its own timeout in its policy annotation with "
-"``activation.timeoutSeconds``, for example "
-"``{\"activation\":{\"timeoutSeconds\":3600}}``. Raise it for a model that"
-" takes long to load, such as one that downloads its weights when it "
-"starts. If the ``activation`` section is not valid, the Deployment gets "
-"an ``InvalidPoolPolicy`` Event, and the timeout stays at 15 minutes. The "
-"rest of the policy still applies."
+"Raise it for a model that takes long to load, such as one that downloads "
+"its weights when it starts. The value is a duration such as ``45m`` or "
+"``2h``. If it is not a positive duration, the Deployment gets an "
+"``InvalidActivationTimeout`` Event, and the timeout stays at 30 minutes."
 msgstr ""
-"热池可以在其策略注解中用 ``activation.timeoutSeconds`` 设置自己的时限，"
-"例如 ``{\"activation\":{\"timeoutSeconds\":3600}}``。对于加载较慢的模型，"
-"例如启动时才下载权重的模型，请调大这个时限。如果 ``activation`` 部分无效，"
-"Deployment 上会产生一个 ``InvalidPoolPolicy`` Event，时限仍为 15 分钟。"
-"策略的其余部分照常生效。"
+"对于加载较慢的模型，例如启动时才下载权重的模型，请调大这个时限。"
+"取值是一个时长，例如 ``45m`` 或 ``2h``。如果它不是正的时长，Deployment "
+"上会产生一个 ``InvalidActivationTimeout`` Event，时限仍为 30 分钟。"
 
 #: ../../source/features/model-serving/model-claim.rst:519
 msgid ""
@@ -1549,9 +1546,9 @@ msgstr "标签与注解"
 
 #: ../../source/features/model-serving/model-claim.rst:680
 msgid ""
-"You set the first four keys. AIBrix writes the others, so leave them "
+"You set the first five keys. AIBrix writes the others, so leave them "
 "alone."
-msgstr "前四个键由你设置。其余的由 AIBrix 写入，请不要改动。"
+msgstr "前五个键由你设置。其余的由 AIBrix 写入，请不要改动。"
 
 #: ../../source/features/model-serving/model-claim.rst:686
 msgid "Key"
@@ -1610,10 +1607,18 @@ msgid "Annotation on the pool's Deployment"
 msgstr "热池 Deployment 上的注解"
 
 #: ../../source/features/model-serving/model-claim.rst:702
+msgid "The sleep policy, as JSON. See `Sleep and wake`_."
+msgstr "休眠策略，JSON 格式。参见 `休眠与唤醒`_。"
+
+#: ../../source/features/model-serving/model-claim.rst:842
+msgid "``claim.model.aibrix.ai/activation-timeout``"
+msgstr "``claim.model.aibrix.ai/activation-timeout``"
+
+#: ../../source/features/model-serving/model-claim.rst:845
 msgid ""
-"The sleep policy and the activation timeout, as JSON. See `Sleep and "
-"wake`_ and `Failures`_."
-msgstr "休眠策略和启动时限，JSON 格式。参见 `休眠与唤醒`_ 和 `故障`_。"
+"How long an engine may take to get on the route, such as ``1h``. See "
+"`Failures`_."
+msgstr "引擎最多可用多长时间进入路由，例如 ``1h``。参见 `故障`_。"
 
 #: ../../source/features/model-serving/model-claim.rst:703
 msgid "``aibrix.ai/metrics: modelclaim-runtime``"
