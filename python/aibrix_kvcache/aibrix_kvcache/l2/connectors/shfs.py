@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import time
+import uuid
 from concurrent.futures import Executor
 from pathlib import Path
 from typing import Sequence
@@ -28,6 +30,11 @@ from ...utils import ensure_dir_exist
 from . import Connector, ConnectorFeature
 
 logger = getLogger(__name__)
+
+# A put's temp file older than this was left by a writer that died before
+# renaming it. Age comes from mtime alone: a pid in the name would not show
+# whether a writer on another host is still alive.
+_STALE_TEMP_FILE_SECONDS = 3600
 
 
 @AsyncBase.async_wrap(
@@ -104,11 +111,32 @@ class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
         """Open a connection by ensuring the root directory exists."""
         try:
             ensure_dir_exist(str(self.root_path))
+            self._remove_stale_temp_files()
             return Status.ok()
         except Exception as e:
             logger.error(f"SHFS open() failed: {e}")
             return Status(
                 StatusCodes.ERROR, f"Failed to create root directory: {e}"
+            )
+
+    def _remove_stale_temp_files(self) -> None:
+        """Remove temp files left by writers that died before renaming.
+
+        Other engines sharing the directory may have a put in flight, so
+        only temp files older than _STALE_TEMP_FILE_SECONDS are removed.
+        """
+        cutoff = time.time() - _STALE_TEMP_FILE_SECONDS
+        try:
+            for path in self.root_path.rglob("*.tmp"):
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    # Renamed or removed by another engine meanwhile.
+                    continue
+        except OSError as e:
+            logger.warning(
+                f"SHFS open(): failed to remove stale temp files: {e}"
             )
 
     @Status.capture_exception
@@ -264,14 +292,17 @@ class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
             mr = mr[0]
 
         filepath = self._key_to_filepath(key)
+        # Write atomically: write to a temp file first, then rename. The temp
+        # name is unique per writer, since engines sharing the directory can
+        # put the same key at the same time.
+        temp_filepath = filepath.with_name(
+            f"{filepath.name}.{uuid.uuid4().hex}.tmp"
+        )
 
         try:
             filepath.parent.mkdir(parents=True, exist_ok=True)
 
             data = mr.tobytes()
-
-            # Write atomically: write to temp file first, then rename
-            temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
 
             with open(temp_filepath, "wb") as f:
                 bytes_written = f.write(data)
@@ -298,7 +329,6 @@ class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
 
         except Exception as e:
             logger.error(f"SHFS put failed: {e}")
-            temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
             temp_filepath.unlink(missing_ok=True)
             return Status(StatusCodes.ERROR, f"Failed to put value: {e}")
 
