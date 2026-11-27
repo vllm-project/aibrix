@@ -68,7 +68,7 @@ jobs:
           load: true
 
       - name: Start the stack
-        run: $COMPOSE up -d
+        run: timeout 3m $COMPOSE up -d
 
       # The gateway image has no healthcheck, so `up --wait` cannot be used;
       # retry each request until the stack is serving instead.
@@ -80,7 +80,7 @@ jobs:
             curl -sf --retry 30 --retry-delay 2 --retry-all-errors "${@:3}" "http://localhost$2"
             echo
           }
-          check GET  /healthz
+          check GET  /healthz | tee /dev/stderr | grep -q '"mode":"gateway"'
           check GET  /v1/models
           check POST /v1/chat/completions -H 'Content-Type: application/json' \
             -d '{"model":"Qwen/Qwen2.5-1.5B-Instruct","messages":[{"role":"user","content":"hi"}]}'

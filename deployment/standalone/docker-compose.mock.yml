@@ -1,6 +1,6 @@
 # Replaces vLLM with the AIBrix mock server so the stack runs without a GPU.
 # Used by the compose smoke test (#3631):
-#   docker compose -f docker-compose.yml -f docker-compose.mock.yml up -d --wait
+#   docker compose -f docker-compose.yml -f docker-compose.mock.yml up -d
 services:
   vllm:
     image: aibrix/vllm-mock:${AIBRIX_VERSION:-nightly}
