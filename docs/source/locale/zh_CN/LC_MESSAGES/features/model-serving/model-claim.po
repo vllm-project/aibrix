@@ -1156,21 +1156,6 @@ msgstr ""
 "随后控制器停止该引擎，并反复请求，直到 runtime agent 接受停止。之后，"
 "如果另一个 Pod 有空间，控制器会在那里启动 claim。"
 
-#: ../../source/features/model-serving/model-claim.rst:644
-msgid "A pool sets its own timeout in an annotation on its Deployment:"
-msgstr "热池可以在其 Deployment 的注解中设置自己的时限："
-
-#: ../../source/features/model-serving/model-claim.rst:650
-msgid ""
-"Raise it for a model that takes long to load, such as one that downloads "
-"its weights when it starts. The value is a duration such as ``45m`` or "
-"``2h``. If it is not a positive duration, the Deployment gets an "
-"``InvalidActivationTimeout`` Event, and the timeout stays at 30 minutes."
-msgstr ""
-"对于加载较慢的模型，例如启动时才下载权重的模型，请调大这个时限。"
-"取值是一个时长，例如 ``45m`` 或 ``2h``。如果它不是正的时长，Deployment "
-"上会产生一个 ``InvalidActivationTimeout`` Event，时限仍为 30 分钟。"
-
 #: ../../source/features/model-serving/model-claim.rst:519
 msgid ""
 "If the runtime agent crashes, its engines keep running. The image "
@@ -1546,9 +1531,9 @@ msgstr "标签与注解"
 
 #: ../../source/features/model-serving/model-claim.rst:680
 msgid ""
-"You set the first five keys. AIBrix writes the others, so leave them "
+"You set the first four keys. AIBrix writes the others, so leave them "
 "alone."
-msgstr "前五个键由你设置。其余的由 AIBrix 写入，请不要改动。"
+msgstr "前四个键由你设置。其余的由 AIBrix 写入，请不要改动。"
 
 #: ../../source/features/model-serving/model-claim.rst:686
 msgid "Key"
@@ -1609,16 +1594,6 @@ msgstr "热池 Deployment 上的注解"
 #: ../../source/features/model-serving/model-claim.rst:702
 msgid "The sleep policy, as JSON. See `Sleep and wake`_."
 msgstr "休眠策略，JSON 格式。参见 `休眠与唤醒`_。"
-
-#: ../../source/features/model-serving/model-claim.rst:842
-msgid "``claim.model.aibrix.ai/activation-timeout``"
-msgstr "``claim.model.aibrix.ai/activation-timeout``"
-
-#: ../../source/features/model-serving/model-claim.rst:845
-msgid ""
-"How long an engine may take to get on the route, such as ``1h``. See "
-"`Failures`_."
-msgstr "引擎最多可用多长时间进入路由，例如 ``1h``。参见 `故障`_。"
 
 #: ../../source/features/model-serving/model-claim.rst:703
 msgid "``aibrix.ai/metrics: modelclaim-runtime``"

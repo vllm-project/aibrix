@@ -640,18 +640,6 @@ When the time is up, the claim reads ``Failed`` and gets an
 again until the runtime agent takes the stop. After that, if another Pod has
 room, the controller starts the claim there.
 
-A pool sets its own timeout in an annotation on its Deployment:
-
-.. code-block:: bash
-
-   kubectl -n default annotate deployment/warm-runtime-pool --overwrite \
-     claim.model.aibrix.ai/activation-timeout=1h
-
-Raise it for a model that takes long to load, such as one that downloads its
-weights when it starts. The value is a duration such as ``45m`` or ``2h``. If
-it is not a positive duration, the Deployment gets an
-``InvalidActivationTimeout`` Event, and the timeout stays at 30 minutes.
-
 If the runtime agent crashes, its engines keep running. The image restarts the
 agent, which takes the engines back from ``/var/run/aibrix`` with their ports
 unchanged.
@@ -816,7 +804,7 @@ to ask the controller for a wake.
 Labels and annotations
 ----------------------
 
-You set the first five keys. AIBrix writes the others, so leave them alone.
+You set the first four keys. AIBrix writes the others, so leave them alone.
 
 .. list-table::
    :header-rows: 1
@@ -839,11 +827,6 @@ You set the first five keys. AIBrix writes the others, so leave them alone.
      - Annotation on the pool's Deployment
      - You
      - The sleep policy, as JSON. See `Sleep and wake`_.
-   * - ``claim.model.aibrix.ai/activation-timeout``
-     - Annotation on the pool's Deployment
-     - You
-     - How long an engine may take to get on the route, such as ``1h``. See
-       `Failures`_.
    * - ``aibrix.ai/metrics: modelclaim-runtime``
      - Label on the pool's metrics Service
      - You

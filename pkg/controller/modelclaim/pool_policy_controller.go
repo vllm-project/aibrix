@@ -45,9 +45,6 @@ type poolPolicyManager struct {
 	activity  map[string]poolActivityRecord
 	config    map[types.NamespacedName]poolConfigRecord
 	lastSweep time.Time
-	// invalidActivationTimeout is, for each pool whose activation timeout is
-	// not valid, the value that was reported.
-	invalidActivationTimeout map[types.NamespacedName]string
 }
 
 type poolActivityRecord struct {
@@ -109,26 +106,6 @@ func (m *poolPolicyManager) forgetConfig(pool types.NamespacedName) bool {
 	_, known := m.config[pool]
 	delete(m.config, pool)
 	return known
-}
-
-// observeActivationTimeout records whether a pool's activation timeout is
-// valid, and reports whether a warning is due: once for each value that is
-// not.
-func (m *poolPolicyManager) observeActivationTimeout(pool types.NamespacedName, raw string, valid bool) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if valid {
-		delete(m.invalidActivationTimeout, pool)
-		return false
-	}
-	if reported, known := m.invalidActivationTimeout[pool]; known && reported == raw {
-		return false
-	}
-	if m.invalidActivationTimeout == nil {
-		m.invalidActivationTimeout = map[types.NamespacedName]string{}
-	}
-	m.invalidActivationTimeout[pool] = raw
-	return true
 }
 
 func (m *poolPolicyManager) begin(pool types.NamespacedName) bool {
@@ -247,7 +224,6 @@ func (r *ModelClaimReconciler) reconcilePoolPolicies(
 			continue
 		}
 		seen[key] = struct{}{}
-		r.reportInvalidActivationTimeout(deployment, manager)
 		policy := r.resolvePoolPolicy(deployment, manager)
 		if policy == nil {
 			continue
@@ -331,16 +307,6 @@ func lifecycleOf(deployment *appsv1.Deployment) *poolLifecyclePolicy {
 		return nil
 	}
 	return policy.Lifecycle
-}
-
-// activationTimeoutFor is the activation timeout of a pod's pool. A pod whose
-// pool cannot be found has the default.
-func (r *ModelClaimReconciler) activationTimeoutFor(ctx context.Context, pod *corev1.Pod) time.Duration {
-	deployment, err := r.poolDeploymentForPod(ctx, pod)
-	if err != nil || deployment == nil {
-		return defaultActivationTimeout
-	}
-	return activationTimeoutOf(deployment)
 }
 
 // poolLifecycleOf is the lifecycle policy of a pod's pool, or nil.

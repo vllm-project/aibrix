@@ -1530,10 +1530,10 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		booting = booting || state.booting
 		desiredPhase, routingPort := state.phase, state.routingPort
 		serving := state.serving
-		// An instance stuck past its pool's activation timeout fails, so that a
-		// request can go to another instance, and then its engine is stopped.
-		if timedOut, timeout := r.activationTimedOut(ctx, pm, inst, pod, snapshot, observed, state); timedOut {
-			if err := r.failTimedOutInstance(ctx, pm, i, pod, timeout); err != nil {
+		// An instance stuck past the activation timeout fails, so that a request
+		// can go to another instance, and then its engine is stopped.
+		if r.activationTimedOut(pm, inst, snapshot, observed, state) {
+			if err := r.failTimedOutInstance(ctx, pm, i, pod); err != nil {
 				return booting, err
 			}
 			r.stopTimedOutEngine(ctx, pm, &pm.Status.Instances[i], pod, readings)
