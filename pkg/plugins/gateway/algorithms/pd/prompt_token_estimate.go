@@ -125,17 +125,9 @@ func hasChatMediaPayload(body []byte) bool {
 func mediaPayload(part gjson.Result, cfg promptTokenEstimateConfig) (gjson.Result, int) {
 	switch part.Get("type").String() {
 	case "image_url":
-		field := part.Get("image_url.url")
-		if !field.Exists() || field.Type != gjson.String || len(field.Raw) <= 2 {
-			field = part.Get("image_url")
-		}
-		return field, max(cfg.imageTokens, 0)
+		return getMediaField(part, "image_url"), max(cfg.imageTokens, 0)
 	case "audio_url":
-		field := part.Get("audio_url.url")
-		if !field.Exists() || field.Type != gjson.String || len(field.Raw) <= 2 {
-			field = part.Get("audio_url")
-		}
-		return field, max(cfg.audioTokens, 0)
+		return getMediaField(part, "audio_url"), max(cfg.audioTokens, 0)
 	case "input_audio":
 		field := part.Get("input_audio.data")
 		if !field.Exists() || field.Type != gjson.String || len(field.Raw) <= 2 {
@@ -143,12 +135,16 @@ func mediaPayload(part gjson.Result, cfg promptTokenEstimateConfig) (gjson.Resul
 		}
 		return field, max(cfg.audioTokens, 0)
 	case "video_url":
-		field := part.Get("video_url.url")
-		if !field.Exists() || field.Type != gjson.String || len(field.Raw) <= 2 {
-			field = part.Get("video_url")
-		}
-		return field, max(cfg.videoTokens, 0)
+		return getMediaField(part, "video_url"), max(cfg.videoTokens, 0)
 	default:
 		return gjson.Result{}, 0
 	}
+}
+
+func getMediaField(part gjson.Result, key string) gjson.Result {
+	field := part.Get(key + ".url")
+	if !field.Exists() || field.Type != gjson.String || len(field.Raw) <= 2 {
+		field = part.Get(key)
+	}
+	return field
 }
