@@ -171,6 +171,13 @@ func (c *Store) addPod(obj interface{}) {
 	}
 }
 
+func hasSamePodMetricIdentity(oldPod, newPod *v1.Pod) bool {
+	oldModelName, oldOk := getModelNameFromPod(oldPod)
+	newModelName, newOk := getModelNameFromPod(newPod)
+	return oldPod.Namespace == newPod.Namespace && oldPod.Name == newPod.Name && oldPod.UID == newPod.UID &&
+		oldModelName == newModelName && oldOk == newOk && isWorkerPod(oldPod) == isWorkerPod(newPod)
+}
+
 func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
@@ -188,6 +195,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	newModelName, newOk := getModelNameFromPod(newPod)
 	newModelClaims := c.modelClaimBindingsFromPod(newPod)
 	newHasModelInfo := newOk || len(newModelClaims) > 0
+	sameMetricIdentity := hasSamePodMetricIdentity(oldPod, newPod)
 
 	if !oldOk && !existed && !newHasModelInfo {
 		return // No model information to track in either old or new pod
@@ -222,6 +230,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	var oldMetaPod *Pod
 	if oldOk || existed {
 		oldMetaPod = c.deletePodLocked(oldPod.Name, oldPod.Namespace)
+		if !sameMetricIdentity {
+			c.deletePodGaugeMetrics(oldMetaPod)
+		}
 		if oldMetaPod != nil {
 			for _, modelName := range oldMetaPod.Models.Array() {
 				if c.removePodModelMappingLocked(oldMetaPod.Name, oldMetaPod.Namespace, modelName, 1) {
@@ -246,6 +257,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	// Add new mappings if present
 	if newHasModelInfo && !newIsWorker {
 		metaPod, flakyReAdd := c.addPodLocked(newPod, c.reconcileModelClaimMetrics(oldMetaPod, newPod, newModelClaims))
+		if oldMetaPod != nil && sameMetricIdentity {
+			copyPodMetricInventory(oldMetaPod, metaPod)
+		}
 		if flakyReAdd {
 			listeners = c.podLifecycleListenersLocked()
 		}
@@ -318,6 +332,7 @@ func (c *Store) deletePod(obj interface{}) {
 
 	// delete base model and associated lora models on this pod
 	metaPod := c.deletePodLocked(name, namespace)
+	c.deletePodGaugeMetrics(metaPod)
 	c.reconcileModelClaimMetrics(metaPod, nil, nil)
 	if metaPod != nil {
 		for _, modelName := range metaPod.Models.Array() {

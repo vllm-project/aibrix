@@ -1805,6 +1805,119 @@ func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
 	require.False(t, ok)
 }
 
+func seedPodGaugeLifecycleMetrics(t *testing.T, store *Store, pod *Pod, model, sourceMetric, derivedMetric string) {
+	t.Helper()
+	extra := map[string]string{"model_name": model}
+	rawValue := &metrics.SimpleMetricValue{Value: 3, Labels: extra}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metrics.NumRequestsRunning, rawValue, extra)
+	require.NoError(t, store.updatePodRecord(pod, model, metrics.NumRequestsRunning, metrics.PodModelMetricScope, rawValue))
+
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(pod, model, sourceMetric)] = []MetricSnapshot{{Value: 1000, Timestamp: time.Now().Add(-time.Second)}}
+	rateCalculator.mu.Unlock()
+	sourceValue := &metrics.SimpleMetricValue{Value: 1100, Labels: extra}
+	store.updateThroughputToksPerS(pod, model, sourceMetric, sourceValue)
+	require.NoError(t, store.updatePodRecord(pod, model, sourceMetric, metrics.PodModelMetricScope, sourceValue))
+	derived, ok := pod.ModelMetrics.Load(store.getPodModelMetricName(model, derivedMetric))
+	require.True(t, ok)
+	require.Equal(t, extra, derived.Value.GetLabelValues())
+
+	histogramValue := &metrics.HistogramMetricValue{
+		Sum: 1.2, Count: 2, Buckets: map[string]float64{"0.300000": 0, "0.800000": 2, "+Inf": 2}, Labels: extra,
+	}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metrics.TimeToFirstTokenSeconds, histogramValue, extra)
+	require.NoError(t, store.updatePodRecord(pod, model, metrics.TimeToFirstTokenSeconds, metrics.PodModelMetricScope, histogramValue))
+
+	for _, metricName := range []string{metrics.NumRequestsRunning, derivedMetric, metrics.TimeToFirstTokenSeconds + "_p50"} {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": pod.Namespace, "pod": pod.Name, "model": model,
+		})
+		require.True(t, ok, "%s must be exported before the pod lifecycle event", metricName)
+	}
+}
+
+func TestDeletePodRemovesRawAndDerivedGauges(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("prefill-gauge-delete", "inference", "old-model", "10.0.0.1")
+	original.Status.Phase = v1.PodRunning
+	store.addPod(original)
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	purgeRateHistory(t, pod)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "old-model", metrics.PromptTokenTotal, metrics.AvgPromptThroughputToksPerS)
+
+	store.deletePod(original)
+
+	for _, metricName := range []string{metrics.NumRequestsRunning, metrics.AvgPromptThroughputToksPerS, metrics.TimeToFirstTokenSeconds + "_p50"} {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "old-model",
+		})
+		require.False(t, ok, "%s must not survive pod deletion", metricName)
+	}
+}
+
+func TestUpdatePodRemovesRelabeledRawAndDerivedGauges(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("decode-gauge-relabel", "inference", "old-model", "10.0.0.1")
+	original.Status.Phase = v1.PodRunning
+	store.addPod(original)
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	purgeRateHistory(t, pod)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "old-model", metrics.GenerationTokenTotal, metrics.AvgGenerationThroughputToksPerS)
+
+	updated := original.DeepCopy()
+	updated.Labels[constants.ModelLabelName] = "new-model"
+	store.updatePod(original, updated)
+
+	for _, metricName := range []string{metrics.NumRequestsRunning, metrics.AvgGenerationThroughputToksPerS, metrics.TimeToFirstTokenSeconds + "_p50"} {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "old-model",
+		})
+		require.False(t, ok, "%s must not survive a model relabel", metricName)
+	}
+
+	pod, ok = store.metaPods.Load(utils.GeneratePodKey(updated.Namespace, updated.Name))
+	require.True(t, ok)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "new-model", metrics.GenerationTokenTotal, metrics.AvgGenerationThroughputToksPerS)
+}
+
+func TestUpdatePodKeepsGaugesWhenModelUnchanged(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("prefill-gauge-update", "inference", "model", "10.0.0.1")
+	original.Status.Phase = v1.PodRunning
+	store.addPod(original)
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	purgeRateHistory(t, pod)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "model", metrics.PromptTokenTotal, metrics.AvgPromptThroughputToksPerS)
+
+	updated := original.DeepCopy()
+	updated.Status.PodIP = "10.0.0.2"
+	store.updatePod(original, updated)
+
+	metricNames := []string{metrics.NumRequestsRunning, metrics.AvgPromptThroughputToksPerS, metrics.TimeToFirstTokenSeconds + "_p50"}
+	for _, metricName := range metricNames {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "model",
+		})
+		require.True(t, ok, "%s must survive an unrelated pod update", metricName)
+	}
+
+	store.deletePod(updated)
+	for _, metricName := range metricNames {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "model",
+		})
+		require.False(t, ok, "%s must be removed when the updated pod is deleted before another scrape", metricName)
+	}
+}
+
 // fakeQuarantine quarantines the pods named in the set.
 type fakeQuarantine map[string]bool
 

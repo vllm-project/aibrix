@@ -407,16 +407,13 @@ func (c *Store) worker(jobs <-chan podMetricsJob) {
 			engineType := metrics.GetEngineType(*pod.Pod)
 			identifier := pod.Name
 			result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
-			if !c.disableModelClaimBindings && pod.Labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue {
-				// A pool-labelled serving Pod can enter ModelClaim scrape mode
-				// while an ordinary scrape is in flight. Serialize publication
-				// with the informer update, leaving the HTTP request outside the lock.
-				c.mu.RLock()
-				defer c.mu.RUnlock()
-				current, ok := c.metaPods.Load(podMetricsBackoffKey(pod))
-				if !ok || current != pod {
-					return
-				}
+			// Serialize publication with informer updates so a deleted or replaced
+			// pod cannot publish an in-flight scrape after its gauges are removed.
+			c.mu.RLock()
+			defer c.mu.RUnlock()
+			current, ok := c.metaPods.Load(podMetricsBackoffKey(pod))
+			if !ok || current != pod {
+				return
 			}
 			if err != nil {
 				metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
@@ -711,6 +708,40 @@ func (c *Store) updatePodRecordAt(pod *Pod, modelName, metricName string, scope 
 	return nil
 }
 
+func copyPodMetricInventory(source, destination *Pod) {
+	source.Metrics.Range(func(metricName string, record MetricRecord) bool {
+		destination.Metrics.Store(metricName, record)
+		return true
+	})
+	source.ModelMetrics.Range(func(key string, record MetricRecord) bool {
+		destination.ModelMetrics.Store(key, record)
+		return true
+	})
+}
+
+func (c *Store) deletePodGaugeMetrics(pod *Pod) {
+	if pod == nil {
+		return
+	}
+	pod.Metrics.Range(func(metricName string, record MetricRecord) bool {
+		deletePodGaugeMetric(pod.Pod, "", metricName, record.Value.GetLabelValues())
+		return true
+	})
+	pod.ModelMetrics.Range(func(key string, record MetricRecord) bool {
+		modelName, metricName := parseModelMetricKey(key)
+		deletePodGaugeMetric(pod.Pod, modelName, metricName, record.Value.GetLabelValues())
+		return true
+	})
+}
+
+func deletePodGaugeMetric(pod *v1.Pod, modelName, metricName string, extra map[string]string) {
+	definition, ok := metrics.Metrics[metricName]
+	if !ok || definition.MetricType.Raw == metrics.Counter {
+		return
+	}
+	metrics.DeleteEngineMetricFromPrometheus(&types.RoutingContext{Model: modelName}, pod, metricName, extra)
+}
+
 type modelReplicaState struct {
 	pod       *v1.Pod
 	modelName string
@@ -841,7 +872,7 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 	}
 	perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
 	if perSecRate >= 0 {
-		rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
+		rateValue := &metrics.SimpleMetricValue{Value: perSecRate, Labels: metricValue.GetLabelValues()}
 		if target := pod.claimMetrics[model]; target != nil {
 			target.emitMetric(rateMetricName, rateValue, metricValue.GetLabelValues())
 		} else {
