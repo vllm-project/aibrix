@@ -23,6 +23,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2199,4 +2200,191 @@ func TestUpdateRealtimeRunningRequestsDrainRate1m_ZeroRateReportsZeroOnSameSerie
 	value, ok = gaugeValueForLabels(family, wantLabels)
 	require.True(t, ok, "the series must stay exported when the rate reaches zero")
 	require.Equal(t, 0.0, value)
+}
+
+type counterSeriesSnapshot struct {
+	labels map[string]string
+	value  float64
+}
+
+func gatherPodCounterSeries(t *testing.T, metricName, podName string) []counterSeriesSnapshot {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	var series []counterSeriesSnapshot
+	for _, mf := range mfs {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := make(map[string]string, len(m.GetLabel()))
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			if labels["pod"] == podName {
+				series = append(series, counterSeriesSnapshot{labels: labels, value: m.GetCounter().GetValue()})
+			}
+		}
+	}
+	return series
+}
+
+func scrapePodThroughQueue(t *testing.T, store *Store, pod *v1.Pod, useQueue bool) {
+	t.Helper()
+	jobs := make(chan podMetricsJob, 2)
+	if useQueue {
+		store.podMetricsJobs = jobs
+		store.updatePodMetrics()
+		require.NotEmpty(t, jobs)
+	} else {
+		metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+		require.True(t, ok)
+		jobs <- podMetricsJob{Pod: metaPod}
+	}
+	close(jobs)
+	store.worker(jobs)
+}
+
+func newCounterTestPod(name string, port int, role string) *v1.Pod {
+	p := newReadyMetricsPod(name, "uid-"+name).Pod
+	p.Annotations = make(map[string]string)
+	p.Labels = map[string]string{
+		constants.ModelLabelEngine: "vllm",
+		constants.ModelLabelName:   "delta-model",
+		MetricPortLabel:            strconv.Itoa(port),
+	}
+	if role != "" {
+		p.Labels["role-name"] = role
+	}
+	p.Status.PodIP = "127.0.0.1"
+	return p
+}
+
+func newPromptCounterServer(t *testing.T, initial int64) (*atomic.Int64, int) {
+	var count atomic.Int64
+	count.Store(initial)
+	port := modelClaimMetricsTestPort(t, func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "# TYPE vllm:prompt_tokens_total counter\nvllm:prompt_tokens_total{model_name=\"delta-model\"} %d\n", count.Load())
+	})
+	return &count, port
+}
+
+func TestWorkerEmitsCounterDeltasAndHandlesReset(t *testing.T) {
+	count, port := newPromptCounterServer(t, 1000)
+	store := NewForTest()
+	pod := &Pod{Pod: newCounterTestPod("counter-delta-pod", port, "")}
+	store.metaPods.Store(podMetricsBackoffKey(pod), pod)
+	t.Cleanup(func() {
+		metrics.DeleteEngineMetricFromPrometheus(&types.RoutingContext{Model: "delta-model"}, pod.Pod, metrics.PromptTokenTotal, map[string]string{"model_name": "delta-model"})
+	})
+
+	for _, step := range [][2]int64{{1000, 1000}, {1000, 1000}, {1250, 1250}, {200, 200}} {
+		count.Store(step[0])
+		scrapePodThroughQueue(t, store, pod.Pod, false)
+		s := gatherPodCounterSeries(t, metrics.PromptTokenTotal, pod.Name)
+		require.Len(t, s, 1)
+		require.Equal(t, float64(step[1]), s[0].value)
+	}
+
+	updatedPod := &Pod{Pod: newCounterTestPod("counter-delta-pod", port, "")}
+	copyPodMetricInventory(pod, updatedPod)
+	store.metaPods.Store(podMetricsBackoffKey(updatedPod), updatedPod)
+	scrapePodThroughQueue(t, store, updatedPod.Pod, false)
+	require.Equal(t, 200.0, gatherPodCounterSeries(t, metrics.PromptTokenTotal, pod.Name)[0].value)
+
+	store.deletePodGaugeMetrics(updatedPod)
+	require.Empty(t, gatherPodCounterSeries(t, metrics.PromptTokenTotal, pod.Name))
+}
+
+func TestWorkerCounterLabelAndModeTransitions(t *testing.T) {
+	assertPrompt := func(t *testing.T, store *Store, pod *v1.Pod, count *atomic.Int64, raw int64, want float64, wantRole string, useQueue bool) {
+		t.Helper()
+		count.Store(raw)
+		scrapePodThroughQueue(t, store, pod, useQueue)
+		s := gatherPodCounterSeries(t, metrics.PromptTokenTotal, pod.Name)
+		require.Len(t, s, 1)
+		if wantRole != "" {
+			require.Equal(t, wantRole, s[0].labels["role"])
+		}
+		require.Equal(t, want, s[0].value)
+	}
+
+	t.Run("engine-extra-label-change", func(t *testing.T) {
+		var status atomic.Value
+		status.Store("200")
+		var count atomic.Int64
+		count.Store(40)
+		port := modelClaimMetricsTestPort(t, func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, "# TYPE vllm:http_requests_total counter\nvllm:http_requests_total{model_name=\"delta-model\",status=%q} %d\n", status.Load().(string), count.Load())
+		})
+		store := newModelClaimMetricsTestStore()
+		pod := newCounterTestPod("counter-label-pod", port, "")
+		store.addPod(pod)
+		t.Cleanup(func() { store.deletePod(pod) })
+
+		for _, tc := range []struct {
+			status    string
+			raw, want int64
+		}{{"200", 40, 40}, {"500", 75, 75}, {"500", 90, 90}} {
+			status.Store(tc.status)
+			count.Store(tc.raw)
+			scrapePodThroughQueue(t, store, pod, false)
+			s := gatherPodCounterSeries(t, metrics.HTTPRequestTotal, pod.Name)
+			require.Len(t, s, 1)
+			require.Equal(t, tc.status, s[0].labels["status"])
+			require.Equal(t, float64(tc.want), s[0].value)
+		}
+		store.deletePod(pod)
+		require.Empty(t, gatherPodCounterSeries(t, metrics.HTTPRequestTotal, pod.Name))
+	})
+
+	t.Run("pod-role-label-change", func(t *testing.T) {
+		count, port := newPromptCounterServer(t, 100)
+		store := newModelClaimMetricsTestStore()
+		before, after := newCounterTestPod("counter-relabel-pod", port, "before"), newCounterTestPod("counter-relabel-pod", port, "after")
+		store.addPod(before)
+		t.Cleanup(func() { store.deletePod(after) })
+
+		assertPrompt(t, store, before, count, 100, 100, "before", false)
+		store.updatePod(before, after)
+		assertPrompt(t, store, after, count, 125, 125, "after", false)
+		assertPrompt(t, store, after, count, 125, 125, "after", false)
+		store.deletePod(after)
+		require.Empty(t, gatherPodCounterSeries(t, metrics.PromptTokenTotal, after.Name))
+	})
+
+	t.Run("active-modelclaim-roundtrip", func(t *testing.T) {
+		count, port := newPromptCounterServer(t, 100)
+		store := newModelClaimMetricsTestStore()
+		plain, claim, restored := newCounterTestPod("counter-active-switch-pod", port, ""), newCounterTestPod("counter-active-switch-pod", port, ""), newCounterTestPod("counter-active-switch-pod", port, "")
+		setMetricsTestBinding(claim, "claim", "delta-model", port, constants.ModelClaimRoutingStateActive)
+		store.addPod(plain)
+		t.Cleanup(func() { store.deletePod(restored) })
+
+		assertPrompt(t, store, plain, count, 100, 100, "", true)
+		store.updatePod(plain, claim)
+		require.Empty(t, gatherPodCounterSeries(t, metrics.PromptTokenTotal, plain.Name))
+		for _, step := range [][2]int64{{125, 125}, {125, 125}, {130, 130}} {
+			assertPrompt(t, store, claim, count, step[0], float64(step[1]), "", true)
+		}
+		store.updatePod(claim, restored)
+		assertPrompt(t, store, restored, count, 140, 140, "", true)
+		assertPrompt(t, store, restored, count, 140, 140, "", true)
+		store.deletePod(restored)
+		require.Empty(t, gatherPodCounterSeries(t, metrics.PromptTokenTotal, restored.Name))
+	})
+	t.Run("empty-claim-map-roundtrip", func(t *testing.T) {
+		count, port := newPromptCounterServer(t, 100)
+		store := newModelClaimMetricsTestStore()
+		plain, emptyClaim, restored := newCounterTestPod("counter-empty-claim-pod", port, ""), newCounterTestPod("counter-empty-claim-pod", port, ""), newCounterTestPod("counter-empty-claim-pod", port, "")
+		emptyClaim.Annotations[constants.ModelClaimPodAnnotationPrefix+"delta-model"] = "{}"
+		store.addPod(plain)
+		t.Cleanup(func() { store.deletePod(restored) })
+		assertPrompt(t, store, plain, count, 100, 100, "", false)
+		store.updatePod(plain, emptyClaim)
+		require.Empty(t, gatherPodCounterSeries(t, metrics.PromptTokenTotal, plain.Name))
+		store.updatePod(emptyClaim, restored)
+		assertPrompt(t, store, restored, count, 125, 125, "", false)
+		assertPrompt(t, store, restored, count, 125, 125, "", false)
+	})
 }
