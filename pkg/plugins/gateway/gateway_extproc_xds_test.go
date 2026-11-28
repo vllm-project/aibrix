@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // The manifest tests next door assert on the input Envoy Gateway is given. What
@@ -82,6 +83,10 @@ type xdsRouteMatch struct {
 }
 
 type xdsRoute struct {
+	Metadata       json.RawMessage `json:"metadata"`
+	DirectResponse struct {
+		Status int `json:"status"`
+	} `json:"directResponse"`
 	Name                 string                     `json:"name"`
 	Match                xdsRouteMatch              `json:"match"`
 	TypedPerFilterConfig map[string]json.RawMessage `json:"typedPerFilterConfig"`
@@ -303,6 +308,17 @@ func TestGeneratedXDS_PinnedRoutePrecedence(t *testing.T) {
 	for _, route := range xds.routes[:shared+1] {
 		assert.NotContains(t, route.Name, "httproute/", "route %q sits above the pinning routes", route.Name)
 	}
+}
+
+func TestGeneratedXDS_ModelRouteReadinessFallback(t *testing.T) {
+	xds := loadGeneratedXDS(t)
+	fallback, _ := xds.resolve(t, PathChatCompletions, false)
+	assert.Equal(t, 500, fallback.DirectResponse.Status)
+	assert.Equal(t, "true", gjson.GetBytes(fallback.Metadata,
+		"filterMetadata.envoy-gateway.resources.0.annotations.aibrix-model-route").String())
+
+	pinned, _ := xds.resolve(t, PathChatCompletions, true)
+	assert.Equal(t, "original_destination_cluster", pinned.Route.Cluster)
 }
 
 // TestGeneratedXDS_SharedRouteKeepsStreaming guards the rest of the API: the

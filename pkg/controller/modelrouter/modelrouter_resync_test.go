@@ -387,6 +387,49 @@ func TestEnsureHTTPRoutesDoesNotWriteWhenRoutesExist(t *testing.T) {
 	}
 }
 
+func TestResyncModelRouteReadinessAnnotation(t *testing.T) {
+	const modelName = "llama-7b"
+	ctx := context.Background()
+	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: "llama", Namespace: "models", Labels: modelWorkloadLabels(modelName, "8000"),
+	}}
+	m := newEventTestRouter(t, deploy)
+	m.addRouteFromDeployment(deploy)
+
+	// A persisted route created before the readiness annotation was introduced.
+	route := getHTTPRoute(t, m.Client, modelName)
+	route.Annotations = map[string]string{"example.com/owner": "team"}
+	if err := m.Update(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	resync := func(want string) *gatewayv1.HTTPRoute {
+		t.Helper()
+		if err := m.ensureHTTPRoutes(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got := getHTTPRoute(t, m.Client, modelName)
+		if got.Annotations[modelRouteReadinessAnnotation] != want || got.Annotations["example.com/owner"] != "team" {
+			t.Fatalf("route annotations after resync = %v, want readiness %q and original owner", got.Annotations, want)
+		}
+		return got
+	}
+	route = resync("true")
+
+	// A custom filter can generate an intentional local response.
+	route.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{{
+		Type: gatewayv1.HTTPRouteFilterExtensionRef,
+		ExtensionRef: &gatewayv1.LocalObjectReference{
+			Group: "gateway.envoyproxy.io", Kind: "HTTPRouteFilter", Name: "maintenance-response",
+		},
+	}}
+	if err := m.Update(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	if got := resync(""); len(got.Spec.Rules[0].Filters) != 1 {
+		t.Fatalf("resync changed the custom route filter: %v", got.Spec.Rules[0].Filters)
+	}
+}
+
 func TestEnsureHTTPRoutesUpdatesRouteMissingNewPaths(t *testing.T) {
 	const modelName = "llama-7b"
 	deploy := &appsv1.Deployment{

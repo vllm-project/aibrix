@@ -232,3 +232,29 @@ spec:
       op: add
       path: /default_filter_chain/filters/0/typed_config/preserve_external_request_id
       value: false
+  # The API server can report resolved references before this proxy forwards to the model.
+  - type: type.googleapis.com/envoy.config.listener.v3.Listener
+    name: $(AIBRIX_GATEWAY_NAMESPACE)/$(AIBRIX_GATEWAY_NAME)/http
+    operation:
+      op: add
+      path: /default_filter_chain/filters/0/typed_config/local_reply_config/mappers/-
+      value:
+        filter:
+          extension_filter:
+            name: envoy.access_loggers.extension_filters.cel
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter
+              expression: >-
+                response.code_details == 'direct_response' && response.code in [500, 503] &&
+                xds.route_metadata.filter_metadata['envoy-gateway']['resources'][0]['annotations']['aibrix-model-route'] == 'true'
+        status_code: 503
+        headers_to_add:
+        - header: {key: x-error-routing, value: "true"}
+          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+        body_format_override:
+          json_format:
+            error:
+              message: Model route is waiting for its backend
+              type: overloaded_error
+              code: service_unavailable
+              param: null

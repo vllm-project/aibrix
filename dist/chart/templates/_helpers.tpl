@@ -150,6 +150,44 @@ Create the name of the metadata service service account
           config: {}
 {{- end -}}
 
+{{/* Listener patches for the rendered HTTP connection manager (after any connection limiter). */}}
+{{- define "aibrix.gateway.listenerPatches" -}}
+{{- $name := printf "%s/%s-eg/%s" .root.Release.Namespace (include "aibrix.fullname" .root) .listener -}}
+{{- $index := ternary 1 0 (gt (int .root.Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0) -}}
+{{- $hcm := printf "%s/filters/%d/typed_config" .chain $index -}}
+- type: type.googleapis.com/envoy.config.listener.v3.Listener
+  name: {{ $name }}
+  operation:
+    op: add
+    path: {{ $hcm }}/preserve_external_request_id
+    value: {{ .root.Values.gateway.envoyPatchPolicy.preserveExternalRequestID }}
+- type: type.googleapis.com/envoy.config.listener.v3.Listener
+  name: {{ $name }}
+  operation:
+    op: add
+    path: {{ $hcm }}/local_reply_config/mappers/-
+    value:
+      filter:
+        extension_filter:
+          name: envoy.access_loggers.extension_filters.cel
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter
+            expression: >-
+              response.code_details == 'direct_response' && response.code in [500, 503] &&
+              xds.route_metadata.filter_metadata['envoy-gateway']['resources'][0]['annotations']['aibrix-model-route'] == 'true'
+      status_code: 503
+      headers_to_add:
+      - header: {key: x-error-routing, value: "true"}
+        append_action: OVERWRITE_IF_EXISTS_OR_ADD
+      body_format_override:
+        json_format:
+          error:
+            message: Model route is waiting for its backend
+            type: overloaded_error
+            code: service_unavailable
+            param: null
+{{- end -}}
+
 {{- define "aibrix.validateValues" -}}
 {{- range $component := list "controllerManager" "gatewayPlugin" }}
 {{- if hasKey (index $.Values $component).container.envs "AIBRIX_GATEWAY_NAMESPACE" }}

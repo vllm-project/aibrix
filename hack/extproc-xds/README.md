@@ -39,7 +39,10 @@ func (noopWasmCache) Get(downloadURL string, opts wasm.GetOptions) (string, stri
 func (noopWasmCache) Start(ctx context.Context) {}
 GO
 # add `WasmCache: noopWasmCache{},` to every gatewayapi.Translator literal in
-# internal/cmd/egctl/translate.go, then:
+# internal/cmd/egctl/translate.go.
+# In internal/gatewayapi/resource/load.go, add `Annotations: un.GetAnnotations(),`
+# to ObjectMeta in the KindHTTPRoute case. The offline loader otherwise discards
+# route annotations before translation. The Kubernetes provider preserves them.
 go build -o /tmp/egctl ./cmd/egctl
 
 # 3. Translate. --add-missing-resources fills in the EndpointSlices of the

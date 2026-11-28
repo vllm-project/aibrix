@@ -179,15 +179,15 @@ spec:
     kind: HTTPRoute
     name: reserved-router-metadata-endpoint
 ---
-# this is a dummy route for incoming request and,
-# then request is routed to httproute using model name OR
-# request is routed based on the target for that model service
-# TODO (varun): check if this dummy route can be removed in future
+# ext_proc selects the model route or target pod. If that route is not active
+# yet, this backendless rule produces a local reply handled by the readiness mapper.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reserved-router
   namespace: system
+  annotations:
+    gateway.envoyproxy.io/aibrix-model-route: "true"
 spec:
   parentRefs:
     - name: eg
@@ -262,9 +262,6 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/video/generations
-      backendRefs:
-        - name: gateway-plugins
-          port: 50052
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy

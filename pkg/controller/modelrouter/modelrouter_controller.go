@@ -59,6 +59,9 @@ const (
 
 	modelRouterCustomPath = constants.ModelAnnoRouterCustomPath
 
+	// Envoy Gateway copies annotations in this namespace to the active route's metadata.
+	modelRouteReadinessAnnotation = "gateway.envoyproxy.io/aibrix-model-route"
+
 	// defaultResyncInterval is how often HTTPRoutes are recreated or brought up to date.
 	defaultResyncInterval = 30 * time.Second
 )
@@ -453,6 +456,7 @@ func (m *ModelRouter) buildHTTPRoute(namespace, modelName string, labels map[str
 	}
 
 	appendCustomModelRouterPaths(&httpRoute, modelHeaderMatch, annotations)
+	syncModelRouteReadinessAnnotation(&httpRoute)
 	return &httpRoute
 }
 
@@ -791,16 +795,43 @@ func (m *ModelRouter) ensureHTTPRouteForWorkload(ctx context.Context, workload c
 // updateHTTPRouteIfStale rewrites an existing route whose spec no longer matches
 // its workload, e.g. after an upgrade adds model paths or the port label changes.
 func (m *ModelRouter) updateHTTPRouteIfStale(ctx context.Context, route, desired *gatewayv1.HTTPRoute) {
-	if httpRouteSpecMatches(route, desired) {
+	specChanged := !httpRouteSpecMatches(route, desired)
+	if specChanged {
+		route.Spec.ParentRefs = desired.Spec.ParentRefs
+		route.Spec.Rules = desired.Spec.Rules
+	}
+	if !syncModelRouteReadinessAnnotation(route) && !specChanged {
 		return
 	}
-	route.Spec.ParentRefs = desired.Spec.ParentRefs
-	route.Spec.Rules = desired.Spec.Rules
 	if err := m.Update(ctx, route); err != nil {
 		klog.ErrorS(err, "Failed to update httproute", "name", route.Name)
 		return
 	}
 	klog.InfoS("httproute updated", "name", route.Name)
+}
+
+// Only plain model forwarding rules use Envoy's backend-readiness reply.
+// An existing route with a custom filter may intentionally return a local error.
+func syncModelRouteReadinessAnnotation(route *gatewayv1.HTTPRoute) bool {
+	want := ""
+	if len(route.Spec.Rules) == 1 {
+		rule := &route.Spec.Rules[0]
+		if len(rule.Filters) == 0 && len(rule.BackendRefs) == 1 && len(rule.BackendRefs[0].Filters) == 0 {
+			want = "true"
+		}
+	}
+	if route.Annotations[modelRouteReadinessAnnotation] == want {
+		return false
+	}
+	if want == "" {
+		delete(route.Annotations, modelRouteReadinessAnnotation)
+	} else {
+		if route.Annotations == nil {
+			route.Annotations = make(map[string]string)
+		}
+		route.Annotations[modelRouteReadinessAnnotation] = want
+	}
+	return true
 }
 
 // httpRouteSpecMatches compares only the fields buildHTTPRoute sets, so values the
