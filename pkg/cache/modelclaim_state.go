@@ -147,8 +147,8 @@ func (s *modelClaimState) claim(model string) (modelClaimRecord, bool) {
 	return record, found
 }
 
-// ModelClaimBinding returns the advertisement most likely to serve the model
-// soonest. Pod key order breaks ties between bindings in the same state.
+// ModelClaimBinding skips inactive Pods and prefers dormant bindings in the order
+// activating > sleeping > failed, with Pod key order breaking ties.
 func (c *Store) ModelClaimBinding(modelName string) (*v1.Pod, utils.ModelClaimBinding, bool) {
 	for _, known := range c.modelClaims.get(modelName) {
 		metaPod, found := c.metaPods.Load(known.podKey)
