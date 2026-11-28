@@ -82,7 +82,7 @@ services:
   # ============================================================================
 
   envoy:
-    image: envoyproxy/envoy:v1.33.2
+    image: envoyproxy/envoy:v1.39.6
     container_name: aibrix-envoy
     ports:
       - "${HTTP_PORT:-80}:80"

@@ -1,0 +1,58 @@
+suite: Envoy Gateway migration contracts
+templates:
+  - gateway-plugin/envoy_extension_policy.yaml
+  - gateway-instance/gateway.yaml
+tests:
+  - it: targets the inference route with targetRefs instead of the deprecated targetRef
+    template: gateway-plugin/envoy_extension_policy.yaml
+    documentIndex: 0
+    asserts:
+      - notExists:
+          path: spec.targetRef
+      - equal:
+          path: spec.targetRefs
+          value:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              name: RELEASE-NAME-aibrix-reserved-router
+      - notExists:
+          path: spec.extProc[0].allowModeOverride
+      - notExists:
+          path: spec.extProc[0].statusOnError
+  - it: keeps the metadata bypass as an empty extProc policy
+    template: gateway-plugin/envoy_extension_policy.yaml
+    documentIndex: 1
+    asserts:
+      - notExists:
+          path: spec.targetRef
+      - equal:
+          path: spec.targetRefs
+          value:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              name: RELEASE-NAME-aibrix-reserved-router-metadata-endpoint
+      - notExists:
+          path: spec.extProc
+  - it: pins the proxy and shutdown manager together
+    template: gateway-instance/gateway.yaml
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.containers[0].image
+          value: envoyproxy/envoy:v1.39.6
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.containers[1].image
+          value: envoyproxy/gateway:v1.9.4
+  - it: preserves the singular EnvoyPatchPolicy target reference
+    template: gateway-instance/gateway.yaml
+    documentSelector:
+      path: kind
+      value: EnvoyPatchPolicy
+    asserts:
+      - equal:
+          path: spec.targetRef.kind
+          value: Gateway
+      - notExists:
+          path: spec.targetRefs

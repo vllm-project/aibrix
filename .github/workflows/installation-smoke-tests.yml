@@ -39,6 +39,10 @@ jobs:
       KIND_CLUSTER_NAME: installation-smoke-helm
       KUBECONFIG: /tmp/installation-smoke-helm.conf
       AIBRIX_E2E_GATEWAY_URL: http://127.0.0.1:8888
+      # Envoy Gateway v1.9 supports Kubernetes v1.33-v1.36; its CRDs use the CEL
+      # format library, which older API servers reject. The digest pins the image
+      # built for the kind release installed below.
+      KIND_NODE_IMAGE: kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -60,14 +64,14 @@ jobs:
         uses: actions/cache@v5
         with:
           path: /tmp/tools/kind
-          key: installation-smoke-kind-v0.24.0-${{ runner.os }}-${{ runner.arch }}
+          key: installation-smoke-kind-v0.33.0-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install Kind
         run: |
           set -euo pipefail
           mkdir -p /tmp/tools
           if [ ! -f /tmp/tools/kind ]; then
-            curl -fsSLo /tmp/tools/kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64"
+            curl -fsSLo /tmp/tools/kind "https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64"
             chmod +x /tmp/tools/kind
           fi
           sudo cp /tmp/tools/kind /usr/local/bin/
@@ -150,7 +154,7 @@ jobs:
       - name: Create isolated Kind cluster
         run: |
           set -euo pipefail
-          kind create cluster --name "${KIND_CLUSTER_NAME}" --config hack/ci/kind-config.yaml --wait 5m
+          kind create cluster --name "${KIND_CLUSTER_NAME}" --image "${KIND_NODE_IMAGE}" --config hack/ci/kind-config.yaml --wait 5m
           kind get kubeconfig --name "${KIND_CLUSTER_NAME}" > "${KUBECONFIG}"
           if ! kubectl cluster-info; then
             echo "::error::Kind cluster ${KIND_CLUSTER_NAME} is not reachable"

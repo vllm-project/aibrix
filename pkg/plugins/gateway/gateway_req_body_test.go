@@ -1287,10 +1287,9 @@ func TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned(t *test
 
 // TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride: the create response has
 // to be held whole so its backend id can be replaced, but that is arranged by the
-// Videos route's EnvoyExtensionPolicy (response body Buffered). Envoy Gateway
-// v1.2.8 never enables ext_proc's allow_mode_override, so an override sent from
-// here would be dropped on the floor - and would read as if buffering had been
-// taken care of.
+// Videos route's EnvoyExtensionPolicy (response body Buffered). AIBrix leaves
+// ext_proc's allow_mode_override disabled, so an override sent from here would
+// be ignored and would only look as if buffering had been arranged.
 func TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride(t *testing.T) {
 	cache.InitForTest()
 	routingalgorithms.Init()

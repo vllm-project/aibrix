@@ -174,10 +174,10 @@ metadata:
   name: skip-ext-proc
   namespace: system
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: reserved-router-metadata-endpoint
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: reserved-router-metadata-endpoint
 ---
 # this is a dummy route for incoming request and,
 # then request is routed to httproute using model name OR
@@ -272,10 +272,10 @@ metadata:
   name: gateway-plugins-extension-policy
   namespace: system
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: reserved-router
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: reserved-router
   extProc:
     - backendRefs:
         - name: gateway-plugins
@@ -298,9 +298,9 @@ spec:
 # Buffered response bodies are what makes that hold real. Envoy's ext_proc stops
 # the response at its headers until the buffered body has been processed, so an
 # upstream 201 cannot reach the client before registration succeeded -- which is
-# what lets a failed registration still answer 503. Envoy Gateway v1.2.8 has no
-# allowModeOverride field, so a per-request ModeOverride from the plugin would be
-# ignored (ext_proc's allow_mode_override stays off): the mode has to come from
+# what lets a failed registration still answer 503. AIBrix intentionally leaves
+# allowModeOverride disabled, so per-request ModeOverride from the plugin is
+# ignored (ext_proc's allow_mode_override stays off): the mode comes from
 # configuration, and therefore from a route of its own.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -325,10 +325,10 @@ metadata:
   name: gateway-plugins-videos-extension-policy
   namespace: system
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: reserved-router-videos
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: reserved-router-videos
   extProc:
     - backendRefs:
         - name: gateway-plugins
@@ -344,7 +344,7 @@ spec:
 # /v1/videos/{id}/content download is the rendered video itself, and
 # /v1/videos/sync returns its result inline. Neither carries a job id to rewrite.
 #
-# Envoy Gateway v1.2.8 ranks route matches Exact > RegularExpression > PathPrefix
+# Envoy Gateway ranks route matches Exact > RegularExpression > PathPrefix
 # (internal/gatewayapi/sort.go), so both of these win over the PathPrefix
 # /v1/videos route above and keep their streaming response mode.
 apiVersion: gateway.networking.k8s.io/v1
@@ -373,10 +373,10 @@ metadata:
   name: gateway-plugins-videos-streaming-extension-policy
   namespace: system
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: reserved-router-videos-streaming
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: reserved-router-videos-streaming
   extProc:
     - backendRefs:
         - name: gateway-plugins

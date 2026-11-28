@@ -101,10 +101,17 @@ func TestPDDecodeWatchdogFirstResponse(t *testing.T) {
 // TestPDDecodeWatchdogFirstResponseAfterHeaders is the shape a real SGLang
 // decode pod shows when it wedges before its first token: a streaming
 // response's headers go out as soon as the request is accepted, and then no
-// token follows. The headers must not satisfy the first-response watchdog. As
-// they already reached the client, the gateway cannot answer with its 504: it
-// must cut the stream before the decode leg would have produced a token, and
-// must abort the decode leg.
+// token follows. The headers must not satisfy the first-response watchdog: the
+// gateway must fail the request before the decode leg would have produced a
+// token, and must abort the decode leg.
+//
+// What the client sees depends on Envoy, which the gateway cannot observe:
+// Envoy holds the response headers until the first body chunk has been
+// processed, or has already released them. If it still holds them the client
+// gets the gateway's 504. If it released them, a status line is already on its
+// way, so the stream is cut short instead. Anything else, such as the bare 500
+// Envoy sends when the ext_proc stream fails with nothing to answer the client
+// with, means the gateway closed its stream without telling the client why.
 //
 // Requirements to run: same as TestPDDecodeWatchdogFirstResponse.
 func TestPDDecodeWatchdogFirstResponseAfterHeaders(t *testing.T) {
@@ -127,11 +134,28 @@ func TestPDDecodeWatchdogFirstResponseAfterHeaders(t *testing.T) {
 	)
 	elapsed := time.Since(start)
 
-	// The decode pod's headers reached the client; no token ever does.
-	require.Error(t, err, "the stream must be cut short, not completed")
-	require.Equal(t, http.StatusOK, result.StatusCode)
-	require.NotContains(t, string(result.Body), "data:",
-		"a token reached the client, so the decode leg was not held before its first one")
+	// No token ever reaches the client; the request fails one of two ways.
+	require.Error(t, err, "the request must fail, not complete")
+	switch result.StatusCode {
+	case http.StatusGatewayTimeout:
+		// Envoy still held the decode pod's headers: the client gets the 504.
+		require.Equal(t, "true", result.Headers.Get(decodeWatchdogHeader),
+			"the gateway must mark the response it generated for a decode watchdog kill")
+		var response map[string]any
+		require.NoError(t, json.Unmarshal(result.Body, &response))
+		errorBody := requireNestedMap(t, response, "error")
+		message, ok := errorBody["message"].(string)
+		require.True(t, ok, "error message must be a string, got %T", errorBody["message"])
+		require.Contains(t, message, "sent response headers but no body within")
+	case http.StatusOK:
+		// Envoy had released the headers: the stream is cut short.
+		require.NotContains(t, string(result.Body), "data:",
+			"a token reached the client, so the decode leg was not held before its first one")
+	default:
+		require.Failf(t, "unexpected status",
+			"got %d, want 504 (headers held by Envoy) or 200 with a cut stream (headers already released)",
+			result.StatusCode)
+	}
 	require.Less(t, elapsed, decodeHoldDuration,
 		"the stream ended only after the decode leg resumed, so the watchdog did not fire")
 

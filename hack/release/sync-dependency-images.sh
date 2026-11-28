@@ -14,8 +14,8 @@ TARGET_REGISTRY=$1
 IMAGES=(
     "redis:7.4 ${TARGET_REGISTRY}/aibrix/redis:7.4"
     "valkey/valkey:8-alpine ${TARGET_REGISTRY}/aibrix/valkey:8-alpine"
-    "envoyproxy/envoy:v1.33.2 ${TARGET_REGISTRY}/aibrix/envoy:v1.33.2"
-    "envoyproxy/gateway:v1.2.8 ${TARGET_REGISTRY}/aibrix/gateway:v1.2.8"
+    "envoyproxy/envoy:v1.39.6 ${TARGET_REGISTRY}/aibrix/envoy:v1.39.6"
+    "envoyproxy/gateway:v1.9.4 ${TARGET_REGISTRY}/aibrix/gateway:v1.9.4"
     "aibrix/kuberay-operator:v1.2.1-patch-20250726 ${TARGET_REGISTRY}/aibrix/kuberay-operator:v1.2.1-patch-20250726"
     "busybox:stable ${TARGET_REGISTRY}/aibrix/busybox:stable"
 )

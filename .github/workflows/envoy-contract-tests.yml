@@ -1,0 +1,65 @@
+name: Real Envoy Contracts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/envoy-contract-tests.yml'
+      - 'pkg/**'
+      - 'test/run-envoy-contract-tests.sh'
+      - 'go.mod'
+      - 'go.sum'
+      - 'config/**'
+      - 'dist/chart/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  envoy-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+      - name: Download and verify official Envoy executables
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/envoy"
+          curl -fSL --retry 3 https://github.com/envoyproxy/envoy/releases/download/v1.39.6/envoy-1.39.6-linux-x86_64 -o "$RUNNER_TEMP/envoy/envoy-1.39.6"
+          curl -fSL --retry 3 https://github.com/envoyproxy/envoy/releases/download/v1.33.2/envoy-1.33.2-linux-x86_64 -o "$RUNNER_TEMP/envoy/envoy-1.33.2"
+          cd "$RUNNER_TEMP/envoy"
+          printf '%s\n' \
+            '116ef1d0d4e0685bbb0749134aa84ebd6d56a37c568ce6418f1242138d9d10cf  envoy-1.39.6' \
+            'bd2ff87c5efc95fd7880d710915f573c1aab4d9c55d8da886dcd91df43fad741  envoy-1.33.2' | sha256sum --check --strict
+          chmod +x envoy-1.39.6 envoy-1.33.2
+          {
+            sha256sum envoy-1.39.6 envoy-1.33.2
+            ./envoy-1.39.6 --version
+            ./envoy-1.33.2 --version
+          } | tee "$GITHUB_WORKSPACE/envoy-binary-provenance.log"
+      - name: Run client-visible failure, stream and accounting contracts
+        shell: bash
+        env:
+          AIBRIX_ENVOY_TEST_BINARY: ${{ runner.temp }}/envoy/envoy-1.39.6
+          AIBRIX_ENVOY_BASELINE_TEST_BINARY: ${{ runner.temp }}/envoy/envoy-1.33.2
+        run: |
+          set -o pipefail
+          bash test/run-envoy-contract-tests.sh 2>&1 | tee envoy-contracts.log
+      - name: Retain contract evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: envoy-contracts
+          path: |
+            envoy-contracts.log
+            envoy-binary-provenance.log
+          if-no-files-found: warn

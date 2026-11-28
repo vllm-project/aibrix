@@ -174,6 +174,22 @@ func objectString(t *testing.T, object map[string]interface{}, fields ...string)
 	return value
 }
 
+// extensionPolicyTarget returns the name of the HTTPRoute an EnvoyExtensionPolicy
+// targets. The checkout dependency stack (Envoy Gateway v1.9) uses the targetRefs
+// list, while manifests rendered for the released v1.2 stack still carry the
+// singular targetRef.
+func extensionPolicyTarget(t *testing.T, object map[string]interface{}) string {
+	t.Helper()
+	if name, found, err := unstructured.NestedString(object, "spec", "targetRef", "name"); err == nil && found {
+		return name
+	}
+	targets, found, err := unstructured.NestedSlice(object, "spec", "targetRefs")
+	require.NoError(t, err)
+	require.True(t, found, "missing spec.targetRef.name and spec.targetRefs")
+	require.Len(t, targets, 1)
+	return objectString(t, targets[0].(map[string]interface{}), "name")
+}
+
 func checkGatewayReferences(t *testing.T, objects []unstructured.Unstructured) map[string]map[string]interface{} {
 	t.Helper()
 	gateway := objectOfKind(t, objects, "Gateway")
@@ -207,7 +223,7 @@ func checkGatewayReferences(t *testing.T, objects []unstructured.Unstructured) m
 		if object.GetKind() != "EnvoyExtensionPolicy" {
 			continue
 		}
-		target := objectString(t, object.Object, "spec", "targetRef", "name")
+		target := extensionPolicyTarget(t, object.Object)
 		require.True(t, routeNames[target], "policy %s targets missing route %s", object.GetName(), target)
 		processors, _, err := unstructured.NestedSlice(object.Object, "spec", "extProc")
 		require.NoError(t, err)
@@ -290,7 +306,7 @@ func checkGatewayServiceReferences(t *testing.T, objects []unstructured.Unstruct
 			processors, _, err := unstructured.NestedSlice(object.Object, "spec", "extProc")
 			require.NoError(t, err)
 			if len(processors) == 0 {
-				metadataRoutes[objectString(t, object.Object, "spec", "targetRef", "name")] = true
+				metadataRoutes[extensionPolicyTarget(t, object.Object)] = true
 			}
 		}
 	}
@@ -363,7 +379,7 @@ func checkGatewayComponentSettings(
 // the pinning-route drift check out of tests that read unresolved source YAML.
 func checkDefaultXDSFilters(t *testing.T, filters map[string]map[string]interface{}) {
 	t.Helper()
-	raw, err := os.ReadFile("../../../pkg/plugins/gateway/testdata/envoy_gateway_v1.2.8_xds.json")
+	raw, err := os.ReadFile("../../../pkg/plugins/gateway/testdata/envoy_gateway_v1.9.4_xds.json")
 	require.NoError(t, err)
 	var golden struct {
 		XDS map[string]struct {

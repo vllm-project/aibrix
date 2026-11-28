@@ -30,6 +30,9 @@ nameReference:
   - kind: EnvoyExtensionPolicy
     group: gateway.envoyproxy.io
     path: spec/targetRef/name
+  - kind: EnvoyExtensionPolicy
+    group: gateway.envoyproxy.io
+    path: spec/targetRefs/name
 - kind: Service
   version: v1
   fieldSpecs:

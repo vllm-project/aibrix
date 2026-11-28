@@ -69,7 +69,7 @@ spec:
                 spec:
                   containers:
                     - name: envoy
-                      image: envoyproxy/envoy:v1.33.2
+                      image: envoyproxy/envoy:v1.39.6
                       resources:
                         requests:
                           cpu: 1
@@ -78,7 +78,7 @@ spec:
                           cpu: 1
                           memory: 1Gi
                     - name: shutdown-manager
-                      image: envoyproxy/gateway:v1.2.8
+                      image: envoyproxy/gateway:v1.9.4
                       resources:
                         requests:
                           cpu: 10m

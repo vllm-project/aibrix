@@ -36,11 +36,11 @@ import (
 // there, not on the path route the request first arrived on.
 //
 // These tests read that generated configuration - a real `egctl x translate` of
-// the deployed manifests through Envoy Gateway v1.2.8, checked in as a golden -
+// the deployed manifests through Envoy Gateway v1.9.4, checked in as a golden -
 // and resolve request paths against it the way Envoy would, in both phases.
 //
 // hack/extproc-xds/README.md regenerates the golden.
-const generatedXDSPath = "testdata/envoy_gateway_v1.2.8_xds.json"
+const generatedXDSPath = "testdata/envoy_gateway_v1.9.4_xds.json"
 
 // extProcFilterPrefix is how Envoy Gateway names the filters it generates for an
 // EnvoyExtensionPolicy's extProc entries.
@@ -391,4 +391,54 @@ func TestGeneratedXDS_MatchesDeployedManifest(t *testing.T) {
 	// The rendered EnvoyPatchPolicy and its default golden are compared by
 	// TestKustomizeGatewayReferences in test/e2e/installation, after Kustomize
 	// has resolved names and namespace. Raw YAML still contains variables.
+}
+
+// Metadata endpoints must bypass ext_proc, including after translator upgrades.
+// They do not enter the plugin, so they do not take a pinned second routing pass.
+func TestGeneratedXDS_MetadataBypassesExtProc(t *testing.T) {
+	xds := loadGeneratedXDS(t)
+	for _, path := range []string{"/v1/models", "/v1/files", "/v1/batches"} {
+		t.Run(path, func(t *testing.T) {
+			for _, route := range xds.routes {
+				if !route.Match.matches(path, false) {
+					continue
+				}
+				assert.Contains(t, route.Name, "reserved-router-metadata-endpoint")
+				for name := range route.TypedPerFilterConfig {
+					assert.NotContains(t, name, extProcFilterPrefix)
+				}
+				return
+			}
+			t.Fatalf("metadata path %q has no generated route", path)
+		})
+	}
+}
+
+func TestGeneratedXDS_ExternalRequestIDPreservationStaysDisabled(t *testing.T) {
+	raw, err := os.ReadFile(generatedXDSPath)
+	require.NoError(t, err)
+	var dump interface{}
+	require.NoError(t, json.Unmarshal(raw, &dump))
+	found := 0
+	var walk func(interface{})
+	walk = func(node interface{}) {
+		switch value := node.(type) {
+		case map[string]interface{}:
+			if value["@type"] == "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager" && value["statPrefix"] != "eg-ready-http" {
+				found++
+				// Envoy's default false is omitted from proto JSON. The manifest's
+				// request-id patch explicitly keeps that default, not true.
+				assert.NotEqual(t, true, value["preserveExternalRequestId"])
+			}
+			for _, child := range value {
+				walk(child)
+			}
+		case []interface{}:
+			for _, child := range value {
+				walk(child)
+			}
+		}
+	}
+	walk(dump)
+	require.Equal(t, 1, found, "exactly one application HTTP connection manager must retain the request-id policy")
 }

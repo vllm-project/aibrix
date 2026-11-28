@@ -14,10 +14,28 @@ Install AIBrix on Cloud Kubernetes Clusters
 .. attention::
     AIBrix requires `Envoy Gateway <https://gateway.envoyproxy.io/>`_ for request routing.
 
+    The current checkout pins Envoy Gateway v1.9.4 with Envoy v1.39.6. This
+    checkout dependency stack requires Kubernetes v1.33 or newer; the
+    `upstream compatibility matrix <https://gateway.envoyproxy.io/news/releases/matrix/>`_
+    lists Kubernetes v1.33 through v1.36 and Gateway API v1.6.1 for this release
+    line. AIBrix has validated installs and upgrades on Kubernetes v1.34
+    (installation CI). Older clusters should stay on a released AIBrix bundle
+    until they can move. Feature-specific floors (e.g. AWS DRA / Trainium) may
+    be higher. This is not a claim that every AIBrix workload is certified on
+    every version in that range. Older externally installed Envoy Gateway
+    releases are not validated by this migration.
+
+    Release bundles install their own pinned dependencies; these checkout
+    versions do not change an already published release bundle.
+
     `KubeRay <https://github.com/ray-project/kuberay>`_ is **optional** and only required if you plan to use Ray as your distributed inference runtime (RayClusterFleet, RayClusterReplicaSet).
 
     AIBrix can run without KubeRay - use StormService for both single-node and multi-node inference workloads. The distributed inference controller will be automatically skipped if KubeRay CRDs are not detected.
 
+
+.. warning::
+
+    Clusters older than Kubernetes v1.33 are unsupported for the new dependency bundle: v1.31 rejects the new CRDs' CEL ``format`` rules during CRD installation, before AIBrix application tests run. Validation on Kubernetes v1.34 does not establish the minimum supported Kubernetes version.
 
 Stable Version
 ~~~~~~~~~~~~~~
@@ -82,13 +100,198 @@ Install AIBrix with Helm
     # Install AIBrix with the pinned release version:
     helm install aibrix dist/chart -f dist/chart/stable.yaml -n aibrix-system --create-namespace
 
+.. note::
+    The stable Helm path stays on the released v0.8.0 stack: Envoy Gateway
+    v1.2.8 with Envoy v1.33.2, matching the released AIBrix images pinned in
+    ``stable.yaml`` and ``vke.yaml``. The checkout's default ``values.yaml``
+    and the Kustomize manifests carry the new Envoy Gateway v1.9.4 / Envoy
+    v1.39.6 stack for the next release; a release that ships AIBrix images
+    qualified behind the new proxy will move these stable pins. To move an
+    existing installation forward, follow the upgrade procedure below instead
+    of mixing the two.
+
 
 Upgrade AIBrix with Helm
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
+When upgrading the gateway from v1.2.8, update the CRDs before the
+controller, and update the controller before applying policies that use
+``targetRefs``. Do not apply the full Kustomize dependency onto a Helm-owned
+Envoy Gateway installation. Keep each controller's existing installation owner.
+Back up your resources and values first, and review the
+`upstream upgrade notes <https://gateway.envoyproxy.io/v1.9/install/install-helm/>`_.
+This migration does not validate every intermediate release or third-party
+controller that may share the Gateway API CRDs.
+
+.. warning::
+
+    This procedure validates a forward upgrade only. An in-place downgrade of the bundled Gateway API CRDs is not validated. The target bundle installs the ``safe-upgrades.gateway.networking.k8s.io`` admission policy, which rejects Gateway API CRDs older than v1.5. Reapplying the old dependency bundle or running Helm rollback is not a complete rollback procedure. Do not delete CRDs to roll back: their resources can be lost. Plan a cluster-admin-owned recovery procedure before upgrading. Rolling back only the controller while retaining the newer CRDs is also not validated here.
+
+First render the target CRDs separately and apply them with server-side apply.
+The example retains the experimental Gateway API channel bundled by Envoy
+Gateway. If your provider manages these CRDs, coordinate a compatible upgrade
+with that provider instead of overwriting its resources. If you use the standard
+channel, review the upstream TCPRoute/UDPRoute API and storage-version migration
+requirements before upgrading.
+
 .. code:: bash
 
-    helm upgrade aibrix dist/chart -f dist/chart/values.yaml -n aibrix-system
+    helm template eg-crds oci://docker.io/envoyproxy/gateway-crds-helm \
+      --version v1.9.4 \
+      --set crds.gatewayAPI.enabled=true \
+      --set crds.gatewayAPI.channel=experimental \
+      --set crds.envoyGateway.enabled=true > gateway-crds-v1.9.4.yaml
+    kubectl apply --server-side -f gateway-crds-v1.9.4.yaml
+    kubectl get -f gateway-crds-v1.9.4.yaml -o name \
+      | grep '^customresourcedefinition' \
+      | xargs kubectl wait --for=condition=Established --timeout=5m
+
+Resolve any field-ownership conflict before continuing; do not blindly force
+ownership away from another controller. Then choose the matching controller path.
+
+For a **Helm-owned Envoy Gateway**, keep its actual release name and namespace
+(the example uses ``eg`` in ``envoy-gateway-system``). Save explicit user values,
+review them against the new chart, remove stale image-version overrides and
+retain deployment-specific settings such as scheduling, resource limits and
+logging. ``--reset-values`` starts from target defaults, then reapplies those
+reviewed settings rather than retaining old chart defaults:
+
+.. code:: bash
+
+    helm get values eg -n envoy-gateway-system -o yaml > eg-values-before.yaml
+    cp eg-values-before.yaml eg-values-reviewed.yaml
+    # Review eg-values-reviewed.yaml before running the upgrade.
+    helm upgrade eg oci://docker.io/envoyproxy/gateway-helm \
+      --version v1.9.4 -n envoy-gateway-system \
+      --reset-values -f eg-values-reviewed.yaml \
+      --set crds.enabled=false \
+      --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true \
+      --wait --timeout=5m
+
+For a **Kustomize-owned Envoy Gateway**, after the same CRD-first gate, apply
+the checkout's dependency and wait for its controller:
+
+.. code:: bash
+
+    kubectl apply -k config/dependency/envoy-gateway --server-side
+    kubectl -n envoy-gateway-system rollout status deployment/envoy-gateway --timeout=5m
+
+.. warning::
+
+    Between the controller upgrade above and the AIBrix chart upgrade, the new
+    controller already serves xDS to proxies that still run the old Envoy
+    image, and the chart upgrade then rolls each proxy Pod from the old image
+    to the new one. Treat this mixed window as best-effort, not zero-downtime:
+    in-flight requests can see connection resets or timeouts while each proxy
+    restarts. While an old proxy is still in service, sample its xDS rejection
+    counters (the ``*_update_rejected`` stats on its admin endpoint) in
+    addition to the post-upgrade checks below. Rising rejections mean the old
+    proxy is refusing the new controller's configuration: a Ready Pod or
+    passing traffic then proves only the previously accepted configuration,
+    so complete the proxy roll promptly instead of leaving the window open.
+
+Only after the target controller is available, update AIBrix CRDs and upgrade
+the AIBrix chart. Preserve your own reviewed AIBrix values, including image
+repositories, authentication, resource limits and routing customizations, rather
+than replacing them with an unreviewed copy of ``values.yaml``:
+
+.. code:: bash
+
+    kubectl apply -f dist/chart/crds --server-side
+    kubectl wait --for=condition=Established --timeout=5m -f dist/chart/crds
+    helm get values aibrix -n aibrix-system -o yaml > aibrix-values-before.yaml
+    cp aibrix-values-before.yaml aibrix-values-reviewed.yaml
+    # Review aibrix-values-reviewed.yaml and remove stale gateway image pins.
+    helm upgrade aibrix dist/chart -n aibrix-system \
+      --reset-values -f aibrix-values-reviewed.yaml --wait --timeout=10m
+
+Do not accept a successful rollout, traffic, or xDS counters until the target
+images have reconciled. Immediately after the chart upgrade, the previous
+Deployment revision can still satisfy those checks. Use the Gateway ownership
+labels to find its proxy Deployment, not a generated name or container position.
+The example below assumes one proxy Deployment; stop if the selection is empty
+or ambiguous. Keep the actual controller Deployment name and container name
+from your existing installation (inspect them first):
+
+.. code:: bash
+
+    kubectl -n envoy-gateway-system get deployments -o yaml
+    export EG_NAMESPACE=envoy-gateway-system
+    export EG_DEPLOYMENT=envoy-gateway
+    export EG_CONTAINER=envoy-gateway
+    export GATEWAY_NAMESPACE=aibrix-system
+    export GATEWAY_NAME=aibrix-eg
+    export ENVOY_IMAGE=envoyproxy/envoy:v1.39.6
+    export GATEWAY_IMAGE=envoyproxy/gateway:v1.9.4
+    export CONTROLLER_IMAGE=docker.io/envoyproxy/gateway:v1.9.4
+    export OWNER_LABEL=gateway.envoyproxy.io/owning-gateway
+    export PROXY_SELECTOR="$OWNER_LABEL-namespace=$GATEWAY_NAMESPACE"
+    export PROXY_SELECTOR="$PROXY_SELECTOR,$OWNER_LABEL-name=$GATEWAY_NAME"
+
+Use your verified registry/repository references instead when they differ from
+the defaults above. Independently verify that those artifacts are Envoy
+v1.39.6 and Gateway v1.9.4 for your platform, and record their expected digests.
+A version-looking tag alone is not proof. Do not substitute an unavailable
+mirror tag or bypass this gate. The proxy's named ``envoy`` container must use
+the Envoy artifact; its named ``shutdown-manager`` container and the actual
+Gateway controller container must use the Gateway artifact.
+
+Run the following in a shell with failure handling enabled. Each target-image
+wait must succeed before rollout acceptance; a timeout, missing named container,
+or failed selection must stop the procedure, not fall through to traffic tests:
+
+.. code:: bash
+
+    set -eu
+    set -- $(kubectl -n "$EG_NAMESPACE" get deployment -l "$PROXY_SELECTOR" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+    test "$#" -eq 1
+    export PROXY_DEPLOYMENT="$1"
+    export IMAGE_PATH='.spec.template.spec.containers'
+    kubectl -n "$EG_NAMESPACE" wait "deployment/$EG_DEPLOYMENT" \
+      --for="jsonpath={$IMAGE_PATH[?(@.name=='$EG_CONTAINER')].image}=$CONTROLLER_IMAGE" \
+      --timeout=5m
+    kubectl -n "$EG_NAMESPACE" wait "deployment/$PROXY_DEPLOYMENT" \
+      --for="jsonpath={$IMAGE_PATH[?(@.name=='envoy')].image}=$ENVOY_IMAGE" \
+      --timeout=5m
+    kubectl -n "$EG_NAMESPACE" wait "deployment/$PROXY_DEPLOYMENT" \
+      --for="jsonpath={$IMAGE_PATH[?(@.name=='shutdown-manager')].image}=$GATEWAY_IMAGE" \
+      --timeout=5m
+    kubectl -n "$EG_NAMESPACE" rollout status "deployment/$EG_DEPLOYMENT" --timeout=5m
+    kubectl -n "$EG_NAMESPACE" rollout status "deployment/$PROXY_DEPLOYMENT" --timeout=5m
+    kubectl -n "$EG_NAMESPACE" get deployment "$EG_DEPLOYMENT" "$PROXY_DEPLOYMENT" \
+      -o json > gateway-deployments.json
+    kubectl -n "$EG_NAMESPACE" get replicasets -o json > gateway-replicasets.json
+    kubectl -n "$EG_NAMESPACE" get pods -o json > gateway-pods.json
+
+Before accepting these snapshots, match Pods to the current Deployment and
+ReplicaSet owner UIDs, including the controller Pods. Require the current
+Deployment generation to be observed, all desired replicas updated and
+available, and each current Pod Ready with every required container ready.
+Check each named container's Pod-spec image and running ``imageID`` against the
+verified artifact and platform digest recorded above. Ignore terminating old
+Pods as proof of the new revision. Missing/mismatched image IDs, unready Pods,
+wrong owners, or incomplete reconciliation mean stop and investigate.
+
+Record the proxy Pod UIDs, then restart the selected proxy Deployment and repeat
+the selection, target-image waits, rollout checks, and ready-Pod image-ID checks.
+Re-select by the same Gateway ownership labels in case reconciliation replaced
+the Deployment. Require replacement proxy Pod UIDs and verify both named
+containers again; do not accept a surviving old Pod or reuse an old snapshot.
+Only after this gate succeeds should post-restart traffic and xDS checks count
+as migration evidence. These checks do not establish zero-downtime upgrades.
+
+Check that the Gateway and its policies are accepted for their current
+``metadata.generation``. Check Envoy's xDS rejection counters and send traffic
+after restarting a proxy as well as before it: a proxy can keep serving its
+previous configuration when a newer configuration is rejected. A ready Pod
+alone does not prove that the new routing configuration works.
+
+If the old proxy's rejection counters rose during the mixed window, or any
+check above fails after the roll completes, stop and use the
+cluster-admin-owned recovery plan from the rollback warning above instead of
+accepting the upgrade; a successful rollout does not clear persistent
+rejections.
 
 
 Uninstall AIBrix with Helm
