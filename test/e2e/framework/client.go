@@ -19,6 +19,7 @@ package e2eframework
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -144,20 +145,27 @@ const (
 
 func buildKubernetesConfig(t *testing.T) *rest.Config {
 	kubeConfig := os.Getenv("KUBECONFIG")
-	if kubeConfig == "" {
-		t.Fatal("kubeConfig not set")
+	config, err := loadKubernetesConfig(kubeConfig)
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Logf("using configuration from '%s'\n", kubeConfig)
+	return config
+}
 
+func loadKubernetesConfig(kubeConfig string) (*rest.Config, error) {
+	if kubeConfig == "" {
+		return nil, errors.New("kubeConfig not set")
+	}
 	config, err := clientcmd.BuildConfigFromFlags("", kubeConfig)
 	if err != nil {
-		t.Fatalf("error building Kubernetes client configuration: %v", err)
+		return nil, fmt.Errorf("error building Kubernetes client configuration: %w", err)
 	}
 	// Informers and recorder Pod-proxy queries share this client. Keep recorder
 	// polling from exhausting client-go's default low QPS token bucket.
 	config.QPS = e2eClientQPS
 	config.Burst = e2eClientBurst
-	return config
+	return config, nil
 }
 
 // InitializeKubernetesClient creates a client for tests that only need direct API calls.
@@ -311,8 +319,23 @@ func WaitForStableAdapterInference(t *testing.T, firstModel, secondModel string)
 	start := time.Now()
 	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 30*time.Second, true,
 		stableAdapterInferenceCondition(t, client, firstModel, secondModel))
-	require.NoError(t, err, "waiting for adapters %s and %s after %s", firstModel, secondModel, time.Since(start))
+	elapsed := time.Since(start)
+	var probeErr *inferenceProbeError
+	if errors.As(err, &probeErr) {
+		// The caller's cleanup reads each log once. Poll for this probe first.
+		captureEnvoyProbeLog(t, config.GatewayNamespace, probeErr.probe)
+	}
+	require.NoError(t, err, "waiting for adapters %s and %s after %s", firstModel, secondModel, elapsed)
 	t.Logf("both adapters served three consecutive rounds in %s", time.Since(start).Round(time.Millisecond))
+}
+
+type inferenceProbeError struct {
+	probe   string
+	message string
+}
+
+func (e *inferenceProbeError) Error() string {
+	return e.message
 }
 
 func stableAdapterInferenceCondition(
@@ -339,7 +362,10 @@ func stableAdapterInferenceCondition(
 				ready = false
 				continue
 			}
-			return false, fmt.Errorf("inference for %s (%s): %s", model, probe, inferenceFailureDetail(err))
+			return false, &inferenceProbeError{
+				probe:   probe,
+				message: fmt.Sprintf("inference for %s (%s): %s", model, probe, inferenceFailureDetail(err)),
+			}
 		}
 		if !ready {
 			rounds = 0
@@ -419,14 +445,99 @@ func inferenceFailureDetail(err error) string {
 		body)
 }
 
+const envoyContainer = "envoy"
+
+func gatewayProxySelector(namespace string) string {
+	return "gateway.envoyproxy.io/owning-gateway-namespace=" + namespace +
+		",gateway.envoyproxy.io/owning-gateway-name=aibrix-eg"
+}
+
+func recentPodLogOptions(container string) *corev1.PodLogOptions {
+	return &corev1.PodLogOptions{
+		Container:    container,
+		SinceSeconds: ptr.To[int64](300),
+		TailLines:    ptr.To[int64](1000),
+	}
+}
+
+func findProbeAccessLog(logs []byte, probe string) (string, bool) {
+	for _, line := range bytes.Split(logs, []byte("\n")) {
+		var entry struct {
+			UserAgent string `json:"user-agent"`
+		}
+		if err := json.Unmarshal(line, &entry); err == nil && entry.UserAgent == probe {
+			return string(line), true
+		}
+	}
+	return "", false
+}
+
+func waitForEnvoyProbeLog(
+	ctx context.Context, client kubernetes.Interface, namespace, probe string, interval time.Duration,
+) (string, string, error) {
+	var matchedPod, matchedLine string
+	var lastListErr, lastReadErr error
+	err := wait.PollUntilContextCancel(ctx, interval, true, func(ctx context.Context) (bool, error) {
+		pods, err := client.CoreV1().Pods(v1.NamespaceAll).List(ctx, v1.ListOptions{
+			LabelSelector: gatewayProxySelector(namespace),
+		})
+		if err != nil {
+			if ctx.Err() == nil {
+				lastListErr = fmt.Errorf("listing Envoy pods: %w", err)
+			}
+			return false, nil
+		}
+		for _, pod := range pods.Items {
+			logs, err := client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, recentPodLogOptions(envoyContainer)).DoRaw(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					lastReadErr = fmt.Errorf("reading %s/%s %s logs: %w", pod.Namespace, pod.Name, envoyContainer, err)
+				}
+				continue
+			}
+			if line, found := findProbeAccessLog(logs, probe); found {
+				matchedPod, matchedLine = pod.Namespace+"/"+pod.Name, line
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		err = errors.Join(err, lastListErr, lastReadErr)
+	}
+	return matchedPod, matchedLine, err
+}
+
+func captureEnvoyProbeLog(t *testing.T, namespace, probe string) {
+	t.Helper()
+	config, err := loadKubernetesConfig(os.Getenv("KUBECONFIG"))
+	if err != nil {
+		t.Logf("cannot capture Envoy access log for probe %s: %v", probe, err)
+		return
+	}
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Logf("cannot capture Envoy access log for probe %s: creating Kubernetes client: %v", probe, err)
+		return
+	}
+	const timeout = 10 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	pod, line, err := waitForEnvoyProbeLog(ctx, client, namespace, probe, 500*time.Millisecond)
+	if err != nil {
+		t.Logf("Envoy access log for probe %s not found within %s: %v. "+
+			"The entry may be delayed, never emitted, or outside the retained log window.", probe, timeout, err)
+		return
+	}
+	t.Logf("Envoy access log for probe %s from pod %s:\n%s", probe, pod, line)
+}
+
 // DumpGatewayLogs collects the access log of the installation's Envoy proxy
 // and the ext_proc plugin logs. Each source has its own time budget.
 func DumpGatewayLogs(t *testing.T, client kubernetes.Interface) {
 	t.Helper()
 	namespace := LoadConfig().GatewayNamespace
-	proxySelector := "gateway.envoyproxy.io/owning-gateway-namespace=" + namespace +
-		",gateway.envoyproxy.io/owning-gateway-name=aibrix-eg"
-	dumpPodLogs(t, client, v1.NamespaceAll, proxySelector, "envoy")
+	dumpPodLogs(t, client, v1.NamespaceAll, gatewayProxySelector(namespace), envoyContainer)
 	dumpPodLogs(t, client, namespace, "app=gateway-plugins", "gateway-plugin")
 }
 
@@ -443,11 +554,7 @@ func dumpPodLogs(t *testing.T, client kubernetes.Interface, namespace, selector,
 		t.Logf("no pods matching %s for %s logs", selector, container)
 	}
 	for _, pod := range pods.Items {
-		logs, err := client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-			Container:    container,
-			SinceSeconds: ptr.To[int64](300),
-			TailLines:    ptr.To[int64](1000),
-		}).DoRaw(ctx)
+		logs, err := client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, recentPodLogOptions(container)).DoRaw(ctx)
 		if err != nil {
 			t.Logf("reading %s/%s %s logs: %v", pod.Namespace, pod.Name, container, err)
 			continue
