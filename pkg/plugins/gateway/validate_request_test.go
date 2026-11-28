@@ -136,8 +136,8 @@ func Test_ValidateRequestBody(t *testing.T) {
 			requestPath: "/v1/chat/completions",
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": [{"type": "text", "text": "say this is test"}, {"type": "text", "text": "say this is test"}]}]}`),
 			model:       "llama2-7b",
-			// parseChatMessages writes raw JSON bytes directly, preserving the original field order from the request.
-			messages:   "this is system [{\"type\": \"text\", \"text\": \"say this is test\"}, {\"type\": \"text\", \"text\": \"say this is test\"}]",
+			// Text-only parts are joined like a string, so they match the same prompt sent as a string (#3657).
+			messages:   "this is system say this is test say this is test",
 			statusCode: envoyTypePb.StatusCode_OK,
 		},
 		{
@@ -2403,7 +2403,7 @@ func Test_ValidateRequestBody_ChatCompletionsBatch(t *testing.T) {
 		{
 			message:     "/v1/chat/completions/batch multimodal content parts reach the routing text like a single chat request",
 			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": [{"type": "text", "text": "Describe it"}]}]]}`,
-			text:        `[{"type": "text", "text": "Describe it"}]`,
+			text:        "Describe it",
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{

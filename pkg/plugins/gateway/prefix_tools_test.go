@@ -66,7 +66,7 @@ func chatPrefixText(t *testing.T, body string) string {
 const (
 	toolsTestMessages = `"messages":[{"role":"system","content":"you are a helpful assistant"},{"role":"user","content":[{"type":"text","text":"what is the weather?"}]}]`
 	// toolsTestMessagesText is the routing message built from toolsTestMessages alone.
-	toolsTestMessagesText = `you are a helpful assistant [{"type":"text","text":"what is the weather?"}]`
+	toolsTestMessagesText = `you are a helpful assistant what is the weather?`
 	toolsTestWeather      = `[{"type":"function","function":{"name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer","maximum":1e1}}}}}]`
 	// toolsTestWeatherCanonical is toolsTestWeather with keys sorted at every level.
 	toolsTestWeatherCanonical = `[{"function":{"description":"Get the weather","name":"get_weather","parameters":{"properties":{"city":{"type":"string"},"days":{"maximum":1e1,"type":"integer"}},"type":"object"}},"type":"function"}]`
@@ -386,4 +386,27 @@ func TestResponsesPrefixText_FunctionCallItemsDiffer(t *testing.T) {
 	indexer.AddPrefix(indexer.GetPrefixHashes(tokensA), "m", "pod-a")
 	matched, _ := indexer.MatchPrefix(tokensB, "m", map[string]struct{}{"pod-a": {}})
 	assert.Less(t, matched["pod-a"], 100)
+}
+
+// TestChatPrefixText_TextPartsMatchString checks that content sent as text parts hashes
+// like the same text sent as a string, as the engine renders both the same (#3657).
+func TestChatPrefixText_TextPartsMatchString(t *testing.T) {
+	body := func(content string) string {
+		return `{"model":"m","messages":[{"role":"system","content":` + content + `},{"role":"user","content":"hi"}]}`
+	}
+	want := chatPrefixText(t, body(`"you are a helpful assistant"`))
+	require.Equal(t, "you are a helpful assistant hi", want)
+	for name, content := range map[string]string{
+		"parts":         `[{"type":"text","text":"you are a helpful assistant"}]`,
+		"keys reversed": `[{"text":"you are a helpful assistant","type":"text"}]`,
+		"spaces":        "[ {\"type\": \"text\",\n \"text\": \"you are a helpful assistant\"} ]",
+		"split parts":   `[{"type":"text","text":"you are a"},{"type":"text","text":"helpful assistant"}]`,
+	} {
+		assert.Equal(t, want, chatPrefixText(t, body(content)), name)
+	}
+
+	// A non-text part keeps the raw bytes: decoding large images or token-id arrays per
+	// request would cost milliseconds.
+	image := `[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGk="}}]`
+	assert.Equal(t, image+" hi", chatPrefixText(t, body(image)))
 }
