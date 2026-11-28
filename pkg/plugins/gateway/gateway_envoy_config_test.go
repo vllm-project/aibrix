@@ -150,10 +150,12 @@ func TestEnvoyConfigExtProcDisabledOnNonInferenceRoutes(t *testing.T) {
 				if !assert.NotEmpty(t, r.Match.Prefix, "route without a prefix match in %s: extend envoyRoute to decode it", path) {
 					continue
 				}
-				// direct_response routes have no cluster to look up here. ext_proc still sees
-				// Envoy's local reply unless the route opts out, so the health route is checked
-				// by TestEnvoyConfigHealthzRoute (#3640).
+				// A direct_response route has no cluster, but ext_proc still sees Envoy's
+				// local reply unless the route opts out: it rewrites the body, and fails the
+				// request when the gateway plugin is down (#3640).
 				if r.Route == nil {
+					assert.True(t, r.TypedPerFilterConfig[extProcFilterName].Disabled,
+						"direct_response route %q: %s must be disabled", r.Match.Prefix, extProcFilterName)
 					continue
 				}
 				cluster := r.Route.Cluster

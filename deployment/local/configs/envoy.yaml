@@ -96,6 +96,10 @@ static_resources:
                             status: 404
                             body:
                               inline_string: '{"error":"Not Found","message":"Use /v1/chat/completions, /v1/messages, or /v1/models"}'
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
 
                 http_filters:
                   # External Processor - Gateway Plugin
