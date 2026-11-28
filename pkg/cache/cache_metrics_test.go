@@ -23,6 +23,8 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2199,4 +2201,94 @@ func TestUpdateRealtimeRunningRequestsDrainRate1m_ZeroRateReportsZeroOnSameSerie
 	value, ok = gaugeValueForLabels(family, wantLabels)
 	require.True(t, ok, "the series must stay exported when the rate reaches zero")
 	require.Equal(t, 0.0, value)
+}
+
+func TestWorkerEmitsCounterDeltasAndHandlesReset(t *testing.T) {
+	var enginePromptTokens atomic.Int64
+	enginePromptTokens.Store(1000)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "# TYPE vllm:prompt_tokens_total counter\nvllm:prompt_tokens_total{model_name=\"delta-model\"} %d\n", enginePromptTokens.Load())
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(u.Port())
+	require.NoError(t, err)
+
+	store := &Store{
+		engineMetricsFetcher: metrics.NewEngineMetricsFetcher(),
+	}
+	newPod := func() *Pod {
+		return &Pod{
+			Pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "counter-delta-pod",
+					Namespace: testNamespace,
+					Labels: map[string]string{
+						constants.ModelLabelEngine: "vllm",
+						constants.ModelLabelName:   "delta-model",
+						MetricPortLabel:            strconv.Itoa(port),
+					},
+				},
+				Status: v1.PodStatus{PodIP: u.Hostname()},
+			},
+		}
+	}
+	pod := newPod()
+	store.metaPods.Store(podMetricsBackoffKey(pod), pod)
+
+	extraLabels := map[string]string{"model_name": "delta-model"}
+	t.Cleanup(func() {
+		metrics.DeleteEngineMetricFromPrometheus(&types.RoutingContext{Model: "delta-model"}, pod.Pod, metrics.PromptTokenTotal, extraLabels)
+	})
+
+	scrapeOnce := func(target *Pod) {
+		jobs := make(chan podMetricsJob, 1)
+		jobs <- podMetricsJob{Pod: target}
+		close(jobs)
+		store.worker(jobs)
+	}
+	exportedPromptTokens := func() float64 {
+		mfs, err := prometheus.DefaultGatherer.Gather()
+		require.NoError(t, err)
+		for _, mf := range mfs {
+			if mf.GetName() != metrics.PromptTokenTotal {
+				continue
+			}
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "pod" && lp.GetValue() == pod.Name {
+						return m.GetCounter().GetValue()
+					}
+				}
+			}
+		}
+		t.Fatalf("counter series %s for pod %s not found", metrics.PromptTokenTotal, pod.Name)
+		return 0
+	}
+
+	// Steady scrapes must not re-add the cumulative snapshot.
+	scrapeOnce(pod)
+	require.Equal(t, 1000.0, exportedPromptTokens())
+	scrapeOnce(pod)
+	require.Equal(t, 1000.0, exportedPromptTokens())
+
+	// Subsequent increase exports only the delta.
+	enginePromptTokens.Store(1250)
+	scrapeOnce(pod)
+	require.Equal(t, 1250.0, exportedPromptTokens())
+
+	// Engine restart resets the series instead of adding onto the old value.
+	enginePromptTokens.Store(200)
+	scrapeOnce(pod)
+	require.Equal(t, 200.0, exportedPromptTokens())
+
+	// Preserved metric inventory across pod informer updates keeps delta tracking intact.
+	updatedPod := newPod()
+	copyPodMetricInventory(pod, updatedPod)
+	store.metaPods.Store(podMetricsBackoffKey(updatedPod), updatedPod)
+	scrapeOnce(updatedPod)
+	require.Equal(t, 200.0, exportedPromptTokens())
 }

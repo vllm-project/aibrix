@@ -17,6 +17,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -430,7 +431,7 @@ func (c *Store) worker(jobs <-chan podMetricsJob) {
 				if shouldSkipMetric(pod.Pod, metricName) {
 					continue
 				}
-				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
+				c.emitPodEngineMetric(pod, "", metricName, metricValue)
 			}
 
 			for metricName, metricValue := range result.ModelMetrics {
@@ -453,7 +454,7 @@ func (c *Store) worker(jobs <-chan podMetricsJob) {
 
 				c.updateThroughputToksPerS(pod, model, metric, metricValue)
 				c.updateRecentMean(pod, model, metric, metricValue)
-				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
+				c.emitPodEngineMetric(pod, model, metric, metricValue)
 
 				if metric == metrics.EngineSleepState && c.kvEventManager != nil {
 					// The prefix router and the KV-event subscription both key
@@ -495,6 +496,53 @@ func (c *Store) updateGatewayTrackedPodMetrics(pod *Pod) {
 	c.updateRealtimeRunningRequestsDrainRate1m(pod)
 	c.updateRealtimeOutputTokenRateEWMA(pod)
 	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+}
+
+func (c *Store) emitPodEngineMetric(pod *Pod, modelName, metricName string, metricValue metrics.MetricValue) {
+	ctx := &types.RoutingContext{Model: modelName}
+	labels := metricValue.GetLabelValues()
+	emitValue := metricValue
+	if def, ok := metrics.Metrics[metricName]; ok && def.MetricType.Raw == metrics.Counter {
+		// Engine counters are cumulative snapshots while CounterVec.Add expects
+		// per-scrape increments. Compute the delta against the previous raw
+		// sample before updatePodMetricsFromTypedResultAt overwrites it,
+		// matching modelClaimMetricsTarget.emitMetric.
+		increment := metricValue.GetSimpleValue()
+		previous, sampled := c.loadPreviousPodMetricRecord(pod, modelName, metricName, def.MetricScope)
+		prevLabels := map[string]string(nil)
+		if sampled && previous.Value != nil {
+			prevLabels = previous.Value.GetLabelValues()
+		}
+		sameSeries := sampled && previous.Value != nil && maps.Equal(prevLabels, labels)
+		if sampled && !sameSeries {
+			metrics.DeleteEngineMetricFromPrometheus(ctx, pod.Pod, metricName, prevLabels)
+		}
+		if sameSeries && increment >= previous.Value.GetSimpleValue() {
+			increment -= previous.Value.GetSimpleValue()
+		} else {
+			metrics.DeleteEngineMetricFromPrometheus(ctx, pod.Pod, metricName, labels)
+		}
+		emitValue = &metrics.SimpleMetricValue{Value: increment}
+	}
+	metrics.EmitMetricToPrometheus(ctx, pod.Pod, metricName, emitValue, labels)
+}
+
+func (c *Store) loadPreviousPodMetricRecord(pod *Pod, modelName, metricName string, scope metrics.MetricScope) (MetricRecord, bool) {
+	switch scope {
+	case metrics.PodMetricScope:
+		return pod.Metrics.Load(metricName)
+	case metrics.PodModelMetricScope:
+		if modelName == "" {
+			var ok bool
+			modelName, ok = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+			if !ok {
+				return MetricRecord{}, false
+			}
+		}
+		return pod.modelMetricStore(modelName).Load(c.getPodModelMetricName(modelName, metricName))
+	default:
+		return MetricRecord{}, false
+	}
 }
 
 func (c *Store) tryMarkPodMetricsQueued(pod *Pod) bool {
