@@ -79,32 +79,45 @@ func requestPromptText(requestID string, field json.RawMessage) string {
 		return text
 	}
 
-	if raw[0] == '[' {
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := sonic.Unmarshal(raw, &blocks); err == nil {
-			var builder strings.Builder
-			hasText := false
-			for _, block := range blocks {
-				if block.Type != "text" {
-					return canonicalRequestFieldText(requestID, raw)
-				}
-				if block.Text == "" {
-					continue
-				}
-				if hasText {
-					builder.WriteByte(' ')
-				}
-				builder.WriteString(block.Text)
-				hasText = true
-			}
-			return builder.String()
-		}
+	if text, ok := textPartsText(raw); ok {
+		return text
 	}
-
 	return canonicalRequestFieldText(requestID, raw)
+}
+
+// textPartsText joins the texts of a content-part array made only of "text" parts, which
+// chat templates render like the same text sent as a string. ok is false for anything else.
+func textPartsText(raw json.RawMessage) (text string, ok bool) {
+	if len(raw) == 0 || raw[0] != '[' {
+		return "", false
+	}
+	// Content parts are objects; skip decoding anything else, such as a token-id array.
+	if rest := bytes.TrimLeft(raw[1:], " \t\r\n"); len(rest) == 0 || (rest[0] != '{' && rest[0] != ']') {
+		return "", false
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := sonic.Unmarshal(raw, &blocks); err != nil {
+		return "", false
+	}
+	var builder strings.Builder
+	hasText := false
+	for _, block := range blocks {
+		if block.Type != "text" {
+			return "", false
+		}
+		if block.Text == "" {
+			continue
+		}
+		if hasText {
+			builder.WriteByte(' ')
+		}
+		builder.WriteString(block.Text)
+		hasText = true
+	}
+	return builder.String(), true
 }
 
 func canonicalRequestFieldText(requestID string, field json.RawMessage) string {

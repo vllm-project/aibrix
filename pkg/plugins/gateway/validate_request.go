@@ -167,7 +167,13 @@ func writeChatContent(builder *strings.Builder, content json.RawMessage) {
 			return
 		}
 	}
-	// Array or object content parts: write raw JSON.
+	// Text-only parts render like a string in the chat template, so they must match one (#3657).
+	if text, ok := textPartsText(content); ok {
+		builder.WriteString(text)
+		return
+	}
+	// Other content parts (images, token ids): raw JSON. Canonicalizing them costs
+	// milliseconds per request for large images and token-id prompts.
 	builder.Write(content)
 }
 
