@@ -813,24 +813,23 @@ func (m *ModelRouter) updateHTTPRouteIfStale(ctx context.Context, route, desired
 // Only plain model forwarding rules use Envoy's backend-readiness reply.
 // An existing route with a custom filter may intentionally return a local error.
 func syncModelRouteReadinessAnnotation(route *gatewayv1.HTTPRoute) bool {
-	want := ""
+	plainForward := false
 	if len(route.Spec.Rules) == 1 {
 		rule := &route.Spec.Rules[0]
-		if len(rule.Filters) == 0 && len(rule.BackendRefs) == 1 && len(rule.BackendRefs[0].Filters) == 0 {
-			want = "true"
-		}
+		plainForward = len(rule.Filters) == 0 && len(rule.BackendRefs) == 1 && len(rule.BackendRefs[0].Filters) == 0
 	}
-	if route.Annotations[modelRouteReadinessAnnotation] == want {
+	value, present := route.Annotations[modelRouteReadinessAnnotation]
+	if !plainForward {
+		delete(route.Annotations, modelRouteReadinessAnnotation)
+		return present
+	}
+	if value == "true" {
 		return false
 	}
-	if want == "" {
-		delete(route.Annotations, modelRouteReadinessAnnotation)
-	} else {
-		if route.Annotations == nil {
-			route.Annotations = make(map[string]string)
-		}
-		route.Annotations[modelRouteReadinessAnnotation] = want
+	if route.Annotations == nil {
+		route.Annotations = make(map[string]string)
 	}
+	route.Annotations[modelRouteReadinessAnnotation] = "true"
 	return true
 }
 

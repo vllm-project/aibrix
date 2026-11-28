@@ -408,14 +408,17 @@ func TestResyncModelRouteReadinessAnnotation(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := getHTTPRoute(t, m.Client, modelName)
-		if got.Annotations[modelRouteReadinessAnnotation] != want || got.Annotations["example.com/owner"] != "team" {
+		value, present := got.Annotations[modelRouteReadinessAnnotation]
+		if value != want || present != (want != "") || got.Annotations["example.com/owner"] != "team" {
 			t.Fatalf("route annotations after resync = %v, want readiness %q and original owner", got.Annotations, want)
 		}
 		return got
 	}
 	route = resync("true")
 
-	// A custom filter can generate an intentional local response.
+	// A custom filter can generate an intentional local response. Even an empty
+	// readiness annotation should be removed.
+	route.Annotations[modelRouteReadinessAnnotation] = ""
 	route.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{{
 		Type: gatewayv1.HTTPRouteFilterExtensionRef,
 		ExtensionRef: &gatewayv1.LocalObjectReference{

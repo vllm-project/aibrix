@@ -153,8 +153,7 @@ Create the name of the metadata service service account
 {{/* Listener patches for the rendered HTTP connection manager (after any connection limiter). */}}
 {{- define "aibrix.gateway.listenerPatches" -}}
 {{- $name := printf "%s/%s-eg/%s" .root.Release.Namespace (include "aibrix.fullname" .root) .listener -}}
-{{- $index := ternary 1 0 (gt (int .root.Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0) -}}
-{{- $hcm := printf "%s/filters/%d/typed_config" .chain $index -}}
+{{- $hcm := printf "%s/filters/%d/typed_config" .chain .index -}}
 - type: type.googleapis.com/envoy.config.listener.v3.Listener
   name: {{ $name }}
   operation:
