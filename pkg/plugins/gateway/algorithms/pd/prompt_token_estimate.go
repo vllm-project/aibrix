@@ -60,9 +60,10 @@ func loadPromptTokenEstimateConfig() promptTokenEstimateConfig {
 
 // EstimatePromptTokens estimates the prompt length of a request from its body
 // size when no token count is available. Text-only requests keep the original
-// one-token-per-four-bytes heuristic. For chat content parts, the media URL or
-// inline payload is removed from the byte count and a configurable per-part
-// token estimate is added instead.
+// one-token-per-four-bytes heuristic. Chat media parts and Responses input_image
+// parts have their URL or inline payload removed from the byte count and a
+// configurable per-part token estimate added instead. Other media shapes,
+// including Responses input_file, keep the body-byte fallback (tracked in #3662).
 func EstimatePromptTokens(reqBody []byte) int {
 	return estimatePromptTokensWithConfig(reqBody, defaultPromptTokenEstimateConfig)
 }
@@ -79,34 +80,55 @@ func estimatePromptTokensWithConfig(reqBody []byte, cfg promptTokenEstimateConfi
 	if len(reqBody) == 0 {
 		return 0
 	}
-	if !hasChatMediaPayload(reqBody) {
+	if !hasMediaPayload(reqBody) {
 		return len(reqBody) / bytesPerTokenEstimate
 	}
-
-	messages := gjsonFieldNoCopy(reqBody, "messages")
-	if !messages.IsArray() {
+	if !gjson.ValidBytes(reqBody) {
 		return len(reqBody) / bytesPerTokenEstimate
 	}
 
 	mediaBytes, mediaTokens := 0, 0
-	messages.ForEach(func(_, message gjson.Result) bool {
-		content := message.Get("content")
+	addPart := func(part gjson.Result) {
+		field, tokens := mediaPayload(part, cfg)
+		if !field.Exists() || field.Type != gjson.String || len(field.Raw) <= 2 {
+			return
+		}
+		// Raw includes the JSON quotes and any escaping, so it is exactly
+		// the number of request-body bytes this payload occupies.
+		mediaBytes += len(field.Raw)
+		mediaTokens += tokens
+	}
+	scanContent := func(content gjson.Result) {
 		if !content.IsArray() {
-			return true
+			return
 		}
 		content.ForEach(func(_, part gjson.Result) bool {
-			field, tokens := mediaPayload(part, cfg)
-			if !field.Exists() || field.Type != gjson.String || len(field.Raw) <= 2 {
-				return true
-			}
-			// Raw includes the JSON quotes and any escaping, so it is exactly
-			// the number of request-body bytes this payload occupies.
-			mediaBytes += len(field.Raw)
-			mediaTokens += tokens
+			addPart(part)
 			return true
 		})
-		return true
-	})
+	}
+
+	messages := gjsonFieldNoCopy(reqBody, "messages")
+	if messages.IsArray() {
+		messages.ForEach(func(_, message gjson.Result) bool {
+			scanContent(message.Get("content"))
+			return true
+		})
+	}
+
+	// Responses API input can be a direct content-part array or message items
+	// with their own content arrays.
+	input := gjsonFieldNoCopy(reqBody, "input")
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			if item.Get("type").String() == "input_image" {
+				addPart(item)
+				return true
+			}
+			scanContent(item.Get("content"))
+			return true
+		})
+	}
 
 	if mediaBytes == 0 {
 		return len(reqBody) / bytesPerTokenEstimate
@@ -118,15 +140,16 @@ func estimatePromptTokensWithConfig(reqBody []byte, cfg promptTokenEstimateConfi
 	return textBytes/bytesPerTokenEstimate + mediaTokens
 }
 
-// hasChatMediaPayload keeps the common text-only path out of the JSON walk.
+// hasMediaPayload keeps the common text-only path out of the JSON walk.
 // A false positive only costs one parse; the walk below checks the actual
-// messages[].content[] parts, so text that merely mentions a media key is not
-// treated as media.
-func hasChatMediaPayload(body []byte) bool {
-	if !bytes.Contains(body, []byte(`"messages"`)) {
+// messages[].content[] and Responses input parts, so text that merely mentions
+// a media key is not treated as media.
+func hasMediaPayload(body []byte) bool {
+	if !bytes.Contains(body, []byte(`"messages"`)) && !bytes.Contains(body, []byte(`"input"`)) {
 		return false
 	}
 	return bytes.Contains(body, []byte(`"image_url"`)) ||
+		bytes.Contains(body, []byte(`"input_image"`)) ||
 		bytes.Contains(body, []byte(`"audio_url"`)) ||
 		bytes.Contains(body, []byte(`"input_audio"`)) ||
 		bytes.Contains(body, []byte(`"video_url"`))
@@ -135,6 +158,8 @@ func hasChatMediaPayload(body []byte) bool {
 func mediaPayload(part gjson.Result, cfg promptTokenEstimateConfig) (gjson.Result, int) {
 	switch part.Get("type").String() {
 	case "image_url":
+		return getMediaField(part, "image_url"), max(cfg.imageTokens, 0)
+	case "input_image":
 		return getMediaField(part, "image_url"), max(cfg.imageTokens, 0)
 	case "audio_url":
 		return getMediaField(part, "audio_url"), max(cfg.audioTokens, 0)
