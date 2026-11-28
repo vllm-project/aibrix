@@ -180,6 +180,23 @@ func hasSamePodMetricIdentity(oldPod, newPod *v1.Pod) bool {
 		oldModelName == newModelName && oldOk == newOk && isWorkerPod(oldPod) == isWorkerPod(newPod)
 }
 
+func (c *Store) addUpdatedPodLocked(oldMetaPod *Pod, newPod *v1.Pod, sameMetricIdentity bool, claimMetrics map[string]*modelClaimMetricsTarget) (*Pod, bool) {
+	invalidateCounters := oldMetaPod != nil && sameMetricIdentity &&
+		(!maps.Equal(metrics.DefaultMetricLabels(oldMetaPod.Pod, nil), metrics.DefaultMetricLabels(newPod, nil)) ||
+			(oldMetaPod.claimMetrics == nil) != (claimMetrics == nil))
+	if invalidateCounters {
+		c.deletePodCounterMetrics(oldMetaPod)
+	}
+	metaPod, flakyReAdd := c.addPodLocked(newPod, claimMetrics)
+	if oldMetaPod != nil && sameMetricIdentity {
+		copyPodMetricInventory(oldMetaPod, metaPod)
+		if invalidateCounters {
+			clearPodCounterRecords(metaPod)
+		}
+	}
+	return metaPod, flakyReAdd
+}
+
 func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
@@ -259,19 +276,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	// Add new mappings if present
 	if newHasModelInfo && !newIsWorker {
 		claimMetrics := c.reconcileModelClaimMetrics(oldMetaPod, newPod, newModelClaims)
-		invalidateCounters := oldMetaPod != nil && sameMetricIdentity &&
-			(!maps.Equal(metrics.DefaultMetricLabels(oldMetaPod.Pod, nil), metrics.DefaultMetricLabels(newPod, nil)) ||
-				(oldMetaPod.claimMetrics == nil) != (claimMetrics == nil))
-		if invalidateCounters {
-			c.deletePodCounterMetrics(oldMetaPod)
-		}
-		metaPod, flakyReAdd := c.addPodLocked(newPod, claimMetrics)
-		if oldMetaPod != nil && sameMetricIdentity {
-			copyPodMetricInventory(oldMetaPod, metaPod)
-			if invalidateCounters {
-				clearPodCounterRecords(metaPod)
-			}
-		}
+		metaPod, flakyReAdd := c.addUpdatedPodLocked(oldMetaPod, newPod, sameMetricIdentity, claimMetrics)
 		if flakyReAdd {
 			listeners = c.podLifecycleListenersLocked()
 		}
