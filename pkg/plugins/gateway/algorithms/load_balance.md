@@ -69,25 +69,35 @@ asserted in `TestLoadBalanceScoreAll_HeterogeneousExample`.
 
 `running / capacity` alone equalizes each replica's backlog in seconds. On a mixed pool that
 sends a slow replica a request whenever the fast one carries capacity-ratio times as many, so the
-slow replica is kept busy at its own pace and its latency ends up in the p95.
-
-Measured on #3491 with one replica about 4.5x faster per request than the other (one shared GPU,
-32-token answers, closed-loop clients, 180 s):
-
-| clients | `running / capacity` | `running / capacity²` | total-rate signal, same day |
-|---|---|---|---|
-| 4 | 2437, 2524 requests · p95 0.75–0.77 s | 3042, 3085 · 0.72–0.73 s | 2523, 2477 · 0.77 s |
-| 8 | 5448, 5313 · 0.78 s | 6258, 6251 · 0.65 s | 4754, 4667 · 0.80–0.81 s |
-| 16 | 9495, 9419 · 0.85–0.86 s | 11985, 11823 · 0.34–0.35 s | 9024, 9723 · 0.73–0.84 s |
+slow replica is kept busy at its own pace.
 
 - The total-rate signal used before favoured the fast replica more strongly than its per-request
   speed, because a pod's total rate is its requests in flight times its per-request rate. Squaring
-  the per-request rate gives that preference without the traffic a pod happened to receive in it.
-  That traffic is also why the total-rate column moves from run to run and from day to day.
+  the per-request rate keeps that preference without the traffic a pod happened to receive in it.
 - Two identical replicas score by load alone at any exponent, so the exponent does not bring back
-  the lock-in of #3450: after an idle start, a Ready gap and a restart they stayed at 47–53%.
+  the lock-in of #3450: after an idle start, a Ready gap and a restart they stayed at 47–53% over
+  60–180 s.
 - `AIBRIX_LOAD_BALANCE_CAPACITY_EXPONENT` changes β. `1` sends slower replicas more of the load.
   It is not applied to `AIBRIX_LOAD_BALANCE_CAPACITY_SIGNAL=total`, which is scored as before.
+
+**What was measured.** One replica about 4.5x faster per request than the other (one shared GPU,
+32-token answers, closed-loop clients, 180 s), requests completed. The gateway pod's routing
+latency decides more than the score does: a request that has been given a pod but is still in
+routing is not yet in the running count, so on a gateway that takes 10–26 ms to route, later
+decisions read the slow replica as idle and choose it again. Runs are therefore grouped by the
+routing latency (p50) of the gateway pod they ran on:
+
+| clients | about 3 ms: `running / capacity²` | about 3 ms: total rate | 10–26 ms: `running / capacity²` | 10–26 ms: `running / capacity` | 10–26 ms: total rate |
+|---|---|---|---|---|---|
+| 4 | 3042, 3085 | 2861, 2766 | 2352, 2382 | 2437, 2524 | 2523, 2477 |
+| 8 | 6258, 6251 | 6164, 6110, 6235, 6086 | 4873, 4571, 5487, 5230 | 5448, 5313 | 4754, 4667 |
+| 16 | 11985, 11823 | 11533, 11815 | 8965, 8768 | 9495, 9419 | 9024, 9723 |
+
+- Within a group no difference between the scores was found. The columns of a group come from
+  different days and images, and `running / capacity` did not run on a gateway with about 3 ms,
+  so this table does not rank the scores (#3491).
+- Every run on a gateway with about 3 ms completed more than every run with 10–26 ms at the same
+  client count, by 10–37%.
 
 ## Where the capacity signal comes from
 

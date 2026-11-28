@@ -382,16 +382,17 @@ const (
 	// With the per-request rate as capacity, the score is load / capacity^2.
 	//
 	// load / capacity alone sends a slow replica a request whenever the fast one carries
-	// capacity-ratio times as many, which keeps the slow replica busy at its own pace. On a pair
-	// where one replica was about 4.5x faster per request, that cost 16-24% of the throughput
-	// the total-rate signal gave, and put the slow replica's latency into the p95 (#3491).
+	// capacity-ratio times as many, which keeps the slow replica busy at its own pace.
 	//
-	// The total-rate signal did better there because a pod's total rate is its requests in
-	// flight times its per-request rate: the speed is in it twice, once through how many
-	// requests the pod was sent. Squaring the per-request rate gives the same preference for the
-	// faster replica without the traffic a pod happened to receive in it. Measured on that pair
-	// with 4, 8 and 16 clients, load / capacity^2 completed 22-33% more requests than the total
-	// rate did the same day, and two identical replicas stayed within 47-53% of each other.
+	// The total-rate signal preferred the fast replica more strongly than that, because a pod's
+	// total rate is its requests in flight times its per-request rate: the speed is in it twice,
+	// once through how many requests the pod was sent. Squaring the per-request rate keeps that
+	// preference without the traffic a pod happened to receive in it, which is what let the
+	// estimate follow the traffic share (#3450).
+	//
+	// The exponent is not chosen for a throughput gain: on a pair where one replica was about 4.5x
+	// faster per request, no difference from the total rate was found once the runs were compared
+	// on gateway pods with the same routing latency (load_balance.md has the numbers).
 	//
 	// Replicas with equal estimates score by load alone at any exponent.
 	loadBalanceCapacityExponentDefault = 2.0
