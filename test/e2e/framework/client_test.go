@@ -27,8 +27,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 func TestNewRequestIDIsNonEmptyAndUnique(t *testing.T) {
@@ -156,8 +159,9 @@ func TestStableAdapterInference(t *testing.T) {
 		{"upstream unavailable", http.StatusServiceUnavailable, routeError, false, "503"},
 		{"other routing error", http.StatusServiceUnavailable, externalError, true, "503"},
 		{"unexpected gateway error", http.StatusInternalServerError, "upstream failed", true, "upstream failed"},
+		{"empty gateway error", http.StatusInternalServerError, "", false, "500"},
 		{"wrong adapter", http.StatusOK, wrongAdapter, false, `returned model "a"`},
-		{"empty choices", http.StatusOK, `{"model":"b","choices":[]}`, false, "no choices"},
+		{"empty choices", http.StatusOK, `{"model":"b","choices":[]}`, false, "returned no choices"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -200,9 +204,14 @@ func TestStableAdapterInference(t *testing.T) {
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
 				require.ErrorContains(t, err, probe)
+				var probeErr *inferenceProbeError
+				require.ErrorAs(t, err, &probeErr)
+				require.Equal(t, probe, probeErr.probe)
 				if tc.status >= 400 {
 					require.ErrorContains(t, err, "plugin-id")
 					require.ErrorContains(t, err, "envoy-id")
+				} else {
+					require.EqualError(t, err, fmt.Sprintf("inference for b (%s): %s", probe, tc.wantErr))
 				}
 				return
 			}
@@ -212,6 +221,116 @@ func TestStableAdapterInference(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, want, ready)
 			}
+		})
+	}
+}
+
+func TestFindProbeAccessLog(t *testing.T) {
+	const probe = "aibrix-e2e/x"
+	const match = `{"user-agent":"aibrix-e2e/x","response_code":500,"response_code_details":"direct_response",` +
+		`"response_flags":"-","route_name":"adapter","upstream_cluster":"-"}`
+	for _, tc := range []struct {
+		name string
+		logs string
+		want string
+	}{
+		{"exact match", match, match},
+		{"prefix is not a match", `{"user-agent":"aibrix-e2e/x-other"}`, ""},
+		{"probe in another field", `{"user-agent":"other","path":"aibrix-e2e/x"}`, ""},
+		{"non-JSON lines", "aibrix-e2e/x\ninvalid JSON\n" + match, match},
+		{"multiple access logs", `{"user-agent":"other"}` + "\n" + match + "\n" + `{"user-agent":"later"}`, match},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line, found := findProbeAccessLog([]byte(tc.logs), probe)
+			require.Equal(t, tc.want != "", found)
+			require.Equal(t, tc.want, line)
+		})
+	}
+}
+
+func TestWaitForEnvoyProbeLog(t *testing.T) {
+	const probe = "aibrix-e2e/x"
+	const match = `{"user-agent":"aibrix-e2e/x","response_code":500}`
+	for _, tc := range []struct {
+		name     string
+		appears  bool
+		logError bool
+	}{
+		{"delayed access log", true, false},
+		{"missing access log", false, false},
+		{"log read error before list error", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var lists, reads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/pods":
+					const selector = "gateway.envoyproxy.io/owning-gateway-namespace=gateway-test," +
+						"gateway.envoyproxy.io/owning-gateway-name=aibrix-eg"
+					if got := r.URL.Query().Get("labelSelector"); got != selector {
+						t.Errorf("pod selector: got %q, want %q", got, selector)
+					}
+					n := lists.Add(1)
+					if tc.logError && n > 3 {
+						http.Error(w, "pod list access denied", http.StatusForbidden)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if n == 1 {
+						_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"PodList","items":[]}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"PodList","items":[`+
+						`{"metadata":{"namespace":"envoy-system","name":"proxy"}}]}`)
+				case "/api/v1/namespaces/envoy-system/pods/proxy/log":
+					for key, want := range map[string]string{"container": "envoy", "sinceSeconds": "300", "tailLines": "1000"} {
+						if got := r.URL.Query().Get(key); got != want {
+							t.Errorf("log option %s: got %q, want %q", key, got, want)
+						}
+					}
+					n := reads.Add(1)
+					if tc.logError {
+						http.Error(w, "log access denied", http.StatusForbidden)
+						return
+					}
+					if tc.appears && n >= 2 {
+						_, _ = io.WriteString(w, match)
+						return
+					}
+					_, _ = io.WriteString(w, `{"user-agent":"aibrix-e2e/x-other"}`)
+				default:
+					t.Errorf("unexpected request path %q", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL, QPS: -1})
+			require.NoError(t, err)
+			timeout := 50 * time.Millisecond
+			if tc.appears {
+				timeout = time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			start := time.Now()
+			pod, line, err := waitForEnvoyProbeLog(ctx, client, "gateway-test", probe, 5*time.Millisecond)
+			if tc.appears {
+				require.NoError(t, err)
+				require.Equal(t, "envoy-system/proxy", pod)
+				require.Equal(t, match, line)
+			} else {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.Empty(t, pod)
+				require.Empty(t, line)
+				require.Less(t, time.Since(start), time.Second)
+				if tc.logError {
+					require.ErrorContains(t, err, "log access denied")
+					require.ErrorContains(t, err, "pod list access denied")
+					require.ErrorContains(t, err, "envoy-system/proxy")
+				}
+			}
+			require.GreaterOrEqual(t, reads.Load(), int32(2))
+			require.GreaterOrEqual(t, lists.Load(), int32(3))
 		})
 	}
 }
