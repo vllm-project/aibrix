@@ -444,17 +444,26 @@ func filterUpdatedPods(pods []*v1.Pod, templateHash string) (updated []*v1.Pod, 
 
 func sortPodsByActive(pods []*v1.Pod) {
 	sort.Slice(pods, func(i, j int) bool {
-		if !podutil.IsPodActive(pods[i]) {
-			return true
-		} else if !podutil.IsPodActive(pods[j]) {
+		// Compare each property only when it differs between the two pods.
+		// Returning true whenever pods[i] is in a state (e.g. both inactive, or
+		// both active-but-not-ready) would make less(i,j) and less(j,i) both
+		// true, which breaks the strict weak ordering sort.Slice requires.
+		if podutil.IsPodActive(pods[i]) != podutil.IsPodActive(pods[j]) {
+			return !podutil.IsPodActive(pods[i]) // inactive pods first
+		}
+		if podutil.IsPodReady(pods[i]) != podutil.IsPodReady(pods[j]) {
+			return !podutil.IsPodReady(pods[i]) // not-ready pods first
+		}
+		if pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp) {
 			return false
 		}
-		if !podutil.IsPodReady(pods[i]) {
+		if pods[j].CreationTimestamp.Before(&pods[i].CreationTimestamp) {
 			return true
-		} else if !podutil.IsPodReady(pods[j]) {
-			return false
 		}
-		return !pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp)
+		// Deterministic tie-break: pods created in the same second would
+		// otherwise let the informer cache's list order decide which one is
+		// picked, so a later pass could pick a different pod. Break ties by name.
+		return pods[i].Name < pods[j].Name
 	})
 }
 
