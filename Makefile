@@ -239,7 +239,7 @@ python-ci:
 .PHONY: build
 build: manifests generate fmt vet ## Build manager and gateway-plugins binaries.
 	go build -o bin/manager cmd/controllers/main.go
-	go build -o bin/gateway-plugins cmd/plugins/main.go
+	go build -o bin/gateway-plugins ./cmd/plugins
 
 .PHONY: build-controller-manager
 build-controller-manager: manifests generate fmt vet ## Build controller-manager binary without ZMQ.
@@ -251,11 +251,11 @@ build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binar
 	CGO_LDFLAGS='-lzmq -lsodium -lpthread -lm -lstdc++' \
 	go build -tags="zmq" \
 		-ldflags='-extldflags "$(CGO_LDFLAGS)"' \
-		-o bin/gateway-plugins cmd/plugins/main.go
+		-o bin/gateway-plugins ./cmd/plugins
 
 .PHONY: build-gateway-plugins-nozmq
 build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins binary without ZMQ (for standalone mode).
-	CGO_ENABLED=0 go build -tags="nozmq" -o bin/gateway-plugins cmd/plugins/main.go
+	CGO_ENABLED=0 go build -tags="nozmq" -o bin/gateway-plugins ./cmd/plugins
 
 .PHONY: build-console
 build-console: ## Build console API server binary.
