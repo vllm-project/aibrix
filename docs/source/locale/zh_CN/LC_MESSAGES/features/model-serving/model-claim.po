@@ -1124,6 +1124,38 @@ msgstr ""
 "``EngineFailed``，其 ``Scheduled`` 条件会说明它为何无法迁移。runtime "
 "snapshot 中该引擎的 ``last_error`` 说明了它崩溃的原因。"
 
+#: ../../source/features/model-serving/model-claim.rst:628
+msgid ""
+"An engine can also stay off the route without crashing, because it never "
+"gets ready or its KV limit does not take. The controller gives such an "
+"engine 30 minutes, and it measures that time in two ways. One count "
+"starts at the engine's last change of state, such as its start, getting "
+"ready or a restart, as the runtime agent reports it. The other starts "
+"when the controller first sees the engine off the route. The shorter "
+"count decides, so an engine that served for hours and then lost its route"
+" still gets the full 30 minutes. The controller keeps the second count in"
+" memory. A restart of the controller starts it over, which can only delay"
+" a timeout."
+msgstr ""
+"引擎也可能没有崩溃，却一直不在路由中，原因是它始终没有就绪，或者它的 KV "
+"上限没有生效。控制器给这样的引擎 30 分钟，并用两种方式计时。"
+"一种从引擎最近一次状态变化算起，例如启动、就绪或重启，以 runtime agent "
+"报告的为准。另一种从控制器第一次看到该引擎不在路由中时算起。"
+"以较短的计时为准，所以一个服务了几个小时后才离开路由的引擎，仍有完整的 30 "
+"分钟。控制器只在内存中保存第二种计时。控制器重启后，这个计时会重新开始，"
+"因此只会让超时来得更晚。"
+
+#: ../../source/features/model-serving/model-claim.rst:639
+msgid ""
+"When the time is up, the claim reads ``Failed`` and gets an "
+"``ActivationTimedOut`` Event. The controller then stops the engine and "
+"asks again until the runtime agent takes the stop. After that, if another"
+" Pod has room, the controller starts the claim there."
+msgstr ""
+"时限到了，claim 显示 ``Failed``，并得到一个 ``ActivationTimedOut`` Event。"
+"随后控制器停止该引擎，并反复请求，直到 runtime agent 接受停止。之后，"
+"如果另一个 Pod 有空间，控制器会在那里启动 claim。"
+
 #: ../../source/features/model-serving/model-claim.rst:519
 msgid ""
 "If the runtime agent crashes, its engines keep running. The image "
@@ -1310,11 +1342,13 @@ msgstr "``Failed``"
 
 #: ../../source/features/model-serving/model-claim.rst:595
 msgid ""
-"The engine failed permanently (``EngineFailed``), could not be started "
+"The engine failed permanently (``EngineFailed``), did not get on the "
+"route in time (``ActivationTimedOut``), could not be started "
 "(``ActivateFailed``) or is moving to another Pod (``Moving``), or the "
 "engine arguments are invalid (``InvalidEngineConfig``)."
 msgstr ""
-"引擎已永久失败（``EngineFailed``）、无法启动（``ActivateFailed``）"
+"引擎已永久失败（``EngineFailed``）、"
+"未能及时加入路由（``ActivationTimedOut``）、无法启动（``ActivateFailed``）"
 "或正在迁移到另一个 Pod（``Moving``），"
 "或者引擎参数无效（``InvalidEngineConfig``）。"
 
@@ -1835,6 +1869,12 @@ msgid ""
 msgstr ""
 "引擎可能仍在下载或加载模型。请查看 runtime agent 的日志，以及 runtime "
 "snapshot 中该引擎的 ``last_error``："
+
+#: ../../source/features/model-serving/model-claim.rst:934
+msgid ""
+"If the engine stays off the route past its timeout, the controller stops "
+"it, as `Failures`_ explains."
+msgstr "如果引擎超过时限仍不在路由中，控制器会停止它，详见 `故障`_。"
 
 #: ../../source/features/model-serving/model-claim.rst:807
 msgid "A Pod is turned away because an engine there \"answers to no claim\""

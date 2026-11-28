@@ -127,6 +127,10 @@ type ModelClaimReconciler struct {
 	// LimitWarnings remembers when each engine was last warned that its KV
 	// limit did not take. It is made on first use when unset.
 	LimitWarnings *limitWarningClock
+	// StuckActivations remembers when each instance was first seen stuck
+	// Activating, for the activation timeout. It is made on first use when
+	// unset.
+	StuckActivations *stuckActivations
 }
 
 func (r *ModelClaimReconciler) now() time.Time {
@@ -297,8 +301,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// and wake the sleeping engines a request has asked for.
 	booting, err := r.reconcileHealthAndWakes(ctx, pm, candidates, readings)
 	if err != nil {
-		// A move is written before its engine is touched. This one could not
-		// be, so the engine is as it was, and the next pass decides again.
+		// A move, or the failure of an instance that timed out, is written
+		// before its engine is touched. This one could not be, so the engine
+		// is as it was, and the next pass decides again.
 		return requeueOnConflict(err)
 	}
 	replacementFailed := false
@@ -410,15 +415,18 @@ func (r *ModelClaimReconciler) handleActivationError(
 // reconcileHealthAndWakes checks each instance's engine against what its
 // runtime reports, and then wakes the sleeping engines that a request has asked
 // for. It reports whether an engine boots, so that the claim is looked at again
-// soon. An error is a move that could not be written, and nothing was done to
-// its engine.
+// soon. An error is a move, or the failure of an instance that timed out, that
+// could not be written, and nothing was done to its engine.
 func (r *ModelClaimReconciler) reconcileHealthAndWakes(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	candidates []corev1.Pod,
 	readings *runtimeReadings,
 ) (bool, error) {
-	booting := r.reconcileInstanceHealth(ctx, pm, readings)
+	booting, err := r.reconcileInstanceHealth(ctx, pm, readings)
+	if err != nil {
+		return false, err
+	}
 	// An engine woken in this pass boots from now on, so the claim is looked
 	// at again as soon as a booting engine is.
 	woke, err := r.wakeRequested(ctx, pm, candidates, readings)
@@ -748,7 +756,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	// it replaces failed. The set is taken once: a replaced instance leaves the
 	// claim's list, and its pod has to stay out for the next replacement too.
 	alreadyOn := instancePods(pm)
-	failed := failedInstanceSlots(pm)
+	failed := r.replaceableFailedSlots(ctx, pm, readings)
 	// A failed engine is stopped once per pass, however many pods its
 	// replacement has to try.
 	stopped := map[string]bool{}
@@ -1452,7 +1460,9 @@ func placementStatesFrom(
 // controller never promotes an engine merely because its old status entry was
 // Active. A snapshot failure leaves the last known routing in place rather
 // than guessing that a live engine has disappeared. It reports whether it left
-// an instance Activating on an engine that is booting.
+// an instance Activating on an engine that is booting. An error is the failure
+// of an instance that timed out, which could not be written. Nothing was done
+// to its engine then.
 //
 // An engine that is taken off the route needs no such pace. Its pod's
 // annotation changes then. On a pod that carries both labels of its pool, that
@@ -1461,7 +1471,7 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	readings *runtimeReadings,
-) (booting bool) {
+) (booting bool, _ error) {
 	served := servedModelName(pm)
 	dropped := map[string]bool{}
 	for i := range pm.Status.Instances {
@@ -1486,6 +1496,12 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		observed := snapshotModelForClaim(snapshot, pm, served)
 		if footprint, known := sleepingFootprintOf(observed); known {
 			r.footprints().note(pm, footprint)
+		}
+		// An instance that timed out has its engine stopped once its failure is
+		// written. A stop the runtime did not take is asked again.
+		if inst.Phase == modelv1alpha1.ModelClaimFailed && inst.Reason == instanceReasonActivationTimedOut &&
+			engineToStop(observed) {
+			r.stopTimedOutEngine(ctx, pm, inst, pod, readings)
 		}
 
 		if engineMissing(inst, snapshot, observed) {
@@ -1514,6 +1530,15 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		booting = booting || state.booting
 		desiredPhase, routingPort := state.phase, state.routingPort
 		serving := state.serving
+		// An instance stuck past the activation timeout fails, so that a request
+		// can go to another instance, and then its engine is stopped.
+		if r.activationTimedOut(pm, inst, snapshot, observed, state) {
+			if err := r.failTimedOutInstance(ctx, pm, i, pod); err != nil {
+				return booting, err
+			}
+			r.stopTimedOutEngine(ctx, pm, &pm.Status.Instances[i], pod, readings)
+			continue
+		}
 
 		reason := ""
 		if desiredPhase == inst.Phase {
@@ -1542,7 +1567,7 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		// The claim needs another instance now, so its wait starts over.
 		r.backoff().startOver(types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name})
 	}
-	return booting
+	return booting, nil
 }
 
 // announcePhase raises the Event for an instance that has just changed phase.

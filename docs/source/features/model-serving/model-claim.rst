@@ -625,6 +625,21 @@ engine and starts the claim there at once. Otherwise, the claim reads
 cannot move. The engine's ``last_error`` in the runtime snapshot says why it
 crashed.
 
+An engine can also stay off the route without crashing, because it never gets
+ready or its KV limit does not take. The controller gives such an engine 30
+minutes, and it measures that time in two ways. One count starts at the
+engine's last change of state, such as its start, getting ready or a restart,
+as the runtime agent reports it. The other starts when the controller first
+sees the engine off the route. The shorter count decides, so an engine that
+served for hours and then lost its route still gets the full 30 minutes. The
+controller keeps the second count in memory. A restart of the controller starts
+it over, which can only delay a timeout.
+
+When the time is up, the claim reads ``Failed`` and gets an
+``ActivationTimedOut`` Event. The controller then stops the engine and asks
+again until the runtime agent takes the stop. After that, if another Pod has
+room, the controller starts the claim there.
+
 If the runtime agent crashes, its engines keep running. The image restarts the
 agent, which takes the engines back from ``/var/run/aibrix`` with their ports
 unchanged.
@@ -701,7 +716,8 @@ Status
    * - ``Sleeping``
      - The engine is asleep, and a request wakes it.
    * - ``Failed``
-     - The engine failed permanently (``EngineFailed``), could not be started
+     - The engine failed permanently (``EngineFailed``), did not get on the
+       route in time (``ActivationTimedOut``), could not be started
        (``ActivateFailed``) or is moving to another Pod (``Moving``), or the
        engine arguments are invalid (``InvalidEngineConfig``).
 
@@ -917,6 +933,9 @@ A claim stays ``Activating``
 
       kubectl logs <pod> -c aibrix-runtime
       kubectl exec <pod> -c aibrix-runtime -- curl -s localhost:8080/v1/runtime/snapshot
+
+   If the engine stays off the route past its timeout, the controller stops it,
+   as `Failures`_ explains.
 
 A Pod is turned away because an engine there "answers to no claim"
    The controller cannot tell what such an engine holds on the GPU, so it
