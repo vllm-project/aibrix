@@ -150,8 +150,9 @@ func TestEnvoyConfigExtProcDisabledOnNonInferenceRoutes(t *testing.T) {
 				if !assert.NotEmpty(t, r.Match.Prefix, "route without a prefix match in %s: extend envoyRoute to decode it", path) {
 					continue
 				}
-				// direct_response routes have no upstream response for ext_proc to parse; their
-				// request headers still go through ext_proc unless explicitly opted out per-route.
+				// direct_response routes have no cluster to look up here. ext_proc still sees
+				// Envoy's local reply unless the route opts out, so the health route is checked
+				// by TestEnvoyConfigHealthzRoute (#3640).
 				if r.Route == nil {
 					continue
 				}
@@ -200,31 +201,35 @@ func TestEnvoyConfigNoShadowedPrefixRoutes(t *testing.T) {
 	}
 }
 
-// TestEnvoyConfigStandaloneHealthzRoute simulates first-match prefix routing on
-// the standalone config for GET /healthz and verifies it lands on a direct_response
-// route with ext_proc disabled so /healthz reports Envoy's own readiness even when
-// both vllm_backend and gateway-plugins are unavailable (#3536).
-func TestEnvoyConfigStandaloneHealthzRoute(t *testing.T) {
-	vhs := loadEnvoyVirtualHosts(t, "../../../deployment/standalone/configs/envoy.yaml")
-	require.Len(t, vhs, 1)
+// TestEnvoyConfigHealthzRoute simulates first-match prefix routing for GET /healthz
+// on each config and verifies it lands on a direct_response route with ext_proc
+// disabled. Otherwise the gateway turns Envoy's own reply into a 500 (#3640), or
+// /healthz depends on vllm_backend and gateway-plugins being up (#3536).
+func TestEnvoyConfigHealthzRoute(t *testing.T) {
+	for _, path := range envoyConfigPaths {
+		t.Run(path, func(t *testing.T) {
+			vhs := loadEnvoyVirtualHosts(t, path)
+			require.Len(t, vhs, 1)
 
-	var matched *envoyRoute
-	for i := range vhs[0].Routes {
-		r := &vhs[0].Routes[i]
-		if r.prefixMatches("/healthz") {
-			// Fail rather than skipping if a prefix-matching route adds header/query/runtime
-			// constraints (e.g. present_match or invert_match) that this loop does not evaluate.
-			require.Falsef(t, r.hasExtraMatchConstraints(),
-				"route %d (prefix %q) matches /healthz with extra constraints this simulation cannot evaluate",
-				i, r.Match.Prefix)
-			matched = r
-			break
-		}
+			var matched *envoyRoute
+			for i := range vhs[0].Routes {
+				r := &vhs[0].Routes[i]
+				if r.prefixMatches("/healthz") {
+					// Fail rather than skipping if a prefix-matching route adds header/query/runtime
+					// constraints (e.g. present_match or invert_match) that this loop does not evaluate.
+					require.Falsef(t, r.hasExtraMatchConstraints(),
+						"route %d (prefix %q) matches /healthz with extra constraints this simulation cannot evaluate",
+						i, r.Match.Prefix)
+					matched = r
+					break
+				}
+			}
+
+			require.NotNil(t, matched, "no route matched /healthz")
+			assert.Equal(t, "/healthz", matched.Match.Prefix)
+			assert.Nil(t, matched.Route, "/healthz should return Envoy direct_response rather than proxying upstream")
+			assert.True(t, matched.TypedPerFilterConfig[extProcFilterName].Disabled,
+				"/healthz should disable ext_proc so Envoy reports healthy even when the gateway plugin is down")
+		})
 	}
-
-	require.NotNil(t, matched, "no route matched /healthz")
-	assert.Equal(t, "/healthz", matched.Match.Prefix)
-	assert.Nil(t, matched.Route, "/healthz should return Envoy direct_response rather than proxying upstream")
-	assert.True(t, matched.TypedPerFilterConfig[extProcFilterName].Disabled,
-		"/healthz should disable ext_proc so Envoy reports healthy even when the gateway plugin is down")
 }
