@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -92,7 +93,8 @@ func runEnvoyGeneratedFailureContracts(t *testing.T, version string) {
 				}
 			}
 			processor.current.Store(ex)
-			upstreamPort := reserveEnvoyPort(t)
+			ports := newEnvoyPortSet()
+			upstreamPort := ports.reserve(t)
 			if tc.name != "connect_refused" {
 				releaseUpstream := make(chan struct{})
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,13 +121,23 @@ func runEnvoyGeneratedFailureContracts(t *testing.T, version string) {
 				t.Cleanup(func() { close(releaseUpstream) })
 				upstreamPort = upstream.Listener.Addr().(*net.TCPAddr).Port
 			}
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			require.NoError(t, err)
+			listener := ports.listen(t)
 			server := grpc.NewServer()
 			extProcPb.RegisterExternalProcessorServer(server, processor)
 			go func() { _ = server.Serve(listener) }()
 			t.Cleanup(server.Stop)
-			endpoint := startTestEnvoy(t, image, listener.Addr().(*net.TCPAddr).Port, upstreamPort, version)
+			endpoint := startTestEnvoy(t, ports, image, listener.Addr().(*net.TCPAddr).Port, upstreamPort, version)
+			if tc.name == "connect_refused" {
+				// The contract needs this port to refuse connections. If another
+				// process claimed it after reservation, the 503 expectation is
+				// untestable on this run; fail loudly instead of asserting a
+				// misleading 502.
+				conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", upstreamPort), 500*time.Millisecond)
+				if dialErr == nil {
+					_ = conn.Close()
+					t.Fatalf("intended closed upstream port 127.0.0.1:%d was claimed by another process", upstreamPort)
+				}
+			}
 			client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: nil}}
 			t.Cleanup(client.CloseIdleConnections)
 			resp, err := client.Do(envoyChatRequest(t, endpoint, false))

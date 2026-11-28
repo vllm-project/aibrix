@@ -68,7 +68,7 @@ func TestEnvoyStreamedUpstreamErrors(t *testing.T) {
 	extProcPb.RegisterExternalProcessorServer(grpcServer, processor)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
-	endpoint := startTestEnvoy(t, image, listener.Addr().(*net.TCPAddr).Port, upstream.Listener.Addr().(*net.TCPAddr).Port, "")
+	endpoint := startTestEnvoy(t, newEnvoyPortSet(), image, listener.Addr().(*net.TCPAddr).Port, upstream.Listener.Addr().(*net.TCPAddr).Port, "")
 	client := &http.Client{Timeout: 8 * time.Second, Transport: &http.Transport{Proxy: nil}}
 	t.Cleanup(client.CloseIdleConnections)
 	const nested = `{"error":{"message":"invalid parameter","type":"invalid_request_error","param":"top_p","code":400}}`
@@ -296,17 +296,73 @@ func envoyDockerCommand(args ...string) *exec.Cmd {
 	}
 	return cmd
 }
-func reserveEnvoyPort(t *testing.T) int {
+
+// envoyPortSet tracks the ports one test has reserved or bound. A port freed
+// by a bind-close reservation stays immediately assignable by the OS, so the
+// next :0 listen can claim it; the set keeps a test from handing one port to
+// two consumers (observed as a 502-instead-of-503 envoy-contracts CI failure
+// when the ext_proc listener claimed the intended closed upstream port).
+type envoyPortSet struct{ taken map[int]struct{} }
+
+func newEnvoyPortSet() *envoyPortSet { return &envoyPortSet{taken: map[int]struct{}{}} }
+
+// reserve returns a currently-free port that no other allocation from this
+// set has taken. The port is released again for the caller's later use.
+func (s *envoyPortSet) reserve(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := l.Addr().(*net.TCPAddr).Port
-	require.NoError(t, l.Close())
-	return port
+	for {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := l.Addr().(*net.TCPAddr).Port
+		require.NoError(t, l.Close())
+		if _, dup := s.taken[port]; dup {
+			continue
+		}
+		s.taken[port] = struct{}{}
+		return port
+	}
 }
-func startTestEnvoy(t *testing.T, image string, extProcPort, upstreamPort int, expectedVersion string) string {
+
+// listen returns a held listener on a port the set has not taken.
+func (s *envoyPortSet) listen(t *testing.T) net.Listener {
 	t.Helper()
-	port, admin := reserveEnvoyPort(t), reserveEnvoyPort(t)
+	for {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := l.Addr().(*net.TCPAddr).Port
+		if _, dup := s.taken[port]; dup {
+			require.NoError(t, l.Close())
+			continue
+		}
+		s.taken[port] = struct{}{}
+		return l
+	}
+}
+
+func TestEnvoyPortSetKeepsReservedPortsDistinct(t *testing.T) {
+	s := newEnvoyPortSet()
+	seen := make(map[int]struct{}, 256)
+	for i := 0; i < 200; i++ {
+		p := s.reserve(t)
+		if _, dup := seen[p]; dup {
+			t.Fatalf("reserve returned duplicate port %d", p)
+		}
+		seen[p] = struct{}{}
+	}
+	closed := s.reserve(t)
+	l := s.listen(t)
+	defer l.Close()
+	require.NotEqual(t, closed, l.Addr().(*net.TCPAddr).Port,
+		"a held listener must never claim a port reserved as closed")
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", closed), 200*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("reserved closed port %d accepted a connection", closed)
+	}
+}
+func startTestEnvoy(t *testing.T, ports *envoyPortSet, image string, extProcPort, upstreamPort int, expectedVersion string) string {
+	t.Helper()
+	port, admin := ports.reserve(t), ports.reserve(t)
 	config := fmt.Sprintf(`admin:
   address:
     socket_address: {address: 127.0.0.1, port_value: %d}
