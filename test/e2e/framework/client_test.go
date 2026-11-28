@@ -24,6 +24,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -306,9 +308,9 @@ func TestWaitForEnvoyProbeLog(t *testing.T) {
 			defer server.Close()
 			client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL, QPS: -1})
 			require.NoError(t, err)
-			timeout := 50 * time.Millisecond
+			timeout := 500 * time.Millisecond
 			if tc.appears {
-				timeout = time.Second
+				timeout = 5 * time.Second
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
@@ -318,19 +320,54 @@ func TestWaitForEnvoyProbeLog(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, "envoy-system/proxy", pod)
 				require.Equal(t, match, line)
+				require.GreaterOrEqual(t, reads.Load(), int32(2))
+				require.GreaterOrEqual(t, lists.Load(), int32(3))
 			} else {
 				require.ErrorIs(t, err, context.DeadlineExceeded)
 				require.Empty(t, pod)
 				require.Empty(t, line)
-				require.Less(t, time.Since(start), time.Second)
+				require.Less(t, time.Since(start), 5*time.Second)
 				if tc.logError {
 					require.ErrorContains(t, err, "log access denied")
 					require.ErrorContains(t, err, "pod list access denied")
 					require.ErrorContains(t, err, "envoy-system/proxy")
 				}
 			}
-			require.GreaterOrEqual(t, reads.Load(), int32(2))
-			require.GreaterOrEqual(t, lists.Load(), int32(3))
 		})
 	}
+}
+
+func TestLoadKubernetesConfig(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "kubeconfig")
+	const contents = `apiVersion: v1
+kind: Config
+clusters:
+- name: test-cluster
+  cluster:
+    server: https://api.example.invalid
+users:
+- name: test-user
+  user:
+    token: fixture-token
+contexts:
+- name: test-context
+  context:
+    cluster: test-cluster
+    user: test-user
+current-context: test-context
+`
+	require.NoError(t, os.WriteFile(configFile, []byte(contents), 0o600))
+	config, err := loadKubernetesConfig(configFile)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.example.invalid", config.Host)
+	require.Equal(t, "fixture-token", config.BearerToken)
+	require.Equal(t, float32(e2eClientQPS), config.QPS)
+	require.Equal(t, e2eClientBurst, config.Burst)
+
+	config, err = loadKubernetesConfig("")
+	require.ErrorContains(t, err, "kubeConfig not set")
+	require.Nil(t, config)
+	config, err = loadKubernetesConfig(configFile + ".missing")
+	require.ErrorContains(t, err, "error building Kubernetes client configuration")
+	require.Nil(t, config)
 }

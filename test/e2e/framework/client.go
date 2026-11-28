@@ -145,20 +145,27 @@ const (
 
 func buildKubernetesConfig(t *testing.T) *rest.Config {
 	kubeConfig := os.Getenv("KUBECONFIG")
-	if kubeConfig == "" {
-		t.Fatal("kubeConfig not set")
+	config, err := loadKubernetesConfig(kubeConfig)
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Logf("using configuration from '%s'\n", kubeConfig)
+	return config
+}
 
+func loadKubernetesConfig(kubeConfig string) (*rest.Config, error) {
+	if kubeConfig == "" {
+		return nil, errors.New("kubeConfig not set")
+	}
 	config, err := clientcmd.BuildConfigFromFlags("", kubeConfig)
 	if err != nil {
-		t.Fatalf("error building Kubernetes client configuration: %v", err)
+		return nil, fmt.Errorf("error building Kubernetes client configuration: %w", err)
 	}
 	// Informers and recorder Pod-proxy queries share this client. Keep recorder
 	// polling from exhausting client-go's default low QPS token bucket.
 	config.QPS = e2eClientQPS
 	config.Burst = e2eClientBurst
-	return config
+	return config, nil
 }
 
 // InitializeKubernetesClient creates a client for tests that only need direct API calls.
@@ -315,7 +322,7 @@ func WaitForStableAdapterInference(t *testing.T, firstModel, secondModel string)
 	elapsed := time.Since(start)
 	var probeErr *inferenceProbeError
 	if errors.As(err, &probeErr) {
-		// Cleanup can run before Envoy flushes the failed request's access log.
+		// The caller's cleanup reads each log once. Poll for this probe first.
 		captureEnvoyProbeLog(t, config.GatewayNamespace, probeErr.probe)
 	}
 	require.NoError(t, err, "waiting for adapters %s and %s after %s", firstModel, secondModel, elapsed)
@@ -503,14 +510,9 @@ func waitForEnvoyProbeLog(
 
 func captureEnvoyProbeLog(t *testing.T, namespace, probe string) {
 	t.Helper()
-	kubeConfig := os.Getenv("KUBECONFIG")
-	if kubeConfig == "" {
-		t.Logf("cannot capture Envoy access log for probe %s: KUBECONFIG not set", probe)
-		return
-	}
-	config, err := clientcmd.BuildConfigFromFlags("", kubeConfig)
+	config, err := loadKubernetesConfig(os.Getenv("KUBECONFIG"))
 	if err != nil {
-		t.Logf("cannot capture Envoy access log for probe %s: building Kubernetes config: %v", probe, err)
+		t.Logf("cannot capture Envoy access log for probe %s: %v", probe, err)
 		return
 	}
 	client, err := kubernetes.NewForConfig(config)
@@ -523,7 +525,8 @@ func captureEnvoyProbeLog(t *testing.T, namespace, probe string) {
 	defer cancel()
 	pod, line, err := waitForEnvoyProbeLog(ctx, client, namespace, probe, 500*time.Millisecond)
 	if err != nil {
-		t.Logf("Envoy access log for probe %s not found within %s: %v", probe, timeout, err)
+		t.Logf("Envoy access log for probe %s not found within %s: %v. "+
+			"The entry may be delayed, never emitted, or outside the retained log window.", probe, timeout, err)
 		return
 	}
 	t.Logf("Envoy access log for probe %s from pod %s:\n%s", probe, pod, line)
