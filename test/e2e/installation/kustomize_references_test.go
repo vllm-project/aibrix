@@ -174,7 +174,6 @@ func objectString(t *testing.T, object map[string]interface{}, fields ...string)
 	return value
 }
 
-
 // extensionPolicyTarget returns the name of the HTTPRoute an EnvoyExtensionPolicy
 // targets. The checkout dependency stack (Envoy Gateway v1.9) uses the targetRefs
 // list, while manifests rendered for the released v1.2 stack still carry the
