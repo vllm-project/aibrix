@@ -109,6 +109,12 @@ const (
 	// while idle engines are put to sleep to make room for it. The gateway
 	// tells a client how long to wait by it as well.
 	ModelClaimReasonMakingRoom = "MakingRoom"
+
+	// ModelClaimReasonModelNameInUse is the reason of a claim's Scheduled
+	// condition while another claim in its namespace keeps its model name. The
+	// gateway answers for the name with another claim that serves it, if there
+	// is one.
+	ModelClaimReasonModelNameInUse = "ModelNameInUse"
 )
 
 const (

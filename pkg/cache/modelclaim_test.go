@@ -269,6 +269,26 @@ func TestModelClaimStatusFallsBackToTheClaimName(t *testing.T) {
 	assert.True(t, found)
 }
 
+// Two claims serve one name, and the controller keeps the second waiting for
+// it. The claim that keeps the name answers for it, whatever the order of
+// their names.
+func TestModelClaimStatusPassesOverAClaimThatWaitsForItsName(t *testing.T) {
+	c := NewForTest()
+	waiting := pendingModelClaim("default", "aaa-claim", "qwen")
+	waiting.Status.Conditions[0].Reason = constants.ModelClaimReasonModelNameInUse
+	handleDiscoveryObject(c, discovery.EventAdd, waiting, nil)
+	_, reason, found := c.ModelClaimStatus("qwen")
+	require.True(t, found)
+	assert.Equal(t, constants.ModelClaimReasonModelNameInUse, reason, "alone, the waiting claim answers")
+
+	keeper := pendingModelClaim("default", "zzz-claim", "qwen")
+	keeper.Status.Conditions[0].Reason = constants.ModelClaimReasonTooLargeForAnyCard
+	handleDiscoveryObject(c, discovery.EventAdd, keeper, nil)
+	_, reason, found = c.ModelClaimStatus("qwen")
+	require.True(t, found)
+	assert.Equal(t, constants.ModelClaimReasonTooLargeForAnyCard, reason)
+}
+
 func TestModelClaimStatusFollowsUpdatesAndDeletion(t *testing.T) {
 	c := NewForTest()
 	pending := pendingModelClaim("default", "qwen-claim", "qwen")

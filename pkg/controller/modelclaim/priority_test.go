@@ -123,7 +123,7 @@ func TestPriorityEligibleRejectsIneligibleClaims(t *testing.T) {
 			claim := priorityTestClaim("claim", 0, time.Unix(1_700_000_000, 0))
 			tt.mutate(claim)
 
-			assert.False(t, priorityEligible(claim, []corev1.Pod{*pod}))
+			assert.False(t, priorityEligible(claim, nil, []corev1.Pod{*pod}))
 		})
 	}
 }
@@ -132,7 +132,7 @@ func TestPriorityEligibleAcceptsUnplacedValidClaim(t *testing.T) {
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
 	claim := priorityTestClaim("claim", 0, time.Unix(1_700_000_000, 0))
 
-	assert.True(t, priorityEligible(claim, []corev1.Pod{*pod}))
+	assert.True(t, priorityEligible(claim, nil, []corev1.Pod{*pod}))
 }
 
 func priorityTestClaim(name string, priority int32, created time.Time) *modelv1alpha1.ModelClaim {
