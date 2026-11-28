@@ -20,6 +20,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,16 +54,16 @@ func TestLoadBalanceRoute_SelectsLowestEffectiveLoad(t *testing.T) {
 	// p3: 1 running / 1 = 1.0 — should win
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 4},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 4},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 		"p3": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 1},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -109,12 +110,12 @@ func TestLoadBalanceRoute_TiesBrokenRandomly(t *testing.T) {
 	// Both have identical score: 2 running / 2 tokens-per-sec = 1.0
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -140,16 +141,16 @@ func TestLoadBalanceRoute_TiesBrokenByLeastKvCache(t *testing.T) {
 	// cache pressure.
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
-			metrics.KVCacheUsagePerc:            &metrics.SimpleMetricValue{Value: 0.3},
-			metrics.CPUCacheUsagePerc:           &metrics.SimpleMetricValue{Value: 0.5},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.KVCacheUsagePerc:                         &metrics.SimpleMetricValue{Value: 0.3},
+			metrics.CPUCacheUsagePerc:                        &metrics.SimpleMetricValue{Value: 0.5},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
-			metrics.KVCacheUsagePerc:            &metrics.SimpleMetricValue{Value: 0.3},
-			metrics.CPUCacheUsagePerc:           &metrics.SimpleMetricValue{Value: 0.1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.KVCacheUsagePerc:                         &metrics.SimpleMetricValue{Value: 0.3},
+			metrics.CPUCacheUsagePerc:                        &metrics.SimpleMetricValue{Value: 0.1},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -170,12 +171,12 @@ func TestLoadBalanceRoute_ZeroTokenRateFallsBackToUniform(t *testing.T) {
 	// A token rate of 0 should be treated as unavailable and fall back to capacity 1.0
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 3},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 0},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 3},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 0},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 1},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 0},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 0},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -214,12 +215,12 @@ func TestLoadBalanceRoute_HeterogeneousGPUs(t *testing.T) {
 	}
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 8},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 4},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 8},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 4},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 3},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 3},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -237,12 +238,12 @@ func TestLoadBalanceScoreAll_ReturnsScoreForEachPod(t *testing.T) {
 	}
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 4},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 4},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 6},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 3},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 6},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 3},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -286,20 +287,20 @@ func TestLoadBalanceRoute_LoadImbalanceGateRestrictsCandidates(t *testing.T) {
 	// the light pods' score (2/1=2.0) on pure ScoreAll.
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"light-1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"light-2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"light-3": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"busy": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 20},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1000},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 20},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1000},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -324,12 +325,12 @@ func TestLoadBalanceRoute_TwoPodLoadImbalanceGateRestrictsToIdle(t *testing.T) {
 	// win on score (20/1000=0.02 vs idle 2/1=2.0).
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"idle": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"busy": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 20},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1000},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 20},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1000},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -347,7 +348,7 @@ func lbPodMetrics(running, capacity, kvUsage float64) map[string]metrics.MetricV
 		metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: running},
 	}
 	if capacity > 0 {
-		m[metrics.RealtimeOutputTokenRateEWMA] = &metrics.SimpleMetricValue{Value: capacity}
+		m[metrics.RealtimeOutputTokensPerRequestSecondEWMA] = &metrics.SimpleMetricValue{Value: capacity}
 	}
 	if kvUsage > 0 {
 		m[metrics.KVCacheUsagePerc] = &metrics.SimpleMetricValue{Value: kvUsage}
@@ -356,7 +357,7 @@ func lbPodMetrics(running, capacity, kvUsage float64) map[string]metrics.MetricV
 }
 
 // TestLoadBalanceScoreAll_HeterogeneousExample checks the documented B40/A100/H20 example
-// end to end: score = running / tokens-per-sec × (1 + 2(1−kvFree)²), lowest wins.
+// end to end: score = running / (tokens per request-second)² × (1 + 2(1−kvFree)²), lowest wins.
 func TestLoadBalanceScoreAll_HeterogeneousExample(t *testing.T) {
 	pods := []*v1.Pod{
 		makeLBPod("b40", "1.1.1.1"),
@@ -364,10 +365,11 @@ func TestLoadBalanceScoreAll_HeterogeneousExample(t *testing.T) {
 		makeLBPod("h20", "3.3.3.3"),
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
-		"b40":  lbPodMetrics(30, 6000, 0.50), // 30/6000 × (1+2·0.50²) = 0.0075
-		"a100": lbPodMetrics(20, 4000, 0.70), // 20/4000 × (1+2·0.70²) = 0.0099
-		"h20":  lbPodMetrics(25, 3000, 0.40), // 25/3000 × (1+2·0.40²) = 0.0110
+		"b40":  lbPodMetrics(30, 60, 0.50), // 30/60² × (1+2·0.50²) = 0.0125
+		"a100": lbPodMetrics(20, 40, 0.70), // 20/40² × (1+2·0.70²) = 0.0248
+		"h20":  lbPodMetrics(25, 30, 0.40), // 25/30² × (1+2·0.40²) = 0.0367
 	})
+	withCapacityExponent(t, loadBalanceCapacityExponentDefault)
 	r := &loadBalanceRouter{cache: c}
 
 	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
@@ -379,9 +381,9 @@ func TestLoadBalanceScoreAll_HeterogeneousExample(t *testing.T) {
 	for i, pod := range podList.All() {
 		byName[pod.Name] = scores[i]
 	}
-	assert.InDelta(t, 0.0075, byName["b40"], 1e-6)
-	assert.InDelta(t, 0.0099, byName["a100"], 1e-6)
-	assert.InDelta(t, 0.0110, byName["h20"], 1e-6)
+	assert.InDelta(t, 0.0125, byName["b40"], 1e-6)
+	assert.InDelta(t, 0.02475, byName["a100"], 1e-6)
+	assert.InDelta(t, 0.036667, byName["h20"], 1e-6)
 
 	target, err := r.Route(ctx, podsFromCache(c))
 	assert.NoError(t, err)
@@ -696,4 +698,175 @@ func TestGetTargetPodListOnLoadImbalance_PreservesLargeCountThreshold(t *testing
 	result, _, _, imbalanced := getTargetPodListOnLoadImbalance(counts, pods, 2, 8)
 	assert.False(t, imbalanced)
 	assert.Empty(t, result)
+}
+
+// withCapacitySignal selects the capacity signal for one test.
+func withCapacitySignal(t *testing.T, signal string) {
+	t.Helper()
+	orig := loadBalanceCapacitySignal
+	loadBalanceCapacitySignal = signal
+	t.Cleanup(func() { loadBalanceCapacitySignal = orig })
+}
+
+// TestLoadBalanceScoreAll_SkewedTrafficNoLongerLooksFaster is the state measured on #3450: two
+// identical pods split 73:27. The busier one runs 5 requests against 2 and completes 2.7x the
+// tokens per second, so by the total rate it looks 2.7x faster and scores lower, and the split
+// holds. Per request both decode at the same speed, and the less loaded pod scores lower.
+func TestLoadBalanceScoreAll_SkewedTrafficNoLongerLooksFaster(t *testing.T) {
+	pods := []*v1.Pod{makeLBPod("busy", "1.1.1.1"), makeLBPod("idle", "2.2.2.2")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"busy": {
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 5},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 46.0},
+			metrics.RealtimeOutputTokenRateEWMA:              &metrics.SimpleMetricValue{Value: 270},
+		},
+		"idle": {
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 45.8},
+			metrics.RealtimeOutputTokenRateEWMA:              &metrics.SimpleMetricValue{Value: 97},
+		},
+	})
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	byName := func() map[string]float64 {
+		list := podsFromCache(c) // one list: its order is not stable between calls
+		scores, scored, err := r.ScoreAll(ctx, list)
+		assert.NoError(t, err)
+		out := map[string]float64{}
+		for i, pod := range list.All() {
+			assert.True(t, scored[i])
+			out[pod.Name] = scores[i]
+		}
+		return out
+	}
+
+	perRequest := byName()
+	assert.Less(t, perRequest["idle"], perRequest["busy"], "per-request signal: the less loaded pod wins")
+	assert.InDelta(t, 5/46.0, perRequest["busy"], 1e-9)
+
+	withCapacitySignal(t, capacitySignalTotal)
+	total := byName()
+	assert.Less(t, total["busy"], total["idle"], "total rate: the busier pod looks faster and keeps winning")
+	assert.InDelta(t, 5/270.0, total["busy"], 1e-9)
+}
+
+// A per-request estimate that was last updated too long ago describes a load the pod no longer
+// has: the pod is scored like one without an estimate, at the mean of the pods that have one.
+func TestLoadBalanceCapacities_IgnoresAStalePerRequestEstimate(t *testing.T) {
+	pods := []*v1.Pod{makeLBPod("p1", "1.1.1.1"), makeLBPod("p2", "2.2.2.2")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": lbPodMetrics(1, 40, 0),
+		"p2": lbPodMetrics(1, 160, 0),
+	})
+	r := &loadBalanceRouter{cache: c}
+	all := podsFromCache(c).All()
+	index := map[string]int{}
+	for i, pod := range all {
+		index[pod.Name] = i
+	}
+
+	caps := r.capacities(all)
+	assert.Equal(t, 40.0, caps[index["p1"]])
+	assert.Equal(t, 160.0, caps[index["p2"]])
+
+	orig := loadBalanceCapacityMaxAge
+	t.Cleanup(func() { loadBalanceCapacityMaxAge = orig })
+	time.Sleep(5 * time.Millisecond)
+	loadBalanceCapacityMaxAge = time.Millisecond // both records are now older than the limit
+	caps = r.capacities(all)
+	assert.Equal(t, []float64{1, 1}, caps, "no usable estimate: uniform capacity")
+
+	// The total-rate signal has no age limit, as before.
+	withCapacitySignal(t, capacitySignalTotal)
+	c2 := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": {metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 300}},
+		"p2": {metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 100}},
+	})
+	time.Sleep(5 * time.Millisecond)
+	caps = (&loadBalanceRouter{cache: c2}).capacities(podsFromCache(c2).All())
+	assert.ElementsMatch(t, []float64{300, 100}, caps)
+}
+
+// The signal is the per-request rate unless the variable selects the total rate; anything else
+// falls back to the per-request rate. The age limit is pinned.
+func TestLoadLoadBalanceCapacitySignal(t *testing.T) {
+	for raw, want := range map[string]string{
+		"": capacitySignalPerRequest, "per-request": capacitySignalPerRequest, "total": capacitySignalTotal,
+		"Total": capacitySignalPerRequest, "bogus": capacitySignalPerRequest,
+	} {
+		t.Setenv(loadBalanceCapacitySignalEnv, raw)
+		assert.Equal(t, want, loadLoadBalanceCapacitySignal(), "env %q", raw)
+	}
+	assert.Equal(t, 3*time.Minute, loadBalanceCapacityMaxAgeDefault)
+}
+
+// withCapacityExponent sets the capacity exponent for one test.
+func withCapacityExponent(t *testing.T, exponent float64) {
+	t.Helper()
+	orig := loadBalanceCapacityExponent
+	loadBalanceCapacityExponent = exponent
+	t.Cleanup(func() { loadBalanceCapacityExponent = orig })
+}
+
+// TestLoadBalanceCapacityExponent is the mixed pair measured on #3491: one replica about 4.5x
+// faster per request, carrying 5 requests while the slow one carries 1. Dividing by the capacity
+// sends the next request to the slow replica (5/180 > 1/40). Dividing by its square keeps it on
+// the fast one (5/180^2 < 1/40^2), which is what the total-rate signal did there.
+func TestLoadBalanceCapacityExponent(t *testing.T) {
+	assert.Equal(t, 2.0, loadBalanceCapacityExponentDefault)
+
+	pods := []*v1.Pod{makeLBPod("fast", "1.1.1.1"), makeLBPod("slow", "2.2.2.2")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"fast": lbPodMetrics(5, 180, 0),
+		"slow": lbPodMetrics(1, 40, 0),
+	})
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	byName := func() map[string]float64 {
+		list := podsFromCache(c)
+		scores, _, err := r.ScoreAll(ctx, list)
+		assert.NoError(t, err)
+		out := map[string]float64{}
+		for i, pod := range list.All() {
+			out[pod.Name] = scores[i]
+		}
+		return out
+	}
+
+	withCapacityExponent(t, 1)
+	linear := byName()
+	assert.InDelta(t, 5.0/180, linear["fast"], 1e-12)
+	assert.Less(t, linear["slow"], linear["fast"], "exponent 1: the slow replica is chosen")
+
+	withCapacityExponent(t, 2)
+	squared := byName()
+	assert.InDelta(t, 5.0/(180*180), squared["fast"], 1e-12)
+	assert.InDelta(t, 1.0/(40*40), squared["slow"], 1e-12)
+	assert.Less(t, squared["fast"], squared["slow"], "exponent 2: the fast replica is chosen")
+
+	// The total-rate signal is scored as before, whatever the exponent is set to.
+	withCapacitySignal(t, capacitySignalTotal)
+	assert.Equal(t, 1.0, effectiveCapacityExponent())
+	assert.Equal(t, 300.0, capacityDivisor(300))
+}
+
+// Replicas with the same estimate score by load alone at any exponent, and so do replicas
+// without one: the fallback capacity is raised to the same power.
+func TestLoadBalanceCapacityExponent_EqualCapacitiesScoreByLoad(t *testing.T) {
+	withCapacityExponent(t, 2)
+	pods := []*v1.Pod{makeLBPod("p1", "1.1.1.1"), makeLBPod("p2", "2.2.2.2"), makeLBPod("p3", "3.3.3.3")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": lbPodMetrics(3, 46, 0),
+		"p2": lbPodMetrics(2, 46, 0),
+		"p3": lbPodMetrics(1, 0, 0), // no estimate: the mean of the others, 46
+	})
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	list := podsFromCache(c)
+	scores, _, err := r.ScoreAll(ctx, list)
+	assert.NoError(t, err)
+	for i, pod := range list.All() {
+		running := map[string]float64{"p1": 3, "p2": 2, "p3": 1}[pod.Name]
+		assert.InDelta(t, running/(46*46), scores[i], 1e-12, pod.Name)
+	}
 }

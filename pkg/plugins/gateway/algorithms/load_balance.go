@@ -194,7 +194,7 @@ func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v
 		if math.IsNaN(kvFree) {
 			scores[i] = math.Inf(1)
 		} else {
-			scores[i] = loadBalanceScore(load, capacities[i], kvFree, kvPressureAlpha, kvCriticalFree)
+			scores[i] = loadBalanceScore(load, capacityDivisor(capacities[i]), kvFree, kvPressureAlpha, kvCriticalFree)
 		}
 		scored[i] = true
 
@@ -204,6 +204,7 @@ func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v
 				"pod", pod.Name,
 				"running_requests", running,
 				"capacity", capacities[i],
+				"capacity_exponent", effectiveCapacityExponent(),
 				"kv_free", formatLoadBalanceScore(kvFree),
 				"score", formatLoadBalanceScore(scores[i]))
 		}
@@ -213,8 +214,8 @@ func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v
 }
 
 // loadBalanceScore is the effective load of a replica: the work already committed to it, divided by
-// how fast it drains work, inflated as its KV cache fills. capacity is in tokens/sec and kvFree in
-// [0, 1]. Below the critical free-KV fraction the replica is unusable and the score is +Inf.
+// how fast it drains work, inflated as its KV cache fills. capacity is the divisor (see
+// capacityDivisor) and kvFree is in [0, 1]. Below the critical free-KV fraction the replica is unusable and the score is +Inf.
 // The penalty strength and that fraction are the environment defaults unless the request's
 // model config profile overrides them (see types.RoutingOverrides).
 //
@@ -303,9 +304,15 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 	return ctx.TargetAddress(), nil
 }
 
-// capacities returns each pod's capacity, the observed output tokens/sec (see
-// RealtimeOutputTokenRateEWMA). The gateway learns relative hardware speed from this rather than
-// from pod labels, so a mixed B40/A100/H20 pool needs no configuration.
+// capacities returns each pod's capacity: the output tokens per second of one request's time on
+// the pod (RealtimeOutputTokensPerRequestSecondEWMA), or the pod's total output tokens per second
+// when AIBRIX_LOAD_BALANCE_CAPACITY_SIGNAL selects it (see capacityEstimate). The gateway learns
+// relative hardware speed from this rather than from pod labels, so a mixed B40/A100/H20 pool
+// needs no configuration.
+//
+// The per-request rate does not grow with the share of traffic a pod receives. The total rate
+// does: below saturation a pod that is sent more requests completes more tokens, looks faster
+// and is sent more still (#3450).
 //
 // A pod with no positive estimate yet (just started, or no completed output tokens in the last
 // window) is given the mean of the pods that have one, so it competes as an average replica. A
@@ -324,13 +331,10 @@ func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 		}
 		return caps
 	}
+	now := time.Now()
 	sum, known := 0.0, 0
 	for i, pod := range pods {
-		v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokenRateEWMA)
-		if err != nil || v == nil {
-			continue
-		}
-		if rate := v.GetSimpleValue(); rate > 0 {
+		if rate, ok := r.capacityEstimate(pod, now); ok {
 			caps[i] = rate
 			sum += rate
 			known++
@@ -350,6 +354,120 @@ func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 }
 
 const (
+	loadBalanceCapacitySignalEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_SIGNAL"
+	// capacitySignalPerRequest reads RealtimeOutputTokensPerRequestSecondEWMA: output tokens per
+	// second of one request's time on the pod. It does not grow with the share of traffic a pod
+	// receives (#3450).
+	capacitySignalPerRequest = "per-request"
+	// capacitySignalTotal reads RealtimeOutputTokenRateEWMA: the pod's total output tokens per
+	// second, the signal before #3491. Below saturation it is the traffic the pod receives.
+	capacitySignalTotal = "total"
+
+	// loadBalanceCapacityMaxAgeDefault is how old a per-request estimate may be. The metric keeps its
+	// last value while a pod completes too few requests to update it (an idle pod, or one below
+	// AIBRIX_OUTPUT_RATE_MIN_SAMPLES requests per window), so an older estimate describes a
+	// load the pod no longer has. Such a pod is scored like one without an estimate. It is the
+	// length of the history the estimate is computed from (window1mHistoryMaxAge in pkg/cache).
+	loadBalanceCapacityMaxAgeDefault = 3 * time.Minute
+)
+
+// loadBalanceCapacityMaxAge is loadBalanceCapacityMaxAgeDefault; a variable so tests can shorten it.
+var loadBalanceCapacityMaxAge = loadBalanceCapacityMaxAgeDefault
+
+// loadBalanceCapacitySignal selects the metric load-balance divides a pod's load by.
+var loadBalanceCapacitySignal = loadLoadBalanceCapacitySignal()
+
+const (
+	loadBalanceCapacityExponentEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_EXPONENT"
+	// With the per-request rate as capacity, the score is load / capacity^2.
+	//
+	// load / capacity alone sends a slow replica a request whenever the fast one carries
+	// capacity-ratio times as many, which keeps the slow replica busy at its own pace.
+	//
+	// The total-rate signal preferred the fast replica more strongly than that, because a pod's
+	// total rate is its requests in flight times its per-request rate: the speed is in it twice,
+	// once through how many requests the pod was sent. Squaring the per-request rate keeps that
+	// preference without the traffic a pod happened to receive in it, which is what let the
+	// estimate follow the traffic share (#3450).
+	//
+	// The exponent is not chosen for a throughput gain: on a pair where one replica was about 4.5x
+	// faster per request, no difference from the total rate was found once the runs were compared
+	// on gateway pods with the same routing latency (load_balance.md has the numbers).
+	//
+	// Replicas with equal estimates score by load alone at any exponent.
+	loadBalanceCapacityExponentDefault = 2.0
+)
+
+// loadBalanceCapacityExponent is the exponent applied to the per-request capacity. It is not
+// applied to the total-rate signal (see effectiveCapacityExponent).
+var loadBalanceCapacityExponent = utils.LoadEnvFloat(loadBalanceCapacityExponentEnv, loadBalanceCapacityExponentDefault)
+
+// effectiveCapacityExponent is the exponent in use: loadBalanceCapacityExponent for the
+// per-request signal, and 1 for the total-rate signal, which is scored as it was before #3491.
+func effectiveCapacityExponent() float64 {
+	if loadBalanceCapacitySignal == capacitySignalTotal {
+		return 1
+	}
+	return loadBalanceCapacityExponent
+}
+
+// capacityDivisor is what a pod's load is divided by: its capacity raised to
+// effectiveCapacityExponent.
+func capacityDivisor(capacity float64) float64 {
+	if exponent := effectiveCapacityExponent(); exponent != 1 {
+		return math.Pow(capacity, exponent)
+	}
+	return capacity
+}
+
+// loadLoadBalanceCapacitySignal reads loadBalanceCapacitySignalEnv: capacitySignalPerRequest
+// unless it is set to capacitySignalTotal. Any other value is logged and ignored.
+func loadLoadBalanceCapacitySignal() string {
+	switch raw := os.Getenv(loadBalanceCapacitySignalEnv); raw {
+	case "", capacitySignalPerRequest:
+		return capacitySignalPerRequest
+	case capacitySignalTotal:
+		klog.Infof("set %s: %s, load-balance capacity is the pod's total output-token rate", loadBalanceCapacitySignalEnv, raw)
+		return capacitySignalTotal
+	default:
+		klog.Warningf("invalid %s: %q, using %s", loadBalanceCapacitySignalEnv, raw, capacitySignalPerRequest)
+		return capacitySignalPerRequest
+	}
+}
+
+// capacityEstimate returns the pod's capacity from the selected signal. ok is false when the
+// pod has no positive estimate, or, for the per-request signal, when the estimate was last
+// updated more than loadBalanceCapacityMaxAge ago. A cache that cannot report when a value was
+// updated (it does not implement cache.MetricRecordCache) is trusted as it is.
+func (r *loadBalanceRouter) capacityEstimate(pod *v1.Pod, now time.Time) (rate float64, ok bool) {
+	if loadBalanceCapacitySignal == capacitySignalTotal {
+		v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokenRateEWMA)
+		if err != nil || v == nil {
+			return 0, false
+		}
+		rate = v.GetSimpleValue()
+		return rate, rate > 0
+	}
+	if records, hasRecords := r.cache.(cache.MetricRecordCache); hasRecords {
+		record, err := records.GetMetricRecordByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokensPerRequestSecondEWMA)
+		if err != nil || record.Value == nil {
+			return 0, false
+		}
+		if !record.Timestamp.IsZero() && now.Sub(record.Timestamp) > loadBalanceCapacityMaxAge {
+			return 0, false
+		}
+		rate = record.Value.GetSimpleValue()
+		return rate, rate > 0
+	}
+	v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokensPerRequestSecondEWMA)
+	if err != nil || v == nil {
+		return 0, false
+	}
+	rate = v.GetSimpleValue()
+	return rate, rate > 0
+}
+
+const (
 	loadBalanceCapacityWarmupEnv = "AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP"
 	// One full window of the rate behind RealtimeOutputTokenRateEWMA (window1mTarget in
 	// pkg/cache/utils.go). Keep the two in step.
@@ -363,6 +481,11 @@ const (
 // shorter history looks faster, attracts more traffic, and its estimate then grows with the
 // traffic it gets. In #3450 a split set in the first ~10 s after a rollout held at 73:27. Once
 // every candidate has a full window the estimates are comparable. On by default; 0 disables it.
+//
+// The per-request rate does not have that dependence on the length of a pod's history, but the
+// warm-up stays: a fresh engine's first requests are slower than its steady state, so its first
+// estimates read low. In the scale-out runs on #3491 a pod added under load reached an even
+// share in its first minute with the warm-up and stayed 2-3 points under it without.
 var loadBalanceCapacityWarmup = loadLoadBalanceCapacityWarmup()
 
 // loadLoadBalanceCapacityWarmup reads loadBalanceCapacityWarmupEnv. utils.LoadEnvDuration rejects

@@ -129,7 +129,8 @@ gateway measured from the requests it routed:
 | `gateway_pod_requests_without_output_tokens_fraction` | Share of the pod's requests that finished without output tokens in the last window in which any finished. |
 | `gateway_pod_requests_without_output_tokens_fraction_age_seconds` | Seconds since that value was last updated. |
 
-No router reads these values. Read them with their age:
+`load-balance` reads the rate as a pod's capacity and ignores a value older than
+3 minutes. Read both values with their age:
 
 - **They keep their last value.** The rate is only updated by a window in which
   `AIBRIX_OUTPUT_RATE_MIN_SAMPLES` (default 8) requests with output tokens

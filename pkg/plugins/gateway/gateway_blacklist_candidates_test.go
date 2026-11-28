@@ -398,9 +398,9 @@ func newLoadedCandidateBlacklistFleet(t *testing.T, n, k, blacklistedPct int) (*
 			kv = float64(10+(i*13)%60) / 100.0
 		}
 		podMetrics[name] = map[string]metrics.MetricValue{
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: running},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: float64(1500 + (i*37)%1500)},
-			metrics.KVCacheUsagePerc:            &metrics.SimpleMetricValue{Value: kv},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: running},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: float64(1500 + (i*37)%1500)},
+			metrics.KVCacheUsagePerc:                         &metrics.SimpleMetricValue{Value: kv},
 		}
 	}
 

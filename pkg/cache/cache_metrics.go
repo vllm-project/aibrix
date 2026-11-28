@@ -1032,7 +1032,7 @@ func ewmaWeight(elapsed time.Duration) float64 {
 // traffic doubles both terms, so below saturation it does not depend on how traffic is split,
 // which RealtimeOutputTokenRateEWMA does (#3450). A faster replica finishes each request sooner
 // and measures higher. When requests queue on a saturated replica their time on the pod grows and
-// the estimate falls. No router reads it yet.
+// the estimate falls. load-balance reads it as a pod's capacity.
 //
 // What it does not see:
 //   - A request that finishes without output tokens is in neither term: aborted, timed out,

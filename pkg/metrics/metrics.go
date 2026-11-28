@@ -101,7 +101,8 @@ const (
 	// of one request's time on the pod, at which a pod decodes (pod-scoped, gateway-tracked):
 	// completed output tokens divided by the time those requests spent on the pod. Unlike
 	// RealtimeOutputTokenRateEWMA it does not grow with the share of traffic a pod receives, and it
-	// falls when requests queue on a saturated pod (#3450). No router reads it yet. It is exported
+	// falls when requests queue on a saturated pod (#3450). load-balance reads it as a pod's
+	// capacity, and ignores a value older than 3 minutes. It is exported
 	// as gateway_pod_output_tokens_per_request_second.
 	// The time is the whole request, from routing to the end of the response, so it includes
 	// prompt processing. Under prefill/decode disaggregation a request is counted on its decode

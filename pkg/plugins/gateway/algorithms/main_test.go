@@ -27,5 +27,9 @@ func TestMain(m *testing.M) {
 	// tests that cover the warm-up turn it back on (see withCapacityWarmup), and
 	// TestLoadLoadBalanceCapacityWarmup pins the production default.
 	loadBalanceCapacityWarmup = 0
+	// The load-balance tests state their expected scores as load / capacity. The production
+	// score divides by capacity^2; TestLoadBalanceCapacityExponent covers that and pins the
+	// default.
+	loadBalanceCapacityExponent = 1
 	os.Exit(m.Run())
 }
