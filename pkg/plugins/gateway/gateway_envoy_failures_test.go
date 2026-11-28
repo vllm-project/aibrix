@@ -57,6 +57,41 @@ func TestEnvoyGeneratedFailureBaseline(t *testing.T) {
 	runEnvoyGeneratedFailureContracts(t, "1.33.2")
 }
 
+// startFailureUpstream returns the upstream port for one failure-contract case.
+// For connect_refused it returns a reserved port with no listener, so the
+// contract exercises a genuinely closed port; every other case gets a real
+// httptest server whose handler reproduces the named failure.
+func startFailureUpstream(t *testing.T, name string, processor *envoyObservedProcessor, ports *envoyPortSet) int {
+	t.Helper()
+	if name == "connect_refused" {
+		return ports.reserve(t)
+	}
+	releaseUpstream := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch name {
+		case "pre_header_reset":
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = conn.Close()
+		case "timeout":
+			select {
+			case <-r.Context().Done():
+			case <-releaseUpstream:
+			}
+		default:
+			processor.serveUpstream(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	t.Cleanup(func() { close(releaseUpstream) })
+	return upstream.Listener.Addr().(*net.TCPAddr).Port
+}
+
 func runEnvoyGeneratedFailureContracts(t *testing.T, version string) {
 	image := os.Getenv("AIBRIX_ENVOY_TEST_IMAGE")
 	if image == "" && os.Getenv("AIBRIX_ENVOY_TEST_BINARY") == "" {
@@ -94,33 +129,7 @@ func runEnvoyGeneratedFailureContracts(t *testing.T, version string) {
 			}
 			processor.current.Store(ex)
 			ports := newEnvoyPortSet()
-			upstreamPort := ports.reserve(t)
-			if tc.name != "connect_refused" {
-				releaseUpstream := make(chan struct{})
-				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					switch tc.name {
-					case "pre_header_reset":
-						conn, _, err := w.(http.Hijacker).Hijack()
-						if err != nil {
-							return
-						}
-						if tcp, ok := conn.(*net.TCPConn); ok {
-							_ = tcp.SetLinger(0)
-						}
-						_ = conn.Close()
-					case "timeout":
-						select {
-						case <-r.Context().Done():
-						case <-releaseUpstream:
-						}
-					default:
-						processor.serveUpstream(w, r)
-					}
-				}))
-				t.Cleanup(upstream.Close)
-				t.Cleanup(func() { close(releaseUpstream) })
-				upstreamPort = upstream.Listener.Addr().(*net.TCPAddr).Port
-			}
+			upstreamPort := startFailureUpstream(t, tc.name, processor, ports)
 			listener := ports.listen(t)
 			server := grpc.NewServer()
 			extProcPb.RegisterExternalProcessorServer(server, processor)

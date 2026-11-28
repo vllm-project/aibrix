@@ -351,7 +351,7 @@ func TestEnvoyPortSetKeepsReservedPortsDistinct(t *testing.T) {
 	}
 	closed := s.reserve(t)
 	l := s.listen(t)
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	require.NotEqual(t, closed, l.Addr().(*net.TCPAddr).Port,
 		"a held listener must never claim a port reserved as closed")
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", closed), 200*time.Millisecond)
