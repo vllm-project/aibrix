@@ -522,7 +522,7 @@ func (c *Store) emitPodEngineMetric(pod *Pod, modelName, metricName string, metr
 		} else {
 			metrics.DeleteEngineMetricFromPrometheus(ctx, pod.Pod, metricName, labels)
 		}
-		emitValue = &metrics.SimpleMetricValue{Value: increment}
+		emitValue = &metrics.SimpleMetricValue{Value: increment, Labels: labels}
 	}
 	metrics.EmitMetricToPrometheus(ctx, pod.Pod, metricName, emitValue, labels)
 }
