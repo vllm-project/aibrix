@@ -155,7 +155,11 @@ func (c *Store) ModelClaimBinding(modelName string) (*v1.Pod, utils.ModelClaimBi
 		if !found || metaPod == nil || metaPod.Pod == nil {
 			continue
 		}
-		return metaPod.Pod, known.binding, true
+		pod := metaPod.Pod
+		if !utils.IsPodActive(pod) {
+			continue
+		}
+		return pod, known.binding, true
 	}
 	return nil, utils.ModelClaimBinding{}, false
 }

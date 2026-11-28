@@ -773,6 +773,54 @@ func TestValidateModelAvailabilityReturnsRetryableResponseForSleepingModelClaim(
 	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
 }
 
+func TestValidateModelAvailabilitySkipsTerminatingModelClaimPod(t *testing.T) {
+	for _, terminating := range []bool{false, true} {
+		t.Run(fmt.Sprintf("terminating=%t", terminating), func(t *testing.T) {
+			sleeping := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "a-sleeping", Namespace: "default",
+					Annotations: map[string]string{
+						constants.ModelClaimPodAnnotationPrefix + "claim": `{"model":"qwen","port":0,"state":"sleeping","wakeByRequest":true}`,
+					},
+				},
+				Status: v1.PodStatus{PodIP: "10.0.0.1", Phase: v1.PodRunning},
+			}
+			activating := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "z-activating", Namespace: "default",
+					Annotations: map[string]string{
+						constants.ModelClaimPodAnnotationPrefix + "claim": `{"model":"qwen","port":0,"state":"activating"}`,
+					},
+				},
+				Status: v1.PodStatus{PodIP: "10.0.0.2", Phase: v1.PodRunning},
+			}
+			if terminating {
+				now := metav1.Now()
+				activating.DeletionTimestamp = &now
+			}
+			store := cache.NewWithPodsForTest([]*v1.Pod{sleeping, activating}, "runtime")
+			require.False(t, store.HasModel("qwen"))
+			wakeRequester := &recordingModelWakeRequester{}
+			server := &Server{cache: store, wakeRequester: wakeRequester}
+
+			pods, response := server.validateModelAvailability("request-1", "qwen")
+
+			assert.Nil(t, pods)
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			if terminating {
+				assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is sleeping")
+				require.Len(t, wakeRequester.calls, 1)
+				assert.Equal(t, sleeping.Name, wakeRequester.calls[0].pod.Name)
+				assert.Equal(t, "qwen", wakeRequester.calls[0].model)
+			} else {
+				assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is activating")
+				assert.Empty(t, wakeRequester.calls)
+			}
+		})
+	}
+}
+
 func TestValidateModelAvailabilityWakesASleepingClaimThatAlsoHasARecord(t *testing.T) {
 	// A sleeping claim's pod advertises it, and the claim object is known too.
 	// The pod's answer wins, since only it can wake the engine.

@@ -174,6 +174,49 @@ func TestModelClaimBindingPrefersStateBeforePodKey(t *testing.T) {
 	}
 }
 
+func TestModelClaimBindingSkipsInactivePods(t *testing.T) {
+	for _, state := range []string{"terminating", "failed", "succeeded"} {
+		t.Run(state, func(t *testing.T) {
+			c := NewForTest()
+			sleeping := warmModelClaimPod("a-sleeping", "default", nil)
+			sleeping.Annotations[constants.ModelClaimPodAnnotationPrefix+"claim"] =
+				`{"model":"m","port":0,"state":"sleeping","wakeByRequest":true}`
+			activating := warmModelClaimPod("z-activating", "default", nil)
+			activating.Annotations[constants.ModelClaimPodAnnotationPrefix+"claim"] =
+				`{"model":"m","port":0,"state":"activating"}`
+			activating.Status.Conditions = nil
+			c.addPod(sleeping)
+			c.addPod(activating)
+
+			pod, binding, found := c.ModelClaimBinding("m")
+			require.True(t, found)
+			assert.Equal(t, activating.Name, pod.Name)
+			assert.Equal(t, constants.ModelClaimRoutingStateActivating, binding.State)
+
+			inactive := activating.DeepCopy()
+			switch state {
+			case "terminating":
+				now := metav1.Now()
+				inactive.DeletionTimestamp = &now
+			case "failed":
+				inactive.Status.Phase = v1.PodFailed
+			case "succeeded":
+				inactive.Status.Phase = v1.PodSucceeded
+			}
+			c.updatePod(activating, inactive)
+
+			pod, binding, found = c.ModelClaimBinding("m")
+			require.True(t, found)
+			assert.Equal(t, sleeping.Name, pod.Name)
+			assert.Equal(t, constants.ModelClaimRoutingStateSleeping, binding.State)
+
+			c.deletePod(sleeping)
+			_, _, found = c.ModelClaimBinding("m")
+			assert.False(t, found, "an inactive Pod alone must not supply a binding")
+		})
+	}
+}
+
 func TestModelClaimBindingTracksAnnotationUpdatesAndDeletion(t *testing.T) {
 	c := NewForTest()
 	active := warmModelClaimPod("p1", "default", map[string]int{"m": 9001})
