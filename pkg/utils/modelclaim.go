@@ -39,9 +39,10 @@ const NVIDIAGPUResourceName v1.ResourceName = "nvidia.com/gpu"
 
 // modelClaimVLLMFlagAliases are vLLM's short names for the flags read here.
 var modelClaimVLLMFlagAliases = map[string]string{
-	"-tp": "--tensor-parallel-size",
-	"-pp": "--pipeline-parallel-size",
-	"-dp": "--data-parallel-size",
+	"-tp":  "--tensor-parallel-size",
+	"-pp":  "--pipeline-parallel-size",
+	"-pcp": "--prefill-context-parallel-size",
+	"-dp":  "--data-parallel-size",
 }
 
 // ModelClaimEngineFlag reads an engineConfig.args key the way vLLM does. It

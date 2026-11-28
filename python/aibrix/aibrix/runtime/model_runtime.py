@@ -1116,6 +1116,7 @@ def _engine_args(
 _VLLM_FLAG_ALIASES = {
     "-tp": "--tensor-parallel-size",
     "-pp": "--pipeline-parallel-size",
+    "-pcp": "--prefill-context-parallel-size",
     "-dp": "--data-parallel-size",
 }
 

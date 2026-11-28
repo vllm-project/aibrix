@@ -943,7 +943,9 @@ def test_vllm_parallelism_reads_flags_the_way_vllm_does():
         )
         == 4
     )
-    assert vllm_parallelism({"args": {"-tp": "2", "-pp=2": ""}}, None) == 4
+    assert (
+        vllm_parallelism({"args": {"-tp": "2", "-pp=2": "", "-pcp=2": ""}}, None) == 8
+    )
 
 
 @pytest.mark.parametrize(

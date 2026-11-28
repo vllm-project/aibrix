@@ -89,7 +89,11 @@ describe('model claim helpers', () => {
     expect(rows.rowErrors[4]).toMatch(/more than once/);
 
     const mismatch = validateEngineArgs([{ key: '--tensor-parallel-size', value: '2' }], 'vllm', pool);
-    expect(mismatch.topologyError).toMatch(/TP × PP is 2, but Pods in pool b300-pool-a have 1 GPU\./);
+    expect(mismatch.topologyError).toMatch(/TP × PP × PCP is 2, but Pods in pool b300-pool-a have 1 GPU\./);
+
+    const pcpAlias = validateEngineArgs([{ key: '-pcp=2', value: '' }], 'vllm', pool);
+    expect(pcpAlias.rowErrors).toEqual([null]);
+    expect(pcpAlias.topologyError).toMatch(/TP × PP × PCP is 2/);
 
     const dataParallel = validateEngineArgs([{ key: '--data-parallel-size', value: '2' }], 'vllm', pool);
     expect(dataParallel.topologyError).toMatch(/Data parallelism/);
@@ -113,6 +117,7 @@ describe('model claim helpers', () => {
     expect(engineFlag('--port=9000')).toEqual({ flag: '--port', value: '9000' });
     expect(engineFlag('--enforce-eager=')).toEqual({ flag: '--enforce-eager', value: '' });
     expect(engineFlag('-tp')).toEqual({ flag: '--tensor-parallel-size', value: null });
+    expect(engineFlag('-pcp=2')).toEqual({ flag: '--prefill-context-parallel-size', value: '2' });
     expect(engineFlag('-q')).toEqual({ flag: '-q', value: null });
 
     const rows = validateEngineArgs(
@@ -142,7 +147,7 @@ describe('model claim helpers', () => {
       { key: '--tensor-parallel-size=2', value: '' },
       { key: '--tensor_parallel_size', value: '2' },
     ]) {
-      expect(validateEngineArgs([row], 'vllm', pool).topologyError).toMatch(/TP × PP is 2/);
+      expect(validateEngineArgs([row], 'vllm', pool).topologyError).toMatch(/TP × PP × PCP is 2/);
     }
   });
 
