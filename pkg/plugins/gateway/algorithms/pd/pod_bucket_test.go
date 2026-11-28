@@ -178,4 +178,13 @@ func TestResolvePodRoutingConfig_CachingAndModelConfigPrecedence(t *testing.T) {
 	assert.False(t, IsPodSuitableForPromptLength(ctxWithModelCfg, podA, 50))
 	assert.True(t, IsPodSuitableForPromptLength(ctxWithModelCfg, podA, 550))
 	assert.True(t, IsCombinedPod(ctxWithModelCfg, podA))
+
+	// RoutingConfigCache zero value memoizes within one pass and handles nil receiver.
+	var passCache RoutingConfigCache
+	c1 := passCache.Resolve(ctx, podA)
+	c2 := passCache.Resolve(ctx, podB)
+	require.NotNil(t, c1)
+	assert.Same(t, c1, c2)
+	var nilCache *RoutingConfigCache
+	assert.NotNil(t, nilCache.Resolve(ctx, podA))
 }

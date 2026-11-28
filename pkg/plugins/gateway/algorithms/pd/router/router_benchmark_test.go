@@ -527,11 +527,57 @@ func BenchmarkFilterPrefillDecodePods_ParallelMultiModel(b *testing.B) {
 	})
 }
 
+// countingLargeFleetCache wraps cache.Cache to record the exact number of
+// per-pod Redis HGETALL commands (aibrix:rrq:* and aibrix:dtl:*) that the
+// router's decode path would issue per request, without adding Redis network
+// jitter to CPU µs/op timings.
+type countingLargeFleetCache struct {
+	cache.Cache
+	rrqHGetAlls atomic.Int64
+	dtlHGetAlls atomic.Int64
+}
+
+func (c *countingLargeFleetCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	c.rrqHGetAlls.Add(int64(len(pods)))
+	return c.Cache.GetPodsRunningRequests(pods)
+}
+
+func (c *countingLargeFleetCache) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
+	// Process-memory approximate counts (zero Redis HGETALLs).
+	out := make(map[string]int64, len(pods))
+	for _, p := range pods {
+		if p != nil {
+			out[utils.GeneratePodKey(p.Namespace, p.Name)] = 0
+		}
+	}
+	return out
+}
+
+func (c *countingLargeFleetCache) SharedDecodeLedgerAvailable() bool { return true }
+
+func (c *countingLargeFleetCache) PublishDecodeLedger(_ cache.DecodeLedgerProvider) func(podKey string) {
+	return func(string) {}
+}
+
+func (c *countingLargeFleetCache) GetPodsDecodeLedger(pods []*v1.Pod) map[string]cache.RemoteDecodeLoad {
+	c.dtlHGetAlls.Add(int64(len(pods)))
+	return nil
+}
+
+func (c *countingLargeFleetCache) GetPodsRunningRequestsAndDecodeLedger(pods []*v1.Pod) (map[string]int64, map[string]cache.RemoteDecodeLoad, error) {
+	c.rrqHGetAlls.Add(int64(len(pods)))
+	c.dtlHGetAlls.Add(int64(len(pods)))
+	counts, err := c.Cache.GetPodsRunningRequests(pods)
+	return counts, nil, err
+}
+
 // BenchmarkFilterPrefillDecodePods_LargeFleet measures single-model PD selection
-// throughput (serial and parallel) on 500-pod fleets (250P + 250D) across two
-// contrasting topologies (50 rolesets x 5 replicas and 1 roleset x 250 replicas)
-// and three policy pairings (prefix_cache+load_balancing,
-// hybrid_cache_load+token_load, and conductor+conductor).
+// throughput (serial and parallel) and per-request Redis HGETALL fan-out on
+// 500-pod fleets (250P + 250D) across two contrasting topologies (50 rolesets x
+// 5 replicas and 1 roleset x 250 replicas), three policy pairings
+// (prefix_cache+load_balancing, hybrid_cache_load+token_load, and
+// conductor+conductor), and both full-fleet (K=0) and candidate-stage (K=64)
+// modes.
 func BenchmarkFilterPrefillDecodePods_LargeFleet(b *testing.B) {
 	suppressKlogForBenchmark(b)
 	const model = "large-fleet-model"
@@ -561,7 +607,7 @@ func BenchmarkFilterPrefillDecodePods_LargeFleet(b *testing.B) {
 				metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
 			}
 		}
-		c := cache.NewWithPodsMetricsForTest(readyPods, model, podMetrics)
+		baseCache := cache.NewWithPodsMetricsForTest(readyPods, model, podMetrics)
 		prefixTable := prefixcacheindexer.NewPrefixHashTable()
 		tokenTracker := pd.NewTokenLoadTracker()
 
@@ -581,26 +627,38 @@ func BenchmarkFilterPrefillDecodePods_LargeFleet(b *testing.B) {
 		}{
 			{"prefix_cache+load_balancing", newPrefixCachePrefillPolicy(prefixTable), pd.LoadBalancingDecodePolicy{}},
 			{"hybrid_cache_load+token_load", newHybridCacheLoadPrefillPolicy(prefixTable, tokenTracker), pd.TokenLoadDecodePolicy{}},
-			{"conductor+conductor", newConductorPrefillPolicy(prefixTable, c), pd.ConductorDecodePolicy{}},
+			{"conductor+conductor", newConductorPrefillPolicy(prefixTable, baseCache), pd.ConductorDecodePolicy{}},
+		}
+
+		modes := []struct {
+			name string
+			k    int
+		}{
+			{"full_fleet", 0},
+			{"candidate_k64", 64},
 		}
 
 		for _, pol := range policies {
-			b.Run(topo.name+"/"+pol.name+"/serial", func(b *testing.B) {
-				runLargeFleetPDBenchSerial(b, c, prefixTable, tokenTracker, pol.prefill, pol.decode, model, prompt, body, readyPods)
-			})
-			b.Run(topo.name+"/"+pol.name+"/parallel_single_model", func(b *testing.B) {
-				runLargeFleetPDBenchParallel(b, c, prefixTable, tokenTracker, pol.prefill, pol.decode, model, prompt, body, readyPods)
-			})
+			for _, mode := range modes {
+				b.Run(topo.name+"/"+pol.name+"/"+mode.name+"/serial", func(b *testing.B) {
+					runLargeFleetPDBenchSerial(b, baseCache, prefixTable, tokenTracker, pol.prefill, pol.decode, model, prompt, body, readyPods, mode.k)
+				})
+				b.Run(topo.name+"/"+pol.name+"/"+mode.name+"/parallel_single_model", func(b *testing.B) {
+					runLargeFleetPDBenchParallel(b, baseCache, prefixTable, tokenTracker, pol.prefill, pol.decode, model, prompt, body, readyPods, mode.k)
+				})
+			}
 		}
 	}
 }
 
-func runLargeFleetPDBenchSerial(b *testing.B, c cache.Cache, prefixTable *prefixcacheindexer.PrefixHashTable, tokenTracker *pd.TokenLoadTracker, prefillPol pd.PrefillScorePolicy, decodePol pd.DecodeScorePolicy, model, prompt string, body []byte, readyPods []*v1.Pod) {
+func runLargeFleetPDBenchSerial(b *testing.B, baseCache cache.Cache, prefixTable *prefixcacheindexer.PrefixHashTable, tokenTracker *pd.TokenLoadTracker, prefillPol pd.PrefillScorePolicy, decodePol pd.DecodeScorePolicy, model, prompt string, body []byte, readyPods []*v1.Pod, candidateK int) {
 	b.Helper()
+	cc := &countingLargeFleetCache{Cache: baseCache}
 	tracker := pd.NewPrefillRequestTracker()
 	pending := pd.NewPendingDecodeTracker()
 	r := &pdRouter{
-		cache:                 c,
+		cache:                 cc,
+		sharedDecodeLedger:    cc,
 		prefillPolicy:         prefillPol,
 		decodePolicy:          decodePol,
 		prefixCacheIndexer:    prefixTable,
@@ -619,23 +677,36 @@ func runLargeFleetPDBenchSerial(b *testing.B, c cache.Cache, prefixTable *prefix
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		p, d, err := r.filterPrefillDecodePods(ctx, readyPods)
+		ctx.SetSeededPrefixMatch(nil)
+		pods := readyPods
+		if candidateK > 0 {
+			pods, _ = r.SelectCandidates(ctx, readyPods, candidateK)
+		}
+		p, d, err := r.filterPrefillDecodePods(ctx, pods)
 		if err != nil || p == nil || d == nil {
 			b.Fatalf("filterPrefillDecodePods: err=%v p=%v d=%v", err, p, d)
 		}
+		ctx.SetSeededPrefixMatch(nil)
 		r.pendingPrefixCredits.Delete(ctx.TrackerKey())
 		tracker.RemovePrefillRequest(ctx.TrackerKey())
 		pending.RemovePendingDecode(ctx.TrackerKey())
 		tokenTracker.ReleaseAll(ctx.TrackerKey())
 	}
+	b.StopTimer()
+	if b.N > 0 {
+		totalHGetAlls := float64(cc.rrqHGetAlls.Load() + cc.dtlHGetAlls.Load())
+		b.ReportMetric(totalHGetAlls/float64(b.N), "hgetall/op")
+	}
 }
 
-func runLargeFleetPDBenchParallel(b *testing.B, c cache.Cache, prefixTable *prefixcacheindexer.PrefixHashTable, tokenTracker *pd.TokenLoadTracker, prefillPol pd.PrefillScorePolicy, decodePol pd.DecodeScorePolicy, model, prompt string, body []byte, readyPods []*v1.Pod) {
+func runLargeFleetPDBenchParallel(b *testing.B, baseCache cache.Cache, prefixTable *prefixcacheindexer.PrefixHashTable, tokenTracker *pd.TokenLoadTracker, prefillPol pd.PrefillScorePolicy, decodePol pd.DecodeScorePolicy, model, prompt string, body []byte, readyPods []*v1.Pod, candidateK int) {
 	b.Helper()
+	cc := &countingLargeFleetCache{Cache: baseCache}
 	tracker := pd.NewPrefillRequestTracker()
 	pending := pd.NewPendingDecodeTracker()
 	r := &pdRouter{
-		cache:                 c,
+		cache:                 cc,
+		sharedDecodeLedger:    cc,
 		prefillPolicy:         prefillPol,
 		decodePolicy:          decodePol,
 		prefixCacheIndexer:    prefixTable,
@@ -656,10 +727,15 @@ func runLargeFleetPDBenchParallel(b *testing.B, c cache.Cache, prefixTable *pref
 			ctx.Engine = VLLMEngine
 			ctx.ReqPath = "/v1/chat/completions"
 			ctx.ReqBody = body
-			p, d, err := r.filterPrefillDecodePods(ctx, readyPods)
+			pods := readyPods
+			if candidateK > 0 {
+				pods, _ = r.SelectCandidates(ctx, readyPods, candidateK)
+			}
+			p, d, err := r.filterPrefillDecodePods(ctx, pods)
 			if err != nil || p == nil || d == nil {
 				b.Errorf("filterPrefillDecodePods: err=%v p=%v d=%v", err, p, d)
 			}
+			ctx.SetSeededPrefixMatch(nil)
 			r.pendingPrefixCredits.Delete(ctx.TrackerKey())
 			tracker.RemovePrefillRequest(ctx.TrackerKey())
 			pending.RemovePendingDecode(ctx.TrackerKey())
@@ -667,4 +743,9 @@ func runLargeFleetPDBenchParallel(b *testing.B, c cache.Cache, prefixTable *pref
 			ctx.Delete()
 		}
 	})
+	b.StopTimer()
+	if b.N > 0 {
+		totalHGetAlls := float64(cc.rrqHGetAlls.Load() + cc.dtlHGetAlls.Load())
+		b.ReportMetric(totalHGetAlls/float64(b.N), "hgetall/op")
+	}
 }

@@ -142,6 +142,93 @@ type PrefillScorePolicy interface {
 	Name() string
 }
 
+// PrefixSeedablePrefillPolicy is implemented by prefix-aware PrefillScorePolicy
+// implementations so the PD candidate stage can discover prefix-cache holders
+// using the exact same tokenizer and prefix-cache index instance that Prepare
+// will later score with. SeedPrefixMatch publishes the raw match on routingCtx
+// (via SetPrefixTokens + SetSeededPrefixMatch) so Prepare can project it onto
+// the narrowed prefill subset without a second tokenization or index lookup.
+type PrefixSeedablePrefillPolicy interface {
+	PrefillScorePolicy
+	SeedPrefixMatch(routingCtx *types.RoutingContext, readyPodsMap map[string]struct{}) (matchedPods map[string]int, hashes []uint64, ok bool)
+}
+
+const pdSeededPrefixLoRAID int64 = -1
+
+// seedPDPrefixMatch tokenizes routingCtx.PrefixText() with tok, queries indexer
+// over readyPodsMap, and publishes an immutable SeededPrefixMatch on routingCtx.
+// SetPrefixTokens is called before SetSeededPrefixMatch because SetPrefixTokens
+// invalidates any prior SeededPrefixMatch.
+func seedPDPrefixMatch(
+	routingCtx *types.RoutingContext,
+	tok tokenizer.Tokenizer,
+	indexer *prefixcacheindexer.PrefixHashTable,
+	readyPodsMap map[string]struct{},
+) (map[string]int, []uint64, bool) {
+	if routingCtx == nil || tok == nil || indexer == nil || len(readyPodsMap) == 0 {
+		return nil, nil, false
+	}
+	tokens, err := tok.TokenizeInputText(routingCtx.PrefixText())
+	if err != nil {
+		return nil, nil, false
+	}
+	matchedPods, hashes := indexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	hashes = hashes[:len(hashes):len(hashes)]
+	routingCtx.SetPrefixTokens(tokens)
+	routingCtx.SetSeededPrefixMatch(&types.SeededPrefixMatch{
+		Index:   indexer,
+		Model:   routingCtx.Model,
+		LoRAID:  pdSeededPrefixLoRAID,
+		Pods:    readyPodsMap,
+		Matches: matchedPods,
+		Hashes:  hashes,
+	})
+	return matchedPods, hashes, true
+}
+
+// matchPDPrefix reuses routingCtx.SeededPrefixMatch() when it came from the
+// exact same indexer pointer and model and covers every key in readyPodsMap
+// (plus PrefixTokens when needTokenCount is true). Otherwise it falls back to
+// tokenizing with tok and calling indexer.MatchPrefix.
+func matchPDPrefix(
+	routingCtx *types.RoutingContext,
+	tok tokenizer.Tokenizer,
+	indexer *prefixcacheindexer.PrefixHashTable,
+	readyPodsMap map[string]struct{},
+	needTokenCount bool,
+) (matchedPods map[string]int, hashes []uint64, tokenCount int, err error) {
+	if routingCtx != nil && indexer != nil {
+		if snap := routingCtx.SeededPrefixMatch(); snap != nil &&
+			snap.Index == indexer &&
+			snap.Model == routingCtx.Model &&
+			snap.LoRAID == pdSeededPrefixLoRAID {
+			tokens := routingCtx.PrefixTokens()
+			if !needTokenCount || len(tokens) > 0 || routingCtx.PrefixText() == "" {
+				covered := true
+				projected := make(map[string]int, min(len(readyPodsMap), len(snap.Matches)))
+				for key := range readyPodsMap {
+					if _, ok := snap.Pods[key]; !ok {
+						covered = false
+						break
+					}
+					if pct, ok := snap.Matches[key]; ok {
+						projected[key] = pct
+					}
+				}
+				if covered {
+					return projected, snap.Hashes[:len(snap.Hashes):len(snap.Hashes)], len(tokens), nil
+				}
+			}
+		}
+	}
+	tokens, err := tok.TokenizeInputText(routingCtx.PrefixText())
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	matchedPods, hashes = indexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	return matchedPods, hashes, len(tokens), nil
+}
+
 // prefixCachePrefillPolicy scores prefill pods by prefix-cache hit percentage
 // combined with their current running-request count:
 //
@@ -179,15 +266,21 @@ func NewPrefixCachePrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *pr
 	}
 }
 
+// SeedPrefixMatch tokenizes with p.tok and queries p.prefixCacheIndexer so the
+// PD candidate stage and Prepare share one tokenization and index lookup.
+func (p *prefixCachePrefillPolicy) SeedPrefixMatch(routingCtx *types.RoutingContext, readyPodsMap map[string]struct{}) (map[string]int, []uint64, bool) {
+	return seedPDPrefixMatch(routingCtx, p.tok, p.prefixCacheIndexer, readyPodsMap)
+}
+
 // Prepare tokenizes routingCtx.PrefixText(), performs a prefix-cache lookup against
-// the ready-pod set, and returns a prefixCacheScorer populated with the match
-// percentages and prefix hashes for the request.
+// the ready-pod set (reusing a matching SeededPrefixMatch when available), and
+// returns a prefixCacheScorer populated with the match percentages and prefix
+// hashes for the request.
 func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
+	matchedPods, hashes, _, err := matchPDPrefix(routingCtx, p.tok, p.prefixCacheIndexer, readyPodsMap, false)
 	if err != nil {
 		return nil, err
 	}
-	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
 	minMatchPct := routingCtx.PDOverrides().MinMatchPct
 	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes, minMatchPct: minMatchPct}, nil
 }
@@ -318,15 +411,21 @@ func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *pref
 	}
 }
 
+// SeedPrefixMatch tokenizes with p.tok and queries p.prefixCacheIndexer so the
+// PD candidate stage and Prepare share one tokenization and index lookup.
+func (p *conductorPrefillPolicy) SeedPrefixMatch(routingCtx *types.RoutingContext, readyPodsMap map[string]struct{}) (map[string]int, []uint64, bool) {
+	return seedPDPrefixMatch(routingCtx, p.tok, p.prefixCacheIndexer, readyPodsMap)
+}
+
 // Prepare tokenizes routingCtx.PrefixText(), performs a prefix-cache lookup against the
-// ready-pod set, and prefetches each prefill pod's scraped RequestPrefillTimeSeconds
-// histogram mean outside the model's selection lock so ScorePod needs no cache lookups.
+// ready-pod set (reusing a matching SeededPrefixMatch when available), and prefetches
+// each prefill pod's scraped RequestPrefillTimeSeconds histogram mean outside the
+// model's selection lock so ScorePod needs no cache lookups.
 func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
+	matchedPods, hashes, totalTokens, err := matchPDPrefix(routingCtx, p.tok, p.prefixCacheIndexer, readyPodsMap, true)
 	if err != nil {
 		return nil, err
 	}
-	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
 	var avgPrefillTimeMs map[string]float64
 	if p.metricCache != nil && len(prefillPods) > 0 {
 		avgPrefillTimeMs = make(map[string]float64, len(prefillPods))
@@ -341,7 +440,7 @@ func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, prefi
 	return &conductorScorer{
 		matchedPods:      matchedPods,
 		hashes:           hashes,
-		totalTokens:      len(tokens),
+		totalTokens:      totalTokens,
 		metricCache:      p.metricCache,
 		modelName:        routingCtx.Model,
 		config:           p.config,
@@ -650,14 +749,20 @@ func NewHybridCacheLoadPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer
 	}
 }
 
-// Prepare tokenizes routingCtx.PrefixText() and looks it up in the prefix cache,
-// exactly as prefix_cache does; the load side is read at ScorePod time.
+// SeedPrefixMatch tokenizes with p.tok and queries p.prefixCacheIndexer so the
+// PD candidate stage and Prepare share one tokenization and index lookup.
+func (p *hybridCacheLoadPrefillPolicy) SeedPrefixMatch(routingCtx *types.RoutingContext, readyPodsMap map[string]struct{}) (map[string]int, []uint64, bool) {
+	return seedPDPrefixMatch(routingCtx, p.tok, p.prefixCacheIndexer, readyPodsMap)
+}
+
+// Prepare tokenizes routingCtx.PrefixText() and looks it up in the prefix cache
+// (reusing a matching SeededPrefixMatch when available), exactly as prefix_cache
+// does; the load side is read at ScorePod time.
 func (p *hybridCacheLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
+	matchedPods, hashes, _, err := matchPDPrefix(routingCtx, p.tok, p.prefixCacheIndexer, readyPodsMap, false)
 	if err != nil {
 		return nil, err
 	}
-	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
 	overrides := routingCtx.PDOverrides()
 	return &hybridCacheLoadScorer{
 		tracker: p.tracker,

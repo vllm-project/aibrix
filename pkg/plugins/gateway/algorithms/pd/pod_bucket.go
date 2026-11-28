@@ -64,11 +64,31 @@ func IsCombinedRoutingConfig(cfg *types.RoutingConfig) bool {
 	return cfg != nil && cfg.Combined != nil && *cfg.Combined
 }
 
+// RoutingConfigCache memoizes resolved per-pod RoutingConfigs within a single
+// routing pass (one RoutingContext with fixed ModelConfig and ReqConfigProfile).
+// Entries are keyed only by the pod's model.aibrix.ai/config annotation, so a
+// RoutingConfigCache must stay pass-local and MUST NOT outlive one request or
+// be shared across requests. The zero value is ready for use and allocates only
+// on the first Resolve call.
+type RoutingConfigCache struct {
+	byAnno map[string]*types.RoutingConfig
+}
+
+// Resolve resolves and parses pod's RoutingConfig, reusing the pass-local
+// entry for identical pod config annotations.
+func (c *RoutingConfigCache) Resolve(routingCtx *types.RoutingContext, pod *v1.Pod) *types.RoutingConfig {
+	if c == nil {
+		return ResolvePodRoutingConfig(routingCtx, pod, nil)
+	}
+	return ResolvePodRoutingConfig(routingCtx, pod, &c.byAnno)
+}
+
 // ResolvePodRoutingConfig resolves and parses pod's RoutingConfig from
 // routingCtx.ModelConfig or pod's model.aibrix.ai/config annotation.
-// When cache is non-nil, parsed configs are memoized per distinct pod config
-// annotation within a single routing pass to avoid repeated JSON unmarshaling
-// across large mixed or bucketed fleets.
+// When cache is non-nil, parsed configs are memoized by pod annotation string
+// only: callers must keep cache strictly pass-local (one RoutingContext with
+// fixed ModelConfig and ReqConfigProfile) and must never reuse it across
+// requests. Prefer RoutingConfigCache for new callers.
 func ResolvePodRoutingConfig(routingCtx *types.RoutingContext, pod *v1.Pod, cache *map[string]*types.RoutingConfig) *types.RoutingConfig {
 	if routingCtx == nil || pod == nil {
 		return nil
