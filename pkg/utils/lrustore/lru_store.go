@@ -21,37 +21,38 @@ import (
 	"time"
 )
 
+const defaultEvictBatchSize = 256
+
 type getCurrentTime func() time.Time
 
 var DefaultGetCurrentTime = func() time.Time {
 	return time.Now()
 }
 
-// TODO: make LRUStore thread-safe
 type LRUStore[K comparable, V any] struct {
 	sync.RWMutex
-	freeTable map[K]*entry[K, V]
-	lruList   *list[K, V]
-	cap       int
+	core *UnlockedLRU[K, V]
 
 	getCurrentTime
-	interval time.Duration
-	ttl      time.Duration
-	stop     chan struct{}
+	interval  time.Duration
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
+var _ Store[uint64, struct{}] = (*LRUStore[uint64, struct{}])(nil)
+
+// NewLRUStore creates a thread-safe LRUStore with the given capacity, TTL,
+// background eviction interval, and clock function f. Supplying a monotonic
+// clock (such as DefaultGetCurrentTime / time.Now) keeps eviction on the
+// O(1)/O(expired) tail-walk path; non-monotonic clocks fall back to scanning
+// until surviving entries are ordered again.
 func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f getCurrentTime) *LRUStore[K, V] {
 	store := &LRUStore[K, V]{
-		freeTable:      make(map[K]*entry[K, V]),
-		lruList:        &list[K, V]{head: &entry[K, V]{}, tail: &entry[K, V]{}},
-		cap:            cap,
-		ttl:            ttl,
+		core:           NewUnlockedLRU[K, V](cap, ttl),
 		interval:       interval,
 		getCurrentTime: f,
 		stop:           make(chan struct{}),
 	}
-	store.lruList.head.next = store.lruList.tail
-	store.lruList.tail.prev = store.lruList.head
 
 	// time.NewTicker panics when the interval is not positive. A
 	// non-positive interval disables background eviction. Put and Get
@@ -62,9 +63,11 @@ func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f ge
 	return store
 }
 
-// Close stops the background eviction goroutine.
+// Close stops the background eviction goroutine. It is safe to call more than once.
 func (e *LRUStore[K, V]) Close() {
-	close(e.stop)
+	e.closeOnce.Do(func() {
+		close(e.stop)
+	})
 }
 
 func (e *LRUStore[K, V]) startEviction() {
@@ -73,7 +76,7 @@ func (e *LRUStore[K, V]) startEviction() {
 	for {
 		select {
 		case <-ticker.C:
-			e.evict(e.getCurrentTime())
+			e.Evict(e.getCurrentTime())
 		case <-e.stop:
 			return
 		}
@@ -84,117 +87,61 @@ func (e *LRUStore[K, V]) Put(key K, value V) bool {
 	e.Lock()
 	defer e.Unlock()
 
-	if entry, exists := e.freeTable[key]; exists {
-		entry.lastAccessTime = e.getCurrentTime()
-		entry.Value = value
-		e.lruList.moveToHead(entry)
-		return false
-	}
-
-	entry := &entry[K, V]{Key: key, Value: value, lastAccessTime: e.getCurrentTime()}
-	e.lruList.addToHead(entry)
-	e.freeTable[key] = entry
-	if len(e.freeTable) > e.cap {
-		removed := e.lruList.removeTail()
-		if removed == nil {
-			return false
-		}
-		delete(e.freeTable, removed.Key)
-		return true
-	}
-	return false
+	return e.core.Put(key, value, e.getCurrentTime())
 }
 
 func (e *LRUStore[K, V]) Get(key K) (V, bool) {
 	e.RLock()
 	defer e.RUnlock()
 
-	if entry, exists := e.freeTable[key]; exists {
-		return entry.Value, true
-	}
-	var zero V
-	return zero, false
+	return e.core.Get(key)
 }
 
 func (e *LRUStore[K, V]) Len() int {
 	e.RLock()
 	defer e.RUnlock()
-	return len(e.freeTable)
+
+	return e.core.Len()
 }
 
 // Range calls f for each key-value pair in the store; iteration stops if f returns false.
 func (e *LRUStore[K, V]) Range(f func(key K, value V) bool) {
 	e.RLock()
 	defer e.RUnlock()
-	for k, ent := range e.freeTable {
-		if !f(k, ent.Value) {
-			return
-		}
-	}
+
+	e.core.Range(f)
 }
 
-func (e *LRUStore[K, V]) evict(now time.Time) {
-	var keysToEvict []K
-
+// Evict removes entries expired at now (those with now.Sub(lastAccessTime) > ttl)
+// and returns the number of entries evicted. When access timestamps are monotonic,
+// the fast path checks only the tail under RLock in O(1), and expired entries are
+// removed from the tail in bounded batches so large expiration bursts release the
+// write lock between batches.
+func (e *LRUStore[K, V]) Evict(now time.Time) int {
 	e.RLock()
-	for key, entry := range e.freeTable {
-		if now.Sub(entry.lastAccessTime) > e.ttl {
-			keysToEvict = append(keysToEvict, key)
-		}
+	if !e.core.HasExpired(now) {
+		e.RUnlock()
+		return 0
 	}
+	// Bound total evictions to the store's current size so a concurrent writer
+	// inserting already-expired entries (e.g., negative TTL or skewed clock)
+	// cannot keep a single Evict call looping indefinitely.
+	limit := e.core.Len()
 	e.RUnlock()
 
-	for _, key := range keysToEvict {
-		e.Lock()
-		if entry, exists := e.freeTable[key]; exists && now.Sub(entry.lastAccessTime) > e.ttl {
-			e.lruList.remove(entry)
-			delete(e.freeTable, key)
+	total := 0
+	for total < limit {
+		batch := defaultEvictBatchSize
+		if rem := limit - total; rem < batch {
+			batch = rem
 		}
+		e.Lock()
+		evicted, more := e.core.EvictBatch(now, batch)
 		e.Unlock()
+		total += evicted
+		if !more || evicted == 0 {
+			break
+		}
 	}
-}
-
-type entry[K comparable, V any] struct {
-	Key            K
-	Value          V
-	prev           *entry[K, V]
-	next           *entry[K, V]
-	lastAccessTime time.Time
-}
-
-type list[K comparable, V any] struct {
-	head *entry[K, V]
-	tail *entry[K, V]
-}
-
-func (l *list[K, V]) addToHead(e *entry[K, V]) {
-	e.prev = l.head
-	e.next = l.head.next
-	l.head.next.prev = e
-	l.head.next = e
-}
-
-func (l *list[K, V]) moveToHead(e *entry[K, V]) {
-	l.remove(e)
-	l.addToHead(e)
-}
-
-func (l *list[K, V]) remove(e *entry[K, V]) {
-	if e.prev != nil {
-		e.prev.next = e.next
-	}
-	if e.next != nil {
-		e.next.prev = e.prev
-	}
-	e.prev = nil
-	e.next = nil
-}
-
-func (l *list[K, V]) removeTail() *entry[K, V] {
-	if l.tail.prev == l.head {
-		return nil
-	}
-	entry := l.tail.prev
-	l.remove(entry)
-	return entry
+	return total
 }
