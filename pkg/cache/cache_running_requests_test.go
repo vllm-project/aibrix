@@ -24,14 +24,17 @@ import (
 	"math"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/alicebob/miniredis/v2/server"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -273,13 +276,141 @@ func TestAdmitRunningRequestsClient_DisablesRetries(t *testing.T) {
 	require.Nil(t, admitRunningRequestsClient(nil))
 	shared := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0", MaxRetries: 5})
 	t.Cleanup(func() { _ = shared.Close() })
-	admit := admitRunningRequestsClient(shared)
+	admit := admitRunningRequestsClient(utils.NewDirectRedisClients(shared))
 	t.Cleanup(func() { _ = admit.Close() })
 	require.Zero(t, admit.Options().MaxRetries, "go-redis normalises -1 to 0, meaning no retries")
 	require.Equal(t, 5, shared.Options().MaxRetries, "the shared client keeps its retries")
 	require.Equal(t, shared.Options().Addr, admit.Options().Addr)
 	require.True(t, admit.Options().ContextTimeoutEnabled)
 	require.False(t, shared.Options().ContextTimeoutEnabled, "the shared client's deadline behavior is unchanged")
+}
+
+func TestAdmitRunningRequestsClient_DirectClientsBoundsStalledEval(t *testing.T) {
+	mr := miniredis.RunT(t)
+	host, port, err := net.SplitHostPort(mr.Addr())
+	require.NoError(t, err)
+	t.Setenv("REDIS_SENTINEL_ENABLED", "false")
+	t.Setenv("REDIS_HOST", host)
+	t.Setenv("REDIS_PORT", port)
+	t.Setenv("REDIS_PASSWORD", "")
+	clients := utils.GetRedisClients()
+	shared := clients.Shared()
+	require.NotNil(t, shared)
+	t.Cleanup(func() { _ = shared.Close() })
+	previous := store
+	testStore := newStore(clients, nil, nil)
+	t.Cleanup(func() {
+		testStore.Close()
+		close(testStore.podMetricsJobs)
+		store = previous
+	})
+	require.False(t, shared.Options().ContextTimeoutEnabled)
+	require.True(t, testStore.admitRedisClient.Options().ContextTimeoutEnabled)
+	require.Zero(t, testStore.admitRedisClient.Options().MaxRetries)
+	require.NoError(t, testStore.admitRedisClient.Ping(context.Background()).Err())
+	var evals atomic.Int32
+	mr.Server().SetPreHook(func(_ *server.Peer, cmd string, _ ...string) bool {
+		if strings.EqualFold(cmd, "EVAL") {
+			evals.Add(1)
+			return true // Consume EVAL without replying; initialization commands still work.
+		}
+		return false
+	})
+	start := time.Now()
+	admitted, counted, running := testStore.admitRunningRequest(testNamespace, testPodName, 1, 0)
+	elapsed := time.Since(start)
+	t.Logf("stalled EVAL returned in %s with budget %s", elapsed, runningRequestsReadTimeout)
+	require.Less(t, elapsed, runningRequestsReadTimeout+time.Second)
+	require.EqualValues(t, 1, evals.Load(), "a non-idempotent EVAL must never be retried")
+	require.True(t, admitted)
+	require.True(t, counted, "a lost reply cannot prove EVAL did not run")
+	require.Zero(t, running)
+}
+
+func TestAdmitRunningRequestsClient_SentinelSwitchWithReachableOldMaster(t *testing.T) {
+	ctx := context.Background()
+	oldMaster, newMaster, sentinel := miniredis.RunT(t), miniredis.RunT(t), miniredis.RunT(t)
+	oldMaster.RequireAuth("data-password")
+	newMaster.RequireAuth("data-password")
+	sentinel.RequireAuth("sentinel-password")
+	var address atomic.Value
+	address.Store(oldMaster.Addr())
+	require.NoError(t, sentinel.Server().Register("SENTINEL", func(c *server.Peer, _ string, args []string) {
+		if len(args) != 2 || args[1] != "mymaster" {
+			c.WriteError("ERR unknown master")
+			return
+		}
+		switch strings.ToLower(args[0]) {
+		case "get-master-addr-by-name":
+			host, port, _ := net.SplitHostPort(address.Load().(string))
+			c.WriteStrings([]string{host, port})
+		case "sentinels":
+			c.WriteLen(0)
+		default:
+			c.WriteError("ERR unsupported Sentinel command")
+		}
+	}))
+	for key, value := range map[string]string{
+		"REDIS_SENTINEL_ENABLED":     "true",
+		"REDIS_SENTINEL_MASTER_NAME": "mymaster",
+		"REDIS_SENTINEL_ADDRESSES":   sentinel.Addr(),
+		"REDIS_SENTINEL_USERNAME":    "",
+		"REDIS_SENTINEL_PASSWORD":    "sentinel-password",
+		"REDIS_PASSWORD":             "data-password",
+	} {
+		t.Setenv(key, value)
+	}
+	clients := utils.GetRedisClients()
+	shared := clients.Shared()
+	require.NotNil(t, shared)
+	t.Cleanup(func() { _ = shared.Close() })
+	t.Setenv("REDIS_SENTINEL_ENABLED", "false")
+	t.Setenv("REDIS_PASSWORD", "wrong-password")
+	previousStore := store
+	t.Cleanup(func() { store = previousStore })
+	testStore := newStore(clients, nil, nil)
+	t.Cleanup(func() { close(testStore.podMetricsJobs) })
+	admit := testStore.admitRedisClient
+	t.Cleanup(func() { _ = admit.Close() })
+	read := testStore.readRedisClient
+	t.Cleanup(func() { _ = read.Close() })
+	require.NoError(t, oldMaster.Set("marker", "old"))
+	require.NoError(t, newMaster.Set("marker", "new"))
+	require.Equal(t, "old", shared.Get(ctx, "marker").Val())
+	require.Equal(t, "old", admit.Get(ctx, "marker").Val())
+	require.Equal(t, "old", read.Get(ctx, "marker").Val())
+
+	key := runningRequestsKey(testNamespace, testPodName)
+	newClient := redis.NewClient(&redis.Options{Addr: newMaster.Addr(), Password: "data-password"})
+	t.Cleanup(func() { _ = newClient.Close() })
+	require.NoError(t, newClient.ZAdd(ctx, runningRequestsGatewaysKey,
+		redis.Z{Score: float64(time.Now().UnixMilli()), Member: "other-gateway"}).Err())
+	require.NoError(t, newClient.HSet(ctx, key, "other-gateway", 1).Err())
+	oldHost, oldPort, _ := net.SplitHostPort(oldMaster.Addr())
+	newHost, newPort, _ := net.SplitHostPort(newMaster.Addr())
+	address.Store(newMaster.Addr())
+	// Re-publish until all pools observe the switch; neither data server is closed.
+	require.Eventually(t, func() bool {
+		sentinel.Publish("+switch-master", fmt.Sprintf("mymaster %s %s %s %s", oldHost, oldPort, newHost, newPort))
+		return shared.Get(ctx, "marker").Val() == "new" &&
+			admit.Get(ctx, "marker").Val() == "new" &&
+			read.Get(ctx, "marker").Val() == "new"
+	}, time.Second, 10*time.Millisecond, "all pools must discard old-master connections")
+
+	admitted, counted, running := testStore.admitRunningRequest(testNamespace, testPodName, 1, 0)
+	require.False(t, admitted, "the new master is already at capacity")
+	require.False(t, counted)
+	require.EqualValues(t, 1, running)
+	admitted, counted, running = testStore.admitRunningRequest(testNamespace, testPodName, 2, 0)
+	require.True(t, admitted)
+	require.True(t, counted)
+	require.EqualValues(t, 1, running)
+	require.Equal(t, "1", newMaster.HGet(key, runningRequestsGatewayInstanceID))
+	require.False(t, oldMaster.Exists(key), "admissions must not write to the old master")
+	require.Zero(t, admit.Options().MaxRetries)
+	require.True(t, admit.Options().ContextTimeoutEnabled)
+	require.True(t, read.Options().ContextTimeoutEnabled)
+	require.Equal(t, shared.Options().MaxRetries, read.Options().MaxRetries)
 }
 
 func TestAdmitRunningRequest_MalformedRepliesFallBackToLocalCount(t *testing.T) {

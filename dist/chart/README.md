@@ -415,6 +415,97 @@ Upgrade to the latest chart version:
 helm upgrade aibrix dist/chart -n aibrix-system
 ```
 
+### Gateway Redis Sentinel
+
+The gateway plugin can connect to an independently deployed Redis Sentinel
+cluster. The chart does not deploy Sentinel. Keep `metadata.redis.enabled=false`
+and configure the gateway connection:
+
+```yaml
+metadata:
+  redis:
+    enabled: false
+  service:
+    redis:
+      host: "redis-master.example.svc.cluster.local"
+gpuOptimizer:
+  dependencies:
+    redis:
+      host: "redis-master.example.svc.cluster.local"
+gatewayPlugin:
+  dependencies:
+    redis:
+      password: ""
+      sentinel:
+        enabled: true
+        authEnabled: true
+        masterName: "mymaster"
+        addresses:
+          - "redis.redis-sentinel.svc.cluster.local:26379"
+        username: ""
+        password: ""
+```
+
+Use the actual monitored master name. Prefer multiple stable Sentinel Pod DNS
+addresses when available. Sentinel must advertise data-node and Sentinel
+addresses reachable from gateway Pods. Network policies must allow both the
+Sentinel port and the data-node port. In Sentinel mode, the gateway ignores the
+direct `host` and `port`; disabling Sentinel restores the existing direct mode.
+Other components retain their existing Redis configuration.
+
+With `sentinel.authEnabled=true` (the default), when `sentinel.password` is
+empty the chart reuses the gateway data-node
+password for Sentinel authentication, referencing the same Secret key in both
+containers. This includes the existing `metadata.redis.password` fallback, so
+one shared password configures both connections. An explicit `sentinel.password`
+overrides this fallback and uses a separate Secret key. If no password is
+configured, both connections are unauthenticated. For unauthenticated Sentinel
+with authenticated data nodes, set `sentinel.authEnabled=false` and leave
+`sentinel.username` and `sentinel.password` empty; the data-node password still
+applies. Supply real passwords through a protected values file, not a committed
+file. `sentinel.username` optionally
+enables Sentinel ACL authentication. This password fallback is implemented by
+the chart; outside Helm, configure both password environment variables.
+
+Sentinel mode requires a gateway image built with Sentinel support and the
+`--check-redis` flag. Build and publish that image, then update
+`gatewayPlugin.container.image.tag` before upgrading. The initContainer uses
+the same image and Redis settings as the gateway to discover and PING the
+master, without Kubernetes discovery or a shell. The check retries in the same
+process every two seconds after a failed attempt (each PING is bounded to ten
+seconds). It waits indefinitely by default; `--check-redis-timeout=60s` sets an
+overall limit and exits nonzero on expiry. SIGINT/SIGTERM cancel the check.
+Direct mode keeps the BusyBox check.
+
+The Go client receives master-switch notifications and rediscovers the master
+on reconnection. Each pool logs successful connection address changes with its
+pool name and previous and current addresses; initial connections log at verbosity 2.
+These logs can help confirm that individual pools reconnect after a switch.
+Requests depending on Redis can still fail during the failover
+window; Sentinel does not guarantee zero data loss with asynchronous replication.
+This change does not migrate user records or configure Redis persistence.
+Back up and restore required records into the new cluster before switching.
+
+Environment variables for running the gateway outside this chart:
+
+| Variable | Purpose |
+| --- | --- |
+| `REDIS_SENTINEL_ENABLED` | Enables Sentinel; defaults to `false` |
+| `REDIS_SENTINEL_MASTER_NAME` | Required monitored master name |
+| `REDIS_SENTINEL_ADDRESSES` | Required comma-separated `host:port` seed list |
+| `REDIS_SENTINEL_USERNAME` | Optional Sentinel ACL user |
+| `REDIS_SENTINEL_PASSWORD` | Optional Sentinel password |
+| `REDIS_PASSWORD` | Data-node password, shared with direct mode |
+
+Save the configuration above in `redis-sentinel-values.yaml`, supply the
+required connection settings, and verify the rendered gateway Deployment
+before deploying:
+
+```sh
+helm lint dist/chart -f redis-sentinel-values.yaml
+helm template aibrix dist/chart -f redis-sentinel-values.yaml \
+  --show-only templates/gateway-plugin/deployment.yaml
+```
 
 ### Helm Uninstall
 

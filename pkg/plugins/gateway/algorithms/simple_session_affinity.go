@@ -136,6 +136,12 @@ type RedisBackedRouter interface {
 	Start(stopCh <-chan struct{}, redisClient *redis.Client)
 }
 
+// RedisClientsBackedRouter also preserves independent Sentinel failover.
+// RedisBackedRouter remains supported for existing direct-client integrations.
+type RedisClientsBackedRouter interface {
+	StartWithRedisClients(stopCh <-chan struct{}, clients *utils.RedisClients)
+}
+
 func init() {
 	Register(RouterSessionAffinity, NewSessionAffinityRouter)
 }
@@ -177,8 +183,21 @@ func (r *sessionAffinityRouter) Start(stopCh <-chan struct{}, redisClient *redis
 	if redisClient == nil {
 		return
 	}
+	r.start(stopCh, func() *utils.RedisClients { return utils.NewDirectRedisClients(redisClient) })
+}
+
+func (r *sessionAffinityRouter) StartWithRedisClients(stopCh <-chan struct{}, clients *utils.RedisClients) {
+	if clients.Shared() == nil {
+		return
+	}
+	r.start(stopCh, func() *utils.RedisClients { return clients })
+}
+
+func (r *sessionAffinityRouter) start(stopCh <-chan struct{}, getClients func() *utils.RedisClients) {
 	r.startOnce.Do(func() {
-		r.redisClient = sessionAffinityRedisClient(redisClient)
+		clients := getClients()
+		redisClient := clients.Shared()
+		r.redisClient = clients.Derive(&utils.RedisClientSettings{Name: "session-affinity", MaxRetries: redisClient.Options().MaxRetries, ContextTimeoutEnabled: true})
 		ticker := time.NewTicker(sessionKeyCacheSyncInterval)
 		go func() {
 			for {
@@ -194,21 +213,6 @@ func (r *sessionAffinityRouter) Start(stopCh <-chan struct{}, redisClient *redis
 			}
 		}()
 	})
-}
-
-// sessionAffinityRedisClient derives the client the router uses from the
-// gateway's shared one, with the caller's context deadline honored on the
-// socket.
-//
-// The shared client leaves ContextTimeoutEnabled off, so go-redis bounds a
-// command by its own 3s ReadTimeout and ignores the shorter deadline on the
-// context. sessionKeyRedisReadTimeout would then never apply to a Redis that
-// accepts the connection but stops answering. The rest of the gateway keeps
-// the shared client's defaults - only this router needs the context to win.
-func sessionAffinityRedisClient(client *redis.Client) *redis.Client {
-	options := *client.Options()
-	options.ContextTimeoutEnabled = true
-	return redis.NewClient(&options)
 }
 
 // syncSessionKeyPodsFromRedis reconciles this replica's local sessionKeyPods

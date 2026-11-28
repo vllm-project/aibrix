@@ -107,6 +107,13 @@ gatewayPlugin:
       host: "" # aibrix-redis-master
       port: 6379
       password: ""
+      sentinel:
+        enabled: false
+        authEnabled: true # Set false for unauthenticated Sentinel with authenticated data nodes.
+        masterName: ""
+        addresses: []
+        username: ""
+        password: ""
   auth:
     # Creates a Secret-backed AIBRIX_AUTH_BEARER_TOKEN environment variable for the gateway plugin.
     # NOTE: This is managed exclusively via this field. Do NOT add

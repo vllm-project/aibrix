@@ -1,5 +1,6 @@
 {{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
 {{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
+{{- $sentinelEnabled := dig "dependencies" "redis" "sentinel" "enabled" false .Values.gatewayPlugin }}
 {{- $shutdown := .Values.gatewayPlugin.gracefulShutdown | default dict }}
 {{- if $shutdown.enabled }}
 {{- if .Values.gateway.envoyAsSideCar }}
@@ -75,6 +76,14 @@ spec:
       {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gatewayPlugin.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       initContainers:
         - name: init-c
+          {{- if $sentinelEnabled }}
+          image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
+          imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
+          command: ["/gateway-plugins"]
+          args: ["--check-redis"]
+          env:
+            {{- include "aibrix.gateway.redisSentinelEnv" . | nindent 12 }}
+          {{- else }}
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
           imagePullPolicy: {{ .Values.gatewayPlugin.initContainer.image.imagePullPolicy | default "IfNotPresent" }}
           {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin") }}
@@ -87,6 +96,7 @@ spec:
           command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- else }}
           command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          {{- end }}
           {{- end }}
       containers:
         - name: gateway-plugin
@@ -122,6 +132,9 @@ spec:
             - name: metrics
               containerPort: 8080
           env:
+            {{- if $sentinelEnabled }}
+            {{- include "aibrix.gateway.redisSentinelEnv" . | nindent 12 }}
+            {{- else }}
             - name: REDIS_HOST
               value: {{ $redisHost }}
             - name: REDIS_PORT
@@ -132,6 +145,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
+            {{- end }}
             {{- end }}
             {{- $bearerToken := dig "auth" "bearerToken" "" .Values.gatewayPlugin }}
             {{- if $bearerToken }}

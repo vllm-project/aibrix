@@ -850,15 +850,23 @@ func newRedisAsyncJobStore(client redis.Cmdable) *redisAsyncJobStore {
 	}
 }
 
-// NewAsyncJobRegistryForClient picks the registry a Server should use. Without
+// NewAsyncJobRegistryForClients returns a registry and its owned Redis pool. Without
 // Redis (tests and standalone local development), records live in this process
 // only. Production gateways use the Redis implementation so every replica sees
 // the same records.
-func NewAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJobRegistry {
-	if client == nil {
-		return newMemoryAsyncJobRegistry(pods)
+// The caller must close the returned pool when the registry is no longer used.
+func NewAsyncJobRegistryForClients(clients *utils.RedisClients, pods podResolver) (AsyncJobRegistry, *redis.Client) {
+	if clients.Shared() == nil {
+		return newMemoryAsyncJobRegistry(pods), nil
 	}
-	return newRedisAsyncJobRegistry(asyncJobStoreClient(client), pods)
+	client := asyncJobStoreClient(clients)
+	return newRedisAsyncJobRegistry(client, pods), client
+}
+
+// NewAsyncJobRegistryForClient constructs a registry from a direct Redis client.
+func NewAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJobRegistry {
+	registry, _ := NewAsyncJobRegistryForClients(utils.NewDirectRedisClients(client), pods)
+	return registry
 }
 
 // asyncJobStoreClient derives the client the store uses from the gateway's
@@ -870,12 +878,10 @@ func NewAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJ
 // budget would mean nothing. The rest of the gateway keeps the shared client's
 // defaults - only this store owns a retry policy of its own.
 //
-// MaxRetries is -1 rather than 0 because go-redis reads 0 as "use the default".
-func asyncJobStoreClient(client *redis.Client) *redis.Client {
-	options := *client.Options()
-	options.MaxRetries = -1
-	options.ContextTimeoutEnabled = true
-	return redis.NewClient(&options)
+// RedisClients translates the effective zero retry count to go-redis's -1 input
+// and constructs an independent Sentinel failover client for this pool.
+func asyncJobStoreClient(clients *utils.RedisClients) *redis.Client {
+	return clients.Derive(&utils.RedisClientSettings{Name: "async-jobs", ContextTimeoutEnabled: true})
 }
 
 func (s *redisAsyncJobStore) put(ctx context.Context, record AsyncJobRecord) error {

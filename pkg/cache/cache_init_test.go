@@ -28,6 +28,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -380,6 +381,8 @@ func TestInitWithOptions_KVSyncBehavior(t *testing.T) {
 }
 
 func TestServiceIdentity(t *testing.T) {
+	shared := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	t.Cleanup(func() { _ = shared.Close() })
 	scenarios := []struct {
 		name     string
 		opts     InitOptions
@@ -415,6 +418,16 @@ func TestServiceIdentity(t *testing.T) {
 				RedisClient:  &redis.Client{},
 			},
 			expected: "metadata",
+		},
+		{
+			name:     "metadata service with RedisClients",
+			opts:     InitOptions{RedisClients: utils.NewDirectRedisClients(shared)},
+			expected: "metadata",
+		},
+		{
+			name:     "gateway with RedisClients",
+			opts:     InitOptions{IsGateway: true, RedisClients: utils.NewDirectRedisClients(shared)},
+			expected: "gateway",
 		},
 		{
 			name:     "controllers",

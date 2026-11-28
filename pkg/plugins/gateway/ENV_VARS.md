@@ -83,6 +83,41 @@ How the gateway stops routing to a broken or overloaded pod is described in [bla
 
 ---
 
+## Redis Connections
+
+Direct connections normalize `REDIS_HOST` and `REDIS_PORT`, accepting both bare
+IPv6 hosts (for example, `::1`) and bracketed IPv6 hosts (`[::1]`).
+
+In Sentinel mode, the gateway's shared client, asynchronous job store, cache
+admission and routing-read clients, and session-affinity router each have an
+independent failover client and connection pool.
+All use the startup Redis configuration snapshot, including data and Sentinel
+credentials. A `+switch-master` notification invalidates old-master connections
+in all five pools, even when the old master remains reachable. The asynchronous
+job store keeps go-redis internal retries disabled and context-based timeouts
+enabled.
+The cache admission client also disables internal retries to avoid counting a
+non-idempotent admission script twice. All derived clients enable context
+deadlines, including in direct mode, so a stalled socket respects the admission
+and routing-read budgets. The shared direct client's timeout policy is unchanged.
+
+Code embedding the gateway with a Sentinel client must use
+`utils.GetRedisClients()` and pass the returned object to
+`gateway.NewServerWithRedisClients` and `cache.InitOptions.RedisClients`.
+Copying a failover client's `Options()` into `redis.NewClient()` does not preserve
+its pool invalidation callback. Legacy direct-client constructors remain supported;
+they reject bare Sentinel clients to prevent incomplete failover wiring.
+The caller closes the shared pool through `RedisClients.Close`; each component
+closes the independent pools it derives. Server shutdown releases the async job
+pool and stops the session router; cache shutdown releases admission and read pools.
+
+Sentinel pools log successful connection address changes with `pool`,
+`previousAddress`, and `address` fields. Initial connections log at verbosity 2.
+These logs observe new connections rather than the arrival of a Sentinel notification.
+They do not include credentials.
+
+---
+
 ## Redis Sync (`statesync/`)
 
 | Variable | Type | Default | Description | Source |

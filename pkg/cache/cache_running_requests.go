@@ -392,13 +392,10 @@ func admitScriptDidNotRun(err error) bool {
 // admit script is not idempotent: a retry after an attempt that ran but lost its reply applies a
 // second +1, and the error that comes back describes only the last attempt. MaxRetries is -1
 // because go-redis reads 0 as "use the default".
-func admitRunningRequestsClient(client *redis.Client) *redis.Client {
-	if client == nil {
-		return nil
-	}
-	options := *client.Options()
-	options.MaxRetries = -1
-	return utils.NewRedisClientWithContextTimeout(&options)
+// Sentinel clients need their own failover callback; copying Options alone
+// leaves this pool connected to the old master after a switch notification.
+func admitRunningRequestsClient(clients *utils.RedisClients) *redis.Client {
+	return clients.Derive(&utils.RedisClientSettings{Name: "admission", ContextTimeoutEnabled: true})
 }
 
 // heartbeatRunningRequestsLiveness refreshes this gateway instance's entry in
