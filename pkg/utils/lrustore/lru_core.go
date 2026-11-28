@@ -25,12 +25,18 @@ import "time"
 //
 // Put sets each entry's lastAccessTime to the supplied timestamp and moves it
 // to the head of the recency list; Get does not mutate lastAccessTime or list
-// order. As long as Put timestamps are non-decreasing (the case for time.Now()
-// and monotonic clocks), the list stays ordered newest-at-head to oldest-at-tail,
-// allowing O(1) expiry checks and O(expired) tail-walk eviction. If Put ever
-// observes a timestamp earlier than the previous Put (e.g. a non-monotonic
-// custom test clock), eviction automatically falls back to scanning the map so
-// TTL semantics remain exact.
+// order.
+//
+// Monotonic clock contract: callers (including sharded caches that supply a
+// shared clock) should pass monotonically non-decreasing timestamps to Put
+// (Go's time.Now() satisfies this because time.Time.Before compares monotonic
+// readings). While Put timestamps are non-decreasing, lruList stays ordered
+// newest-at-head to oldest-at-tail, allowing O(1) expiry checks and O(expired)
+// tail-walk eviction. If Put ever observes a backwards step (e.g., a
+// non-monotonic custom test clock), eviction automatically falls back to
+// scanning freeTable so TTL semantics remain exact, and re-arms the tail-walk
+// fast path once a full fallback sweep confirms the surviving list is ordered
+// again.
 type UnlockedLRU[K comparable, V any] struct {
 	freeTable   map[K]*entry[K, V]
 	lruList     *list[K, V]
@@ -59,6 +65,9 @@ func NewUnlockedLRU[K comparable, V any](cap int, ttl time.Duration) *UnlockedLR
 // Put inserts or updates key with value at timestamp now, moving it to the head
 // of the recency list. It returns true if adding a new key caused a capacity
 // eviction from the tail.
+//
+// Callers should supply monotonically non-decreasing now timestamps (e.g.,
+// time.Now()) to stay on the O(1)/O(expired) eviction fast path.
 func (u *UnlockedLRU[K, V]) Put(key K, value V, now time.Time) bool {
 	if u.ordered {
 		if u.hasLastPut && now.Before(u.lastPutTime) {
@@ -140,6 +149,10 @@ func (u *UnlockedLRU[K, V]) EvictBatch(now time.Time, maxBatch int) (evicted int
 		for maxBatch <= 0 || evicted < maxBatch {
 			tail := u.lruList.tail.prev
 			if tail == u.lruList.head || now.Sub(tail.lastAccessTime) <= u.ttl {
+				if tail == u.lruList.head {
+					u.hasLastPut = false
+					u.lastPutTime = time.Time{}
+				}
 				return evicted, false
 			}
 			u.lruList.remove(tail)
@@ -147,7 +160,12 @@ func (u *UnlockedLRU[K, V]) EvictBatch(now time.Time, maxBatch int) (evicted int
 			evicted++
 		}
 		tail := u.lruList.tail.prev
-		return evicted, tail != u.lruList.head && now.Sub(tail.lastAccessTime) > u.ttl
+		if tail == u.lruList.head {
+			u.hasLastPut = false
+			u.lastPutTime = time.Time{}
+			return evicted, false
+		}
+		return evicted, now.Sub(tail.lastAccessTime) > u.ttl
 	}
 
 	for key, ent := range u.freeTable {
@@ -156,11 +174,41 @@ func (u *UnlockedLRU[K, V]) EvictBatch(now time.Time, maxBatch int) (evicted int
 			delete(u.freeTable, key)
 			evicted++
 			if maxBatch > 0 && evicted >= maxBatch {
+				if len(u.freeTable) == 0 {
+					u.tryRearmOrdered()
+					return evicted, false
+				}
 				return evicted, true
 			}
 		}
 	}
+	u.tryRearmOrdered()
 	return evicted, false
+}
+
+// tryRearmOrdered checks whether the surviving entries in lruList are ordered
+// oldest-at-tail to newest-at-head. If so, it re-enables the O(1)/O(expired)
+// tail-walk fast path and restores lastPutTime to the head's timestamp.
+// Must only be called under the caller's exclusive write lock after a full
+// fallback sweep completes.
+func (u *UnlockedLRU[K, V]) tryRearmOrdered() {
+	cur := u.lruList.tail.prev
+	if cur == u.lruList.head {
+		u.ordered = true
+		u.hasLastPut = false
+		u.lastPutTime = time.Time{}
+		return
+	}
+	prevTime := cur.lastAccessTime
+	for cur = cur.prev; cur != u.lruList.head; cur = cur.prev {
+		if cur.lastAccessTime.Before(prevTime) {
+			return
+		}
+		prevTime = cur.lastAccessTime
+	}
+	u.ordered = true
+	u.lastPutTime = prevTime
+	u.hasLastPut = true
 }
 
 type entry[K comparable, V any] struct {

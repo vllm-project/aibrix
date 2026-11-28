@@ -41,6 +41,11 @@ type LRUStore[K comparable, V any] struct {
 
 var _ Store[uint64, struct{}] = (*LRUStore[uint64, struct{}])(nil)
 
+// NewLRUStore creates a thread-safe LRUStore with the given capacity, TTL,
+// background eviction interval, and clock function f. Supplying a monotonic
+// clock (such as DefaultGetCurrentTime / time.Now) keeps eviction on the
+// O(1)/O(expired) tail-walk path; non-monotonic clocks fall back to scanning
+// until surviving entries are ordered again.
 func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f getCurrentTime) *LRUStore[K, V] {
 	store := &LRUStore[K, V]{
 		core:           NewUnlockedLRU[K, V](cap, ttl),
@@ -118,6 +123,9 @@ func (e *LRUStore[K, V]) Evict(now time.Time) int {
 		e.RUnlock()
 		return 0
 	}
+	// Bound total evictions to the store's current size so a concurrent writer
+	// inserting already-expired entries (e.g., negative TTL or skewed clock)
+	// cannot keep a single Evict call looping indefinitely.
 	limit := e.core.Len()
 	e.RUnlock()
 

@@ -226,6 +226,8 @@ func TestLRUStore_EvictNonMonotonicClockFallback(t *testing.T) {
 	}
 
 	// At t=50s: older-at-head has age 40s (> 30s), newer-at-tail has age -50s (<= 30s).
+	// Removing older-at-head leaves only newer-at-tail, so the completed fallback sweep
+	// should automatically re-arm the ordered O(1)/O(expired) fast path.
 	if evicted := store.Evict(base.Add(50 * time.Second)); evicted != 1 {
 		t.Fatalf("expected 1 evicted via fallback scan, got %d", evicted)
 	}
@@ -235,8 +237,68 @@ func TestLRUStore_EvictNonMonotonicClockFallback(t *testing.T) {
 	if _, ok := store.Get("newer-at-tail"); !ok {
 		t.Error("expected newer-at-tail to survive")
 	}
+	if !store.core.ordered {
+		t.Fatal("expected ordered fast path to re-arm once out-of-order entries are evicted")
+	}
+
+	// Verify that a fallback sweep does NOT prematurely re-arm while out-of-order entries
+	// still survive in the list, and DOES re-arm once those entries expire.
+	now = base.Add(80 * time.Second)
+	store.Put("out-of-order-mid", 3) // earlier than newer-at-tail (100s) -> disables ordered
+	now = base.Add(90 * time.Second)
+	store.Put("out-of-order-head", 4)
+	now = base.Add(10 * time.Second)
+	store.Put("expires-first", 5)
+	if store.core.ordered {
+		t.Fatal("expected backwards Put to disable ordered fast path")
+	}
+	// At t=105s: only expires-first (age 95s > 30s) expires; surviving list is
+	// tail -> newer-at-tail(100s) -> out-of-order-mid(80s) -> out-of-order-head(90s) -> head,
+	// which is STILL out of order, so ordered must remain false.
+	if evicted := store.Evict(base.Add(105 * time.Second)); evicted != 1 {
+		t.Fatalf("expected 1 evicted (expires-first), got %d", evicted)
+	}
+	if store.core.ordered {
+		t.Fatal("must not re-arm ordered fast path while surviving entries are still out of order")
+	}
+	// At t=115s: out-of-order-mid (age 35s > 30s) MUST still expire via fallback scan,
+	// even though tail newer-at-tail (age 15s <= 30s) is fresh.
+	if evicted := store.Evict(base.Add(115 * time.Second)); evicted != 1 {
+		t.Fatalf("expected out-of-order-mid to expire via fallback scan, got %d", evicted)
+	}
+	if _, ok := store.Get("out-of-order-mid"); ok {
+		t.Fatal("expected out-of-order-mid to be evicted")
+	}
+	// Surviving list is newer-at-tail(100s) -> out-of-order-head(90s): still out of order.
+	if store.core.ordered {
+		t.Fatal("must not re-arm while out-of-order-head(90s) sits ahead of newer-at-tail(100s)")
+	}
+	// At t=125s: out-of-order-head (age 35s > 30s) expires, leaving only newer-at-tail(100s);
+	// now the list is monotonic again and ordered re-arms with lastPutTime == 100s.
+	if evicted := store.Evict(base.Add(125 * time.Second)); evicted != 1 {
+		t.Fatalf("expected out-of-order-head to expire, got %d", evicted)
+	}
+	if !store.core.ordered {
+		t.Fatal("expected ordered fast path to re-arm once all out-of-order entries expired")
+	}
+	// Subsequent monotonic Put (>= 100s) stays on the ordered fast path.
+	now = base.Add(125 * time.Second)
+	store.Put("monotonic-again", 6)
+	if !store.core.ordered {
+		t.Fatal("expected subsequent monotonic Put to keep ordered fast path armed")
+	}
+	// Evict all remaining entries -> empty store stays ordered and resets hasLastPut.
+	if evicted := store.Evict(base.Add(200 * time.Second)); evicted != 2 {
+		t.Fatalf("expected 2 remaining entries evicted, got %d", evicted)
+	}
+	if !store.core.ordered || store.core.hasLastPut {
+		t.Fatalf("expected empty store to stay ordered with hasLastPut=false, got ordered=%v hasLastPut=%v",
+			store.core.ordered, store.core.hasLastPut)
+	}
 
 	// Verify multi-batch eviction (> defaultEvictBatchSize) in non-monotonic mode.
+	now = base.Add(100 * time.Second)
+	store.Put("anchor", 0)
 	now = base
 	for i := 0; i < defaultEvictBatchSize*2+50; i++ {
 		store.Put(fmt.Sprintf("exp-%d", i), i)
@@ -245,20 +307,40 @@ func TestLRUStore_EvictNonMonotonicClockFallback(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		store.Put(fmt.Sprintf("keep-%d", i), i)
 	}
+	if store.core.ordered {
+		t.Fatal("expected non-monotonic multi-batch setup to disable ordered fast path")
+	}
 	wantEvicted := defaultEvictBatchSize*2 + 50
 	if evicted := store.Evict(base.Add(50 * time.Second)); evicted != wantEvicted {
 		t.Fatalf("expected %d evicted across fallback batches, got %d", wantEvicted, evicted)
 	}
-	// newer-at-tail + 40 keep-* entries remain.
+	// anchor + 40 keep-* entries remain (all at t=100s, so list is ordered again and re-arms).
 	if store.Len() != 41 {
 		t.Fatalf("expected 41 surviving entries, got %d", store.Len())
 	}
-	// Calling Evict again when nothing is expired in non-monotonic mode must return 0.
+	if !store.core.ordered {
+		t.Fatal("expected multi-batch fallback sweep to re-arm ordered fast path once monotonic")
+	}
+	// Calling Evict again when nothing is expired must return 0.
 	if evicted := store.Evict(base.Add(50 * time.Second)); evicted != 0 {
-		t.Fatalf("expected 0 evicted on second non-monotonic sweep, got %d", evicted)
+		t.Fatalf("expected 0 evicted on subsequent sweep, got %d", evicted)
 	}
 	if store.Len() != 41 {
 		t.Fatalf("expected 41 entries untouched, got %d", store.Len())
+	}
+
+	// Non-monotonic drain-to-empty must also re-arm ordered and clear hasLastPut.
+	now = base
+	store.Put("backwards-drain", 99)
+	if store.core.ordered {
+		t.Fatal("expected backwards Put to disable ordered")
+	}
+	if evicted := store.Evict(base.Add(200 * time.Second)); evicted != 42 {
+		t.Fatalf("expected all 42 entries evicted on fallback drain, got %d", evicted)
+	}
+	if !store.core.ordered || store.core.hasLastPut {
+		t.Fatalf("expected fallback drain to re-arm ordered and clear hasLastPut, got ordered=%v hasLastPut=%v",
+			store.core.ordered, store.core.hasLastPut)
 	}
 }
 
