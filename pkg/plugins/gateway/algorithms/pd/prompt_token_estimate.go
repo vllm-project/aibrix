@@ -60,9 +60,10 @@ func loadPromptTokenEstimateConfig() promptTokenEstimateConfig {
 
 // EstimatePromptTokens estimates the prompt length of a request from its body
 // size when no token count is available. Text-only requests keep the original
-// one-token-per-four-bytes heuristic. For chat content parts, the media URL or
-// inline payload is removed from the byte count and a configurable per-part
-// token estimate is added instead.
+// one-token-per-four-bytes heuristic. Chat media parts and Responses input_image
+// parts have their URL or inline payload removed from the byte count and a
+// configurable per-part token estimate added instead. Other media shapes,
+// including Responses input_file, keep the body-byte fallback (tracked in #3662).
 func EstimatePromptTokens(reqBody []byte) int {
 	return estimatePromptTokensWithConfig(reqBody, defaultPromptTokenEstimateConfig)
 }
