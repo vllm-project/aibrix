@@ -17,6 +17,7 @@ package cache
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -162,6 +163,13 @@ func (c *Store) addPod(obj interface{}) {
 		}
 	}
 
+	// Restore the adapter edges that cached ModelAdapters list for this pod. A pod
+	// recreated under the same name can be routed to for an adapter before the
+	// controller reloads the adapter there; that is accepted, because dropping
+	// the edge instead could lose the mapping until the next ModelAdapter status
+	// change, which may never come.
+	c.linkModelAdaptersLocked(metaPod)
+
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
 
@@ -215,12 +223,17 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 	// TODO: No in place update is handled here
 
-	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
+	// Remove old mappings if present. Adapter edges are not inherited from the old
+	// pod: the ModelAdapter informer does not re-add them, because it fires only
+	// when a ModelAdapter changes, so they are rebuilt below from the cached
+	// ModelAdapters that list the pod (see linkModelAdaptersLocked). As in addPod,
+	// a pod recreated under the same name can be routed to for an adapter before
+	// the controller reloads the adapter there; that is accepted, because the
+	// previous behavior could lose the mapping permanently.
 	// A model that loses its only pod stays in the cache until the new mappings are
 	// added below, so a status update of that pod does not reset the model's
-	// pending count and output predictor. This covers the pod's base model only:
-	// adapter models served just by this pod are still dropped here and re-added
-	// later by the adapter informer.
+	// pending count and output predictor. An adapter served only by this pod is
+	// kept the same way while its edge is restored.
 	var emptiedModels []string
 	defer func() {
 		for _, modelName := range emptiedModels {
@@ -273,6 +286,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}
 		}
+		c.linkModelAdaptersLocked(metaPod)
 	} else {
 		c.reconcileModelClaimMetrics(oldMetaPod, nil, nil)
 		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
@@ -354,8 +368,27 @@ func (c *Store) addModelAdapter(obj interface{}) {
 	defer c.mu.Unlock()
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
+	key := utils.GeneratePodKey(model.Namespace, model.Name)
+	recorded, hasRecord := c.modelAdapters[key]
+	emptied := false
+	if hasRecord && recorded.UID == model.UID {
+		// An Add for an already-recorded adapter is the post-sync re-emit of a List()
+		// snapshot that may be older than the recorded Update, so apply the recorded
+		// state. The re-emit can still replay an adapter deleted after its List()
+		// snapshot; fixing that needs a discovery change and is out of scope.
+		model = recorded
+	} else {
+		// A new UID is a recreated adapter, which replaces the record.
+		if hasRecord {
+			emptied = c.unlinkAdapterLocked(recorded, recorded.Status.Instances)
+		}
+		c.setModelAdapterRecordLocked(key, model)
+	}
 	for _, pod := range model.Status.Instances {
 		c.addPodAndModelMappingLockedByName(pod, model.Namespace, model.Name)
+	}
+	if emptied {
+		c.dropModelIfEmptyLocked(model.Name)
 	}
 	c.setModelBaseModelLocked(model)
 
@@ -369,21 +402,23 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
+	key := utils.GeneratePodKey(newModel.Namespace, newModel.Name)
+	// Unlink the recorded state rather than oldObj, which a dropped event may have
+	// left outdated.
+	prev := c.modelAdapters[key]
+	if prev == nil {
+		prev = oldModel
+	}
+	c.setModelAdapterRecordLocked(key, newModel)
 	// Keep the model while its instances are swapped, so an update that leaves the
 	// instance list unchanged does not reset the model's pending count and predictor.
-	emptied := false
-	for _, pod := range oldModel.Status.Instances {
-		// the namespace of the pod is same as the namespace of model
-		if c.removePodModelMappingLocked(pod, oldModel.Namespace, oldModel.Name, 0) {
-			emptied = true
-		}
-	}
+	emptied := c.unlinkAdapterLocked(prev, prev.Status.Instances)
 
 	for _, pod := range newModel.Status.Instances {
 		c.addPodAndModelMappingLockedByName(pod, newModel.Namespace, newModel.Name)
 	}
 	if emptied {
-		c.dropModelIfEmptyLocked(oldModel.Name)
+		c.dropModelIfEmptyLocked(prev.Name)
 	}
 	c.setModelBaseModelLocked(newModel)
 
@@ -418,27 +453,112 @@ func (c *Store) setModelBaseModelLocked(model *modelv1alpha1.ModelAdapter) {
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
+	var key string
 	model, ok := obj.(*modelv1alpha1.ModelAdapter)
-	if !ok {
+	if ok {
+		key = utils.GeneratePodKey(model.Namespace, model.Name)
+	} else {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			return
 		}
-		model, ok = tombstone.Obj.(*modelv1alpha1.ModelAdapter)
-		if !ok {
-			return
-		}
+		// The tombstone key is namespace/name, the same key as the record.
+		key = tombstone.Key
+		model, _ = tombstone.Obj.(*modelv1alpha1.ModelAdapter)
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, pod := range model.Status.Instances {
-		// the namespace of the pod is same as the namespace of model
-		c.deletePodAndModelMappingLocked(pod, model.Namespace, model.Name, 0)
+	// Unlink the union of the recorded and the observed instances, so an edge
+	// survives neither a dropped event nor an outdated delete object. A key-only
+	// tombstone has no object, so the record alone names the adapter.
+	recorded := c.modelAdapters[key]
+	owner := recorded
+	if owner == nil {
+		owner = model
+	}
+	c.setModelAdapterRecordLocked(key, nil)
+	if owner == nil {
+		return
+	}
+	var instances []string
+	for _, m := range []*modelv1alpha1.ModelAdapter{recorded, model} {
+		if m != nil {
+			instances = append(instances, m.Status.Instances...)
+		}
+	}
+	slices.Sort(instances)
+	instances = slices.Compact(instances)
+	if c.unlinkAdapterLocked(owner, instances) {
+		c.dropModelIfEmptyLocked(owner.Name)
 	}
 
 	c.debugInfo()
+}
+
+// setModelAdapterRecordLocked replaces the record of the ModelAdapter at key with a
+// deep copy of model, or deletes the record when model is nil. It is the only
+// writer of modelAdapters and podAdapters. The old record's pods are unlinked from
+// podAdapters first, and inner sets that become empty are removed, so podAdapters
+// stays the inverse of the recorded status.instances with no empty sets. Duplicate
+// instance names are tolerated. Caller must hold c.mu.
+func (c *Store) setModelAdapterRecordLocked(key string, model *modelv1alpha1.ModelAdapter) {
+	if old, ok := c.modelAdapters[key]; ok {
+		for _, instance := range old.Status.Instances {
+			podKey := utils.GeneratePodKey(old.Namespace, instance)
+			delete(c.podAdapters[podKey], key)
+			if len(c.podAdapters[podKey]) == 0 {
+				delete(c.podAdapters, podKey)
+			}
+		}
+	}
+	if model == nil {
+		delete(c.modelAdapters, key)
+		return
+	}
+	if c.modelAdapters == nil {
+		c.modelAdapters = make(map[string]*modelv1alpha1.ModelAdapter)
+	}
+	if c.podAdapters == nil {
+		c.podAdapters = make(map[string]map[string]struct{})
+	}
+	record := model.DeepCopy()
+	c.modelAdapters[key] = record
+	for _, instance := range record.Status.Instances {
+		podKey := utils.GeneratePodKey(record.Namespace, instance)
+		adapters := c.podAdapters[podKey]
+		if adapters == nil {
+			adapters = make(map[string]struct{})
+			c.podAdapters[podKey] = adapters
+		}
+		adapters[key] = struct{}{}
+	}
+}
+
+// unlinkAdapterLocked removes the edge from each of instances to the adapter model,
+// and reports whether the model is left with no pod. An emptied model stays cached,
+// so the caller drops it with dropModelIfEmptyLocked once it knows no pod is
+// re-added. Caller must hold c.mu.
+func (c *Store) unlinkAdapterLocked(model *modelv1alpha1.ModelAdapter, instances []string) (emptied bool) {
+	for _, pod := range instances {
+		// the namespace of the pod is same as the namespace of model
+		if c.removePodModelMappingLocked(pod, model.Namespace, model.Name, 0) {
+			emptied = true
+		}
+	}
+	return emptied
+}
+
+// linkModelAdaptersLocked links metaPod to each recorded ModelAdapter that lists
+// it in status.instances, the same rule the adapter event path applies. The cost
+// is O(adapters listing the pod) through podAdapters. Caller must hold c.mu.
+func (c *Store) linkModelAdaptersLocked(metaPod *Pod) {
+	for adapterKey := range c.podAdapters[utils.GeneratePodKey(metaPod.Namespace, metaPod.Name)] {
+		model := c.modelAdapters[adapterKey]
+		c.addPodAndModelMappingLocked(metaPod, model.Name)
+		c.setModelBaseModelLocked(model)
+	}
 }
 
 // addPodLocked adds/resumes pod into the cache. flakyReAdd reports whether this was

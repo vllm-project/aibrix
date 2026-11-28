@@ -148,6 +148,16 @@ type Store struct {
 	// ModelClaim advertisements include non-routable port-0 states and are kept
 	// separate from metaModels by construction.
 	modelClaims modelClaimState
+	// modelAdapters is a deep copy of the last observed ModelAdapter per namespace/name,
+	// from its add until its delete, whether or not its pods are cached. Its
+	// status.instances is the desired set of adapter edges, which addPod and updatePod
+	// apply to the pod they cache (see linkModelAdaptersLocked).
+	// podAdapters is the inverse index: pod key -> set of adapter keys whose recorded
+	// status.instances list that pod. Invariant: podAdapters is exactly the inverse of
+	// the recorded status.instances, and holds no empty sets. Only
+	// setModelAdapterRecordLocked writes either map. Guarded by mu.
+	modelAdapters map[string]*modelv1alpha1.ModelAdapter
+	podAdapters   map[string]map[string]struct{}
 	// modelConfigs holds the model config JSON that discovery supplied per
 	// model (model_name -> config), read through ModelConfigCache.
 	modelConfigs utils.SyncMap[string, string]

@@ -30,6 +30,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func TestInitKVEventSync_FailureCleanup(t *testing.T) {
@@ -204,6 +205,7 @@ func testModelAdapter(name, namespace, podName string) *modelv1alpha1.ModelAdapt
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
+			UID:       types.UID("uid-" + namespace + "-" + name),
 		},
 		Status: modelv1alpha1.ModelAdapterStatus{
 			Instances: []string{podName},
@@ -273,17 +275,21 @@ func TestInitDiscoveryProvider_AdapterBeforePod(t *testing.T) {
 }
 
 func TestInitDiscoveryProvider_AdapterBeforePodWithoutReconcile(t *testing.T) {
-	// Demonstrates WHY the reconcile is needed:
-	// Without the re-emit, the adapter-to-pod mapping is lost.
+	// The post-sync re-emit is no longer the only way to repair an adapter that
+	// is seen before its pod. The store keeps the adapter, and addPod links the
+	// pod to every cached adapter that lists it, so the mapping is not lost even
+	// without the re-emit. The re-emit stays as a second, idempotent repair (see
+	// TestInitDiscoveryProvider_AdapterBeforePod); this test pins the store's
+	// own repair, which was a known loss before.
 	store := NewForTest()
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
 	provider := &mockProvider{
 		events: []discovery.WatchEvent{
-			// Adapter arrives first — mapping fails silently
+			// Adapter arrives first — pod not in cache yet, no mapping is made
 			{Type: discovery.EventAdd, Object: testModelAdapter("lora-adapter", "ns", "p1")},
-			// Pod arrives — but no one re-triggers the adapter mapping
+			// Pod arrives — addPod links it to the adapter that lists it
 			{Type: discovery.EventAdd, Object: testPod("p1", "ns", "base-model", 1)},
 			// NO reconcile
 		},
@@ -292,12 +298,15 @@ func TestInitDiscoveryProvider_AdapterBeforePodWithoutReconcile(t *testing.T) {
 	err := initDiscoveryProvider(store, provider, stopCh)
 	require.NoError(t, err)
 
-	// Base model exists (from the pod).
+	// Both the base model (from the pod) and the adapter exist.
 	models := store.ListModels()
 	assert.Contains(t, models, "base-model")
+	assert.Contains(t, models, "lora-adapter")
 
-	// Adapter model does NOT exist — the mapping was lost.
-	assert.NotContains(t, models, "lora-adapter")
+	// The adapter model maps to the pod.
+	pods, err := store.ListPodsByModel("lora-adapter")
+	require.NoError(t, err)
+	assert.Equal(t, 1, pods.Len())
 }
 
 func TestInitDiscoveryProvider_DeleteEvent(t *testing.T) {
