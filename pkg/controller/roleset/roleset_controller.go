@@ -152,6 +152,13 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		managedErrors = append(managedErrors, fmt.Errorf("sync pod error %v", err))
 	}
+
+	// 2.5 sweep pods/podsets of roles removed from the spec. In-place updates (Pooled, and
+	// Replica+InPlaceUpdate) rewrite the RoleSet spec in place, and syncPods only reconciles
+	// roles still in Spec.Roles, so a removed role's pods would otherwise leak.
+	if err := r.cleanupStaleRoles(ctx, roleSet); err != nil {
+		managedErrors = append(managedErrors, fmt.Errorf("cleanup stale roles error %v", err))
+	}
 	if err := r.emitTopologyPolicyPendingReplacementEvent(ctx, roleSet); err != nil {
 		managedErrors = append(managedErrors, fmt.Errorf("emit topology policy event error %v", err))
 	}

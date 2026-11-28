@@ -53,6 +53,7 @@ const (
 	InPlaceFallbackEventType        = "InPlaceFallback"
 	InPlaceUpdateStartedEventType   = "InPlaceUpdateStarted"
 	InPlaceUpdateCompletedEventType = "InPlaceUpdateCompleted"
+	StaleRoleCleanupEventType       = "StaleRoleCleanup"
 	FailureEventType                = "Failure"
 
 	topologyPreferredAffinityWeight int32 = 100

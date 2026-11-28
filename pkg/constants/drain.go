@@ -42,6 +42,11 @@ const (
 	// PodDrainReasonRollout means the pod was selected during rollout or replacement.
 	PodDrainReasonRollout = "rollout"
 
+	// PodDrainReasonRoleRemoved means the pod belonged to a role that was removed from the
+	// RoleSet spec (an in-place StormService update), so the role has no replica target to drain
+	// toward and its pods are deleted immediately.
+	PodDrainReasonRoleRemoved = "role-removed"
+
 	// PodDrainTargetActionDelete is the only drain target action supported by the
 	// current RoleSet/PodSet delete path.
 	PodDrainTargetActionDelete = "delete"

@@ -42,12 +42,16 @@ const (
 )
 
 type Result struct {
-	Changed      bool
+	Changed bool
+	// Deleted counts pods this call removed immediately (the nil-spec path). It is reported even
+	// when the call later errors on another pod, so callers can record exactly how many went away.
+	Deleted      int
 	RequeueAfter time.Duration
 }
 
 func (r *Result) Merge(other Result) {
 	r.Changed = r.Changed || other.Changed
+	r.Deleted += other.Deleted
 	if other.RequeueAfter <= 0 {
 		return
 	}
@@ -93,6 +97,7 @@ func deletePodsImmediately(ctx context.Context, cli client.Client, pods []*corev
 			return result, err
 		}
 		result.Changed = true
+		result.Deleted++
 	}
 	return result, nil
 }

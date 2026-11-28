@@ -18,6 +18,7 @@ package roleset
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -118,6 +119,92 @@ var _ = Describe("RoleSet Controller", func() {
 				Expect(metav1.IsControlledBy(&pods[i], resource)).To(BeTrue(),
 					"pod %s should be controlled by the RoleSet", pods[i].Name)
 			}
+		})
+	})
+})
+
+var _ = Describe("RoleSet stale-role sweep", func() {
+	Context("When a role is removed from the spec in place", func() {
+		const resourceName = "sweep-resource"
+
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+		var reconciler *RoleSetReconciler
+
+		reconcileOnce := func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(err).NotTo(HaveOccurred())
+		}
+
+		podsForRole := func(role string) []corev1.Pod {
+			pods := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, pods, client.InNamespace(nn.Namespace),
+				client.MatchingLabels{constants.RoleSetNameLabelKey: resourceName, constants.RoleNameLabelKey: role})).To(Succeed())
+			return pods.Items
+		}
+
+		role := func(name string) orchestrationv1alpha1.RoleSpec {
+			return orchestrationv1alpha1.RoleSpec{
+				Name:     name,
+				Replicas: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox"}}},
+				},
+			}
+		}
+
+		BeforeEach(func() {
+			reconciler = &RoleSetReconciler{
+				Client:        k8sClient,
+				Scheme:        k8sClient.Scheme(),
+				EventRecorder: record.NewFakeRecorder(100),
+				DynamicClient: dynamic.NewForConfigOrDie(cfg),
+			}
+			By("creating a RoleSet with two roles, prefill and decode")
+			resource := &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: nn.Namespace},
+				Spec:       orchestrationv1alpha1.RoleSetSpec{Roles: []orchestrationv1alpha1.RoleSpec{role("prefill"), role("decode")}},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &orchestrationv1alpha1.RoleSet{}
+			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			Eventually(func(g Gomega) {
+				reconcileOnce(g)
+				err := k8sClient.Get(ctx, nn, &orchestrationv1alpha1.RoleSet{})
+				g.Expect(errors.IsNotFound(err)).To(BeTrue())
+			}).WithTimeout(10 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+		})
+
+		It("deletes the removed role's pods via Reconcile and keeps the surviving role", func() {
+			By("reconciling until both roles have their pod")
+			Eventually(func(g Gomega) {
+				reconcileOnce(g)
+				g.Expect(podsForRole("prefill")).To(HaveLen(1))
+				g.Expect(podsForRole("decode")).To(HaveLen(1))
+			}).WithTimeout(10 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+
+			By("removing the decode role from the spec in place")
+			resource := &orchestrationv1alpha1.RoleSet{}
+			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
+			resource.Spec.Roles = []orchestrationv1alpha1.RoleSpec{role("prefill")}
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+			By("reconciling: the post-reconcile sweep deletes the removed role's pods")
+			Eventually(func(g Gomega) {
+				reconcileOnce(g)
+				g.Expect(podsForRole("decode")).To(BeEmpty())
+			}).WithTimeout(10 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+
+			By("the surviving role's pod is untouched")
+			Consistently(func(g Gomega) {
+				reconcileOnce(g)
+				g.Expect(podsForRole("prefill")).To(HaveLen(1))
+				g.Expect(podsForRole("decode")).To(BeEmpty())
+			}).WithTimeout(2 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 		})
 	})
 })
