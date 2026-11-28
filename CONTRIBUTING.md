@@ -96,9 +96,9 @@ automatically exempt: it must identify the real behavior or risk it protects.
 - **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
   - Answer a reviewer's question before changing code in response to it. A
     question is not a request for a change.
-  - Address each review round in one push, then wait for the reviewer before
-    pushing again. Fixing CI, or a rebase the reviewer asked for, is the
-    exception.
+  - Address each review round in one push, then wait for a reviewer to
+    respond before pushing again. One push may cover feedback from several
+    reviewers. Fixing CI, or a rebase a reviewer asked for, is the exception.
   - Limit revisions to what the review requested. Propose any further
     changes in the thread first.
   - You are responsible for every comment and push on your PR. Do not let an

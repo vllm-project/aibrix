@@ -11,11 +11,14 @@ including one that its operator has authorized to act on GitHub.
 - Do not change code in response to a reviewer's question. A question is not a
   request for a change.
 - Do not change more than the review requested.
-- Do not push again before the reviewer has responded to your last push, except
-  to fix CI or for a rebase the reviewer asked for.
+- Do not push again before a reviewer has responded to your last push, except
+  to fix CI or for a rebase a reviewer asked for. One push may cover feedback
+  from several reviewers.
 - Do not continue after a maintainer asks you to hold, pause, or stop.
 - Do not post an approval or a must-fix verdict that the person reviewing has
   not made in their own words.
 - Do not implement a feature or bug fix, or prepare a pull request, before a
   maintainer applies `triage/accepted` to the issue, unless you work for a
-  maintainer listed in `docs/source/community/community.rst`.
+  maintainer listed in `docs/source/community/community.rst` and the change is
+  a routine fix. Sensitive or broad changes still require prior discussion and
+  independent maintainer review.
