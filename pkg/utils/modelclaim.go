@@ -39,9 +39,10 @@ const NVIDIAGPUResourceName v1.ResourceName = "nvidia.com/gpu"
 
 // modelClaimVLLMFlagAliases are vLLM's short names for the flags read here.
 var modelClaimVLLMFlagAliases = map[string]string{
-	"-tp": "--tensor-parallel-size",
-	"-pp": "--pipeline-parallel-size",
-	"-dp": "--data-parallel-size",
+	"-tp":  "--tensor-parallel-size",
+	"-pp":  "--pipeline-parallel-size",
+	"-pcp": "--prefill-context-parallel-size",
+	"-dp":  "--data-parallel-size",
 }
 
 // ModelClaimEngineFlag reads an engineConfig.args key the way vLLM does. It
@@ -84,7 +85,7 @@ func modelClaimEngineArg(args map[string]string, name string) (string, bool, err
 // ModelClaimVLLMParallelism returns the fixed GPU group size required by a
 // vLLM engine. ModelClaim deliberately keeps these engine options in
 // engineConfig.args; the pool Pod's GPU limit is the resource contract and
-// must match TP * PP.
+// must match TP * PP * PCP.
 func ModelClaimVLLMParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error) {
 	args := map[string]string{}
 	if config != nil && config.Args != nil {
@@ -97,15 +98,19 @@ func ModelClaimVLLMParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (in
 	if found {
 		return 0, fmt.Errorf("--gpu-memory-utilization is incompatible with kvcached; use the pool KV policy instead")
 	}
-	tensor, err := positiveEngineArg(args, "--tensor-parallel-size")
+	tensor, err := positiveEngineArg(args, "--tensor-parallel-size", false)
 	if err != nil {
 		return 0, err
 	}
-	pipeline, err := positiveEngineArg(args, "--pipeline-parallel-size")
+	pipeline, err := positiveEngineArg(args, "--pipeline-parallel-size", false)
 	if err != nil {
 		return 0, err
 	}
-	data, err := positiveEngineArg(args, "--data-parallel-size")
+	prefillContext, err := positiveEngineArg(args, "--prefill-context-parallel-size", true)
+	if err != nil {
+		return 0, err
+	}
+	data, err := positiveEngineArg(args, "--data-parallel-size", false)
 	if err != nil {
 		return 0, err
 	}
@@ -115,15 +120,19 @@ func ModelClaimVLLMParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (in
 	if tensor > math.MaxInt64/pipeline {
 		return 0, fmt.Errorf("tensor and pipeline parallelism product overflows int64")
 	}
-	return tensor * pipeline, nil
+	parallelism := tensor * pipeline
+	if parallelism > math.MaxInt64/prefillContext {
+		return 0, fmt.Errorf("tensor, pipeline, and prefill context parallelism product overflows int64")
+	}
+	return parallelism * prefillContext, nil
 }
 
-func positiveEngineArg(args map[string]string, name string) (int64, error) {
+func positiveEngineArg(args map[string]string, name string, emptyIsUnset bool) (int64, error) {
 	raw, found, err := modelClaimEngineArg(args, name)
 	if err != nil {
 		return 0, err
 	}
-	if !found {
+	if !found || (emptyIsUnset && raw == "") {
 		return 1, nil
 	}
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)

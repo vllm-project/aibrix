@@ -26,6 +26,7 @@ export const MODEL_CLAIM_LAUNCHER_FLAGS = [
 const vllmFlagAliases = new Map([
   ['-tp', '--tensor-parallel-size'],
   ['-pp', '--pipeline-parallel-size'],
+  ['-pcp', '--prefill-context-parallel-size'],
   ['-dp', '--data-parallel-size'],
 ]);
 
@@ -156,7 +157,7 @@ export interface EngineArgsValidation {
   // topologyError is about the arguments as a whole: their parallelism, or
   // its fit with the pool.
   topologyError: string | null;
-  // parallelism is TP * PP for vLLM, and null when it cannot be read or the
+  // parallelism is TP * PP * PCP for vLLM, and null when it cannot be read or the
   // engine is not held to the pool topology.
   parallelism: number | null;
   args: Record<string, string>;
@@ -182,7 +183,10 @@ export function validateEngineArgs(
     const value = row.value.trim();
     if (!key && !value) return null;
     const { flag, value: valueAfterEquals } = engineFlag(key);
-    if (!key.startsWith('--') || flag.length <= 2) return 'Use an engine flag such as --max-model-len.';
+    const rawFlag = key.split('=', 1)[0];
+    if ((!key.startsWith('--') && !vllmFlagAliases.has(rawFlag)) || flag.length <= 2) {
+      return 'Use an engine flag such as --max-model-len.';
+    }
     if (/\s/.test(key)) return 'A flag must not contain whitespace.';
     if (valueAfterEquals !== null && value) return `${key} already gives a value after "="; leave the value empty.`;
     const owned = launcherFlag(flag);
@@ -201,8 +205,9 @@ export function validateEngineArgs(
   }
   const tensor = positiveEngineArg(flags, '--tensor-parallel-size');
   const pipeline = positiveEngineArg(flags, '--pipeline-parallel-size');
+  const prefillContext = positiveEngineArg(flags, '--prefill-context-parallel-size');
   const data = positiveEngineArg(flags, '--data-parallel-size');
-  for (const value of [tensor, pipeline, data]) {
+  for (const value of [tensor, pipeline, prefillContext, data]) {
     if (typeof value === 'string') return { rowErrors, topologyError: value, parallelism: null, args };
   }
   if (data !== 1) {
@@ -213,12 +218,12 @@ export function validateEngineArgs(
       args,
     };
   }
-  const parallelism = (tensor as number) * (pipeline as number);
+  const parallelism = (tensor as number) * (pipeline as number) * (prefillContext as number);
   const poolGpus = poolGpusPerPod(pool);
   if (poolGpus !== null && poolGpus !== parallelism) {
     return {
       rowErrors,
-      topologyError: `TP × PP is ${parallelism}, but Pods in pool ${pool?.name} have ${poolGpus} GPU${poolGpus === 1 ? '' : 's'}. Pick a pool whose Pods have ${parallelism}.`,
+      topologyError: `TP × PP × PCP is ${parallelism}, but Pods in pool ${pool?.name} have ${poolGpus} GPU${poolGpus === 1 ? '' : 's'}. Pick a pool whose Pods have ${parallelism}.`,
       parallelism,
       args,
     };

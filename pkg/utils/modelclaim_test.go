@@ -125,16 +125,21 @@ func TestModelClaimVLLMParallelism(t *testing.T) {
 	}{
 		{name: "no args is one card", want: 1},
 		{name: "tp times pp", args: map[string]string{"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}, want: 4},
+		{name: "tp times pp times pcp", args: map[string]string{"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2", "--prefill-context-parallel-size": "2"}, want: 8},
+		{name: "empty pcp is unset", args: map[string]string{"--prefill-context-parallel-size": ""}, want: 1},
+		{name: "decode context is left to vllm", args: map[string]string{"--tensor-parallel-size": "4", "--decode-context-parallel-size": "not-a-number"}, want: 4},
 		{name: "explicit dp of one", args: map[string]string{"--data-parallel-size": "1"}, want: 1},
 		{name: "gpu memory utilization", args: map[string]string{"--gpu-memory-utilization": "0.9"}, wantErr: "incompatible with kvcached"},
 		{name: "data parallelism", args: map[string]string{"--data-parallel-size": "2"}, wantErr: "unsupported by fixed topology pools"},
 		{name: "not a number", args: map[string]string{"--tensor-parallel-size": "two"}, wantErr: "must be a positive integer"},
 		{name: "zero", args: map[string]string{"--pipeline-parallel-size": "0"}, wantErr: "must be a positive integer"},
+		{name: "invalid pcp", args: map[string]string{"--prefill-context-parallel-size": "invalid"}, wantErr: "--prefill-context-parallel-size must be a positive integer"},
+		{name: "zero pcp", args: map[string]string{"--prefill-context-parallel-size": "0"}, wantErr: "--prefill-context-parallel-size must be a positive integer"},
 		{name: "empty", args: map[string]string{"--tensor-parallel-size": ""}, wantErr: "must be a positive integer"},
 		{name: "empty after equals", args: map[string]string{"--tensor-parallel-size=": ""}, wantErr: "must be a positive integer"},
 		{name: "value after equals", args: map[string]string{"--tensor-parallel-size=2": ""}, want: 2},
 		{name: "underscores", args: map[string]string{"--tensor_parallel_size": "2", "--pipeline_parallel_size": "2"}, want: 4},
-		{name: "short aliases", args: map[string]string{"-tp": "2", "-pp=2": ""}, want: 4},
+		{name: "short aliases", args: map[string]string{"-tp": "2", "-pp=2": "", "-pcp=2": ""}, want: 8},
 		{name: "gpu memory utilization after equals", args: map[string]string{"--gpu-memory-utilization=0.9": ""}, wantErr: "incompatible with kvcached"},
 		{name: "gpu memory utilization with underscores", args: map[string]string{"--gpu_memory_utilization": "0.9"}, wantErr: "incompatible with kvcached"},
 		{name: "data parallelism after equals", args: map[string]string{"--data-parallel-size=2": ""}, wantErr: "unsupported by fixed topology pools"},
@@ -157,6 +162,16 @@ func TestModelClaimVLLMParallelism(t *testing.T) {
 	assert.Equal(t, int64(1), got)
 }
 
+func TestModelClaimVLLMParallelismRejectsPrefillContextOverflow(t *testing.T) {
+	_, err := ModelClaimVLLMParallelism(&modelv1alpha1.ModelClaimEngineConfig{
+		Args: map[string]string{
+			"--tensor-parallel-size":          "9223372036854775807",
+			"--prefill-context-parallel-size": "2",
+		},
+	})
+	assert.EqualError(t, err, "tensor, pipeline, and prefill context parallelism product overflows int64")
+}
+
 func TestModelClaimEngineFlag(t *testing.T) {
 	cases := []struct {
 		key, flag, value string
@@ -168,6 +183,7 @@ func TestModelClaimEngineFlag(t *testing.T) {
 		{key: "--served_model_name=a=b", flag: "--served-model-name", value: "a=b", hasValue: true},
 		{key: "--enforce-eager=", flag: "--enforce-eager", hasValue: true},
 		{key: "-tp", flag: "--tensor-parallel-size"},
+		{key: "-pcp=2", flag: "--prefill-context-parallel-size", value: "2", hasValue: true},
 		{key: "-q", flag: "-q"},
 	}
 	for _, tc := range cases {

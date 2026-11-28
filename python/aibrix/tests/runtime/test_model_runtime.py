@@ -888,13 +888,44 @@ def test_launch_passes_its_own_flags_after_the_claims(
     assert launched == [[sys.executable, "-m", module] + claim_flags + own_flags]
 
 
-def test_vllm_parallelism_defaults_and_combines_tp_pp():
+def test_vllm_parallelism_defaults_and_combines_tp_pp_pcp():
     from aibrix.runtime.model_runtime import vllm_parallelism
 
     assert vllm_parallelism(None, None) == 1
     assert (
         vllm_parallelism(
             {"args": {"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}},
+            None,
+        )
+        == 4
+    )
+    assert (
+        vllm_parallelism(
+            {
+                "args": {
+                    "--tensor-parallel-size": "2",
+                    "--pipeline-parallel-size": "2",
+                    "--prefill-context-parallel-size": "2",
+                    "--decode-context-parallel-size": "2",
+                }
+            },
+            None,
+        )
+        == 8
+    )
+
+
+def test_vllm_parallelism_leaves_decode_context_validation_to_vllm():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    assert (
+        vllm_parallelism(
+            {
+                "args": {
+                    "--tensor-parallel-size": "4",
+                    "--decode-context-parallel-size": "not-a-number",
+                }
+            },
             None,
         )
         == 4
@@ -912,7 +943,9 @@ def test_vllm_parallelism_reads_flags_the_way_vllm_does():
         )
         == 4
     )
-    assert vllm_parallelism({"args": {"-tp": "2", "-pp=2": ""}}, None) == 4
+    assert (
+        vllm_parallelism({"args": {"-tp": "2", "-pp=2": "", "-pcp=2": ""}}, None) == 8
+    )
 
 
 @pytest.mark.parametrize(
@@ -920,6 +953,8 @@ def test_vllm_parallelism_reads_flags_the_way_vllm_does():
     [
         {"--tensor-parallel-size": "0"},
         {"--pipeline-parallel-size": "not-a-number"},
+        {"--prefill-context-parallel-size": "0"},
+        {"--prefill-context-parallel-size": ""},
         {"--data-parallel-size": "2"},
         {"--data-parallel-size=2": ""},
         {"--gpu-memory-utilization=0.9": ""},
@@ -945,8 +980,15 @@ def test_vllm_parallelism_refuses_a_flag_set_twice():
         )
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"--tensor-parallel-size": "2"},
+        {"--prefill-context-parallel-size": "2"},
+    ],
+)
 def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(
-    monkeypatch,
+    monkeypatch, args
 ):
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -960,11 +1002,18 @@ def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(
         make_agent().activate(
             model_name="tp2",
             artifact_url="hf://Org/M1",
-            engine_config={"args": {"--tensor-parallel-size": "2"}},
+            engine_config={"args": args},
         )
 
 
-def test_activate_accepts_vllm_tp_pp_matching_visible_gpus(monkeypatch):
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"},
+        {"--tensor-parallel-size": "2", "--prefill-context-parallel-size": "2"},
+    ],
+)
+def test_activate_accepts_vllm_parallelism_matching_visible_gpus(monkeypatch, args):
     import aibrix.runtime.model_runtime as runtime_module
 
     monkeypatch.setattr(
@@ -979,9 +1028,7 @@ def test_activate_accepts_vllm_tp_pp_matching_visible_gpus(monkeypatch):
     inst = make_agent().activate(
         model_name="tp2pp2",
         artifact_url="hf://Org/M1",
-        engine_config={
-            "args": {"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}
-        },
+        engine_config={"args": args},
     )
 
     assert inst.model_name == "tp2pp2"
