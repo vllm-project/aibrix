@@ -32,6 +32,7 @@ import (
 	"github.com/openai/openai-go/v3/packages/param"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/jsonrender"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -1280,7 +1281,7 @@ func decisionsInputText(input []byte) (text, errMsg string) {
 
 // decisionText renders a JSON string, object, or array, the type SGLang calls a decision
 // text, to the text SGLang puts in the prompt. An object or array is re-serialized as compact
-// JSON the way SGLang does (see renderJSONLikePython). blank reports what SGLang treats as
+// JSON the way SGLang does (see jsonrender.RenderJSONLikePython). blank reports what SGLang treats as
 // blank: an empty or whitespace-only string, or an empty object or array. ok is false for
 // any other JSON type or a value that does not parse.
 func decisionText(value []byte) (text string, blank, ok bool) {
@@ -1294,7 +1295,7 @@ func decisionText(value []byte) (text string, blank, ok bool) {
 		}
 		return text, strings.TrimSpace(text) == "", true
 	case '{', '[':
-		rendered, err := renderJSONLikePython(value)
+		rendered, err := jsonrender.RenderJSONLikePython(value)
 		if err != nil {
 			return "", false, false
 		}

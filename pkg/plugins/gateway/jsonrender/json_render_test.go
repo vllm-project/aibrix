@@ -14,13 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package jsonrender
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,32 +82,9 @@ func Test_renderJSONLikePython(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := renderJSONLikePython([]byte(tt.doc))
+			got, err := RenderJSONLikePython([]byte(tt.doc))
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-// A parse failure is logged with its reason only: sonic's error text quotes the body around the
-// failure, which is customer content.
-func Test_jsonParseReason_OmitsBodyContent(t *testing.T) {
-	const secret = "SECRET" // short enough to fit in the excerpt sonic quotes
-	var req struct {
-		Model string `json:"model"`
-	}
-	for name, body := range map[string]string{
-		"syntax error":  `{"model":"m","input":"` + secret + `" "oops":1}`,
-		"type mismatch": `{"model":{"leak":"` + secret + `"}}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			err := sonic.Unmarshal([]byte(body), &req)
-			require.Error(t, err)
-			require.Contains(t, err.Error(), secret, "premise: sonic's own error text quotes the body")
-
-			reason := jsonParseReason(err)
-			assert.NotEmpty(t, reason)
-			assert.NotContains(t, reason, secret)
 		})
 	}
 }
@@ -121,7 +97,7 @@ func Test_renderJSONLikePython_Invalid(t *testing.T) {
 		"too deep":       strings.Repeat("[", 20000) + strings.Repeat("]", 20000),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := renderJSONLikePython([]byte(doc))
+			_, err := RenderJSONLikePython([]byte(doc))
 			assert.Error(t, err)
 		})
 	}

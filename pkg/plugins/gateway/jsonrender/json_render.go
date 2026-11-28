@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package gateway
+package jsonrender
 
 import (
 	"bytes"
@@ -25,7 +25,9 @@ import (
 	"strings"
 )
 
-// renderJSONLikePython re-renders a JSON document the way Python's
+const jsonNull = "null"
+
+// RenderJSONLikePython re-renders a JSON document the way Python's
 // json.dumps(json.loads(doc), ensure_ascii=False, separators=(",", ":")) does, which is how
 // SGLang turns a structured /v1/decisions "input" or /v1/systemone "state" into prompt
 // text. Parsing and re-serializing, rather than only stripping whitespace, matters because
@@ -41,7 +43,7 @@ import (
 // is kept as written, where Python keeps the first position with the last value; a lone
 // surrogate escape becomes U+FFFD, where Python keeps the surrogate; and the NaN/Infinity
 // literals Python accepts are rejected as invalid JSON.
-func renderJSONLikePython(doc []byte) (string, error) {
+func RenderJSONLikePython(doc []byte) (string, error) {
 	// json.Valid caps nesting depth, which bounds the recursion below on hostile input.
 	if !json.Valid(doc) {
 		return "", errors.New("invalid JSON")
