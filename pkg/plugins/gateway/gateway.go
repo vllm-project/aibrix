@@ -1051,20 +1051,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// bound prefill and decode+combined targets to K without Redis reads, then filter
 		// only routable decode/combined pods against aibrix:rrq:* (#3619) with
 		// InflightScopeCandidates iff the candidate stage shrank readyPods.
-		if isPD {
-			readyBeforeCandidates := len(readyPods)
-			readyPods = routing.SelectRouterCandidates(routeCtx, router, readyPods)
-			scope := inflight.InflightScopeFleet
-			if len(readyPods) < readyBeforeCandidates {
-				scope = inflight.InflightScopeCandidates
-			}
-			if readyPods, err = s.narrowPDToInflightCapacity(routeCtx, readyPods, scope); err != nil {
-				return "", err
-			}
-		} else {
-			if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet); err != nil {
-				return "", err
-			}
+		if readyPods, err = s.narrowExclusiveToInflightCapacity(routeCtx, router, readyPods, isPD); err != nil {
+			return "", err
 		}
 		if isPD {
 			engine, err := routing.ValidateAndGetLLMEngine(readyPods)

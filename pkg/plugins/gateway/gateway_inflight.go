@@ -27,6 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
@@ -212,6 +213,22 @@ func (s *Server) narrowToInflightCapacity(routeCtx *types.RoutingContext, pods [
 		)
 	}
 	return nil, errReplicaInflightExceeded
+}
+
+// narrowExclusiveToInflightCapacity applies optional router-owned candidate narrowing
+// (for PD, RFC #3620 Phase 2) and then enforces the per-replica inflight cap for
+// exclusive strategies.
+func (s *Server) narrowExclusiveToInflightCapacity(routeCtx *types.RoutingContext, router types.Router, readyPods []*v1.Pod, isPD bool) ([]*v1.Pod, error) {
+	if !isPD {
+		return s.narrowToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet)
+	}
+	readyBeforeCandidates := len(readyPods)
+	readyPods = routing.SelectRouterCandidates(routeCtx, router, readyPods)
+	scope := inflight.InflightScopeFleet
+	if len(readyPods) < readyBeforeCandidates {
+		scope = inflight.InflightScopeCandidates
+	}
+	return s.narrowPDToInflightCapacity(routeCtx, readyPods, scope)
 }
 
 // narrowPDToInflightCapacity applies the per-replica inflight cap to the pods PD routing can

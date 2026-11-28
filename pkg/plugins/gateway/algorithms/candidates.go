@@ -160,6 +160,9 @@ func SelectCandidatesFromPodList(ctx *types.RoutingContext, c cache.Cache, route
 // aibrix_routing_candidate_selections_total{model,path} whenever the router
 // narrows readyPods (len(candidates) < len(readyPods)).
 func SelectRouterCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
+	if ctx == nil {
+		return readyPods
+	}
 	selector, ok := router.(types.CandidateSelector)
 	if !ok {
 		return readyPods
