@@ -36,7 +36,7 @@ func modelParallelism(pm *modelv1alpha1.ModelClaim) (int64, error) {
 }
 
 // instanceGPUCount is how many cards one instance of a claim runs on, as far
-// as a pod is held to that: TP * PP for vLLM. Another engine, or a topology
+// as a pod is held to that: TP * PP * PCP for vLLM. Another engine, or a topology
 // that cannot be read, holds a pod to nothing, and the count is then zero.
 func instanceGPUCount(pm *modelv1alpha1.ModelClaim) int64 {
 	if !isVLLMModel(pm) {
@@ -100,7 +100,7 @@ func reportedAccelerators(snapshot *RuntimeSnapshot) int {
 
 // podSupportsVLLMParallelism accepts legacy/mock Pods without GPU resources so
 // existing CPU-only controller tests remain valid. Real warm pools declare a
-// GPU limit and must exactly match the requested TP * PP topology. A Pod given
+// GPU limit and must exactly match the requested TP * PP * PCP topology. A Pod given
 // its GPUs without such a request is held to the topology once its runtime
 // reports them, in admissibleCandidates.
 func podSupportsVLLMParallelism(pod corev1.Pod, parallelism int64) bool {
