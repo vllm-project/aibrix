@@ -21,7 +21,7 @@ or job-progress dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, floor, ldexp
+from math import ceil, floor, isfinite, ldexp
 from time import monotonic
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -428,13 +428,17 @@ def _float_from_nested(mapping: Any, *keys: str) -> Optional[float]:
             value = candidate.get(key)
             if value is not None:
                 try:
-                    return float(value)
+                    parsed = float(value)
+                    if isfinite(parsed):
+                        return parsed
                 except (TypeError, ValueError):
                     continue
             ms_value = candidate.get(f"{key}_ms")
             if ms_value is not None:
                 try:
-                    return float(ms_value) / 1000.0
+                    parsed_ms = float(ms_value)
+                    if isfinite(parsed_ms):
+                        return parsed_ms / 1000.0
                 except (TypeError, ValueError):
                     continue
     return None
