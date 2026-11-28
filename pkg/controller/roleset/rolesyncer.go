@@ -125,11 +125,17 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
+	revertResult, err := controllerdrain.CancelPods(ctx, s.cli, s.recorder, roleSet,
+		revertedRolloutDrainingPods(activePods, podsToDelete, s.computeHashFunc(&role.Template, nil)), aibrixconst.PodDrainReasonRollout)
+	if err != nil {
+		return controllerdrain.Result{}, err
+	}
 	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, podsToDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
 	result.Merge(cancelResult)
+	result.Merge(revertResult)
 	result.Changed = result.Changed || created > 0
 	s.printLog(roleSet, role, podsToCreate, podsToDelete)
 	return result, nil
@@ -544,13 +550,62 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
+	revertResult, err := controllerdrain.CancelPods(ctx, s.cli, s.recorder, roleSet,
+		revertedRolloutDrainingPods(activePods, toDelete, s.computeHashFunc(&role.Template, nil)), aibrixconst.PodDrainReasonRollout)
+	if err != nil {
+		return controllerdrain.Result{}, err
+	}
 	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
 	result.Merge(cancelResult)
+	result.Merge(revertResult)
 	result.Changed = result.Changed || created > 0
 	return result, nil
+}
+
+// revertedRolloutDrainingPods returns the active pods that are draining for a
+// rollout but match the current template again: the template was changed back
+// before their drain completed. A rollout only processes outdated pods, so
+// nothing else would clear these drains, and the pods would stay out of
+// routing while counting as Ready. This runs from Scale because every rolling
+// manager calls Scale on each pass, while the interleave manager skips
+// RolloutByStep for a role whose pods are all updated and ready. Pods this
+// pass deletes anyway are left alone.
+func revertedRolloutDrainingPods(activePods, toDelete []*v1.Pod, templateHash string) []*v1.Pod {
+	// In steady state there is nothing to delete and nothing reverted, so avoid
+	// allocating the lookup map and the result slice unless they are needed.
+	var deleteSet map[string]struct{}
+	if len(toDelete) > 0 {
+		deleteSet = make(map[string]struct{}, len(toDelete))
+		for _, pod := range toDelete {
+			if pod == nil {
+				continue
+			}
+			deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
+		}
+	}
+	var reverted []*v1.Pod
+	for _, pod := range activePods {
+		// IsPodDraining guards nil, so no separate nil check is needed here.
+		if !podutil.IsPodDraining(pod) {
+			continue
+		}
+		if pod.Annotations[aibrixconst.PodDrainReasonAnnotationKey] != aibrixconst.PodDrainReasonRollout {
+			continue
+		}
+		if pod.Labels[constants.RoleTemplateHashLabelKey] != templateHash {
+			continue
+		}
+		if deleteSet != nil {
+			if _, deleting := deleteSet[podutil.GeneratePodKey(pod.Namespace, pod.Name)]; deleting {
+				continue
+			}
+		}
+		reverted = append(reverted, pod)
+	}
+	return reverted
 }
 
 func staleScaleInDrainingPods(activePods, toDelete []*v1.Pod) []*v1.Pod {
