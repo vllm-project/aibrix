@@ -2994,3 +2994,26 @@ func Test_ValidateRequestBody_AudioGenerate(t *testing.T) {
 		})
 	}
 }
+
+// A parse failure is logged with its reason only: sonic's error text quotes the body around the
+// failure, which is customer content.
+func Test_jsonParseReason_OmitsBodyContent(t *testing.T) {
+	const secret = "SECRET" // short enough to fit in the excerpt sonic quotes
+	var req struct {
+		Model string `json:"model"`
+	}
+	for name, body := range map[string]string{
+		"syntax error":  `{"model":"m","input":"` + secret + `" "oops":1}`,
+		"type mismatch": `{"model":{"leak":"` + secret + `"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := sonic.Unmarshal([]byte(body), &req)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), secret, "premise: sonic's own error text quotes the body")
+
+			reason := jsonParseReason(err)
+			assert.NotEmpty(t, reason)
+			assert.NotContains(t, reason, secret)
+		})
+	}
+}
