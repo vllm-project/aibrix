@@ -69,6 +69,9 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	if errs := validation.IsDNS1123Subdomain(route.Name); len(errs) > 0 {
 		t.Fatalf("HTTPRoute name %q is invalid: %v", route.Name, errs)
 	}
+	if got := route.Annotations[modelRouteReadinessAnnotation]; got != "true" {
+		t.Errorf("model route readiness annotation = %q, want true", got)
+	}
 	if got := route.Labels["app.kubernetes.io/managed-by"]; got != "aibrix-console" {
 		t.Errorf("HTTPRoute managed-by label = %q, want aibrix-console", got)
 	}

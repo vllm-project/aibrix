@@ -89,6 +89,12 @@ The [Helm chart](../../dist/chart/README.md#gateway-and-model-httproute-namespac
 supplies the controller's Gateway name and both components' route namespace
 from the chart's rendered resources as well.
 
+Envoy can briefly retain an older route after the Gateway API reports the model
+HTTPRoute as accepted with resolved backends. During this interval, a local
+backend-readiness response from a managed forwarding route carries HTTP 503,
+`x-error-routing: true`, and the OpenAI `service_unavailable` error code.
+An error returned by the model server keeps its original status and body.
+
 ## Transformation and validation
 
 `kustomizeconfig.yaml` declares the name references in Gateway API and Envoy

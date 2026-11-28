@@ -1,4 +1,8 @@
 {{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) }}
+{{- $clientTraffic := .Values.gateway.clientTrafficPolicy | default dict -}}
+{{- $connection := $clientTraffic.connection | default dict -}}
+{{- $connectionLimit := $connection.connectionLimit | default dict -}}
+{{- $hcmIndex := ternary 1 0 (gt (int $connectionLimit.value) 0) -}}
 {{- $shutdown := .Values.gateway.envoyProxy.gracefulShutdown | default dict }}
 {{- if $shutdown.enabled }}
 {{- /* Budget for the shutdown-manager's extra 10s readiness wait in the supported
@@ -165,12 +169,20 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: {{ include "aibrix.fullname" . }}-eg
+  {{- if or $connection.bufferLimit (hasKey $connectionLimit "value") }}
   connection:
-    bufferLimit: {{ .Values.gateway.clientTrafficPolicy.connection.bufferLimit }}
+    {{- with $connection.bufferLimit }}
+    bufferLimit: {{ . }}
+    {{- end }}
+    {{- if hasKey $connectionLimit "value" }}
     connectionLimit:
-      value: {{ .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value }}
+      value: {{ $connectionLimit.value }}
+    {{- end }}
+  {{- end }}
+  {{- with pick ($clientTraffic.http2 | default dict) "maxConcurrentStreams" }}
   http2:
-    maxConcurrentStreams: {{ .Values.gateway.clientTrafficPolicy.http2.maxConcurrentStreams }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy
@@ -235,19 +247,9 @@ spec:
                 max_pending_requests: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxPendingRequests }}
                 track_remaining: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.trackRemaining | default false }}
     {{- if .Values.gateway.http.enabled }}
-    - type: type.googleapis.com/envoy.config.listener.v3.Listener
-      name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/http
-      operation:
-        op: add
-        path: /default_filter_chain/filters/{{- if gt (int .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0 }}1{{- else }}0{{- end }}/typed_config/preserve_external_request_id
-        value: {{ .Values.gateway.envoyPatchPolicy.preserveExternalRequestID }}
+    {{- include "aibrix.gateway.listenerPatches" (dict "root" . "listener" "http" "chain" "/default_filter_chain" "index" $hcmIndex) | nindent 4 }}
     {{- end }}
     {{- if .Values.gateway.tls.enabled }}
-    - type: type.googleapis.com/envoy.config.listener.v3.Listener
-      name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/https
-      operation:
-        op: add
-        path: /filter_chains/0/filters/{{- if gt (int .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0 }}1{{- else }}0{{- end }}/typed_config/preserve_external_request_id
-        value: {{ .Values.gateway.envoyPatchPolicy.preserveExternalRequestID }}
+    {{- include "aibrix.gateway.listenerPatches" (dict "root" . "listener" "https" "chain" "/filter_chains/0" "index" $hcmIndex) | nindent 4 }}
     {{- end }}
 {{- end }}
