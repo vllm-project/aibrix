@@ -17,6 +17,7 @@ package cache
 
 import (
 	"errors"
+	"maps"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,6 +25,7 @@ import (
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
@@ -256,9 +258,19 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 	// Add new mappings if present
 	if newHasModelInfo && !newIsWorker {
-		metaPod, flakyReAdd := c.addPodLocked(newPod, c.reconcileModelClaimMetrics(oldMetaPod, newPod, newModelClaims))
+		claimMetrics := c.reconcileModelClaimMetrics(oldMetaPod, newPod, newModelClaims)
+		invalidateCounters := oldMetaPod != nil && sameMetricIdentity &&
+			(!maps.Equal(metrics.DefaultMetricLabels(oldMetaPod.Pod, nil), metrics.DefaultMetricLabels(newPod, nil)) ||
+				(oldMetaPod.claimMetrics == nil) != (claimMetrics == nil))
+		if invalidateCounters {
+			c.deletePodCounterMetrics(oldMetaPod)
+		}
+		metaPod, flakyReAdd := c.addPodLocked(newPod, claimMetrics)
 		if oldMetaPod != nil && sameMetricIdentity {
 			copyPodMetricInventory(oldMetaPod, metaPod)
+			if invalidateCounters {
+				clearPodCounterRecords(metaPod)
+			}
 		}
 		if flakyReAdd {
 			listeners = c.podLifecycleListenersLocked()

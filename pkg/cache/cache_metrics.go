@@ -767,24 +767,58 @@ func copyPodMetricInventory(source, destination *Pod) {
 	})
 }
 
-func (c *Store) deletePodGaugeMetrics(pod *Pod) {
+func forEachPodMetricRecord(pod *Pod, fn func(modelName, metricName string, record MetricRecord)) {
 	if pod == nil {
 		return
 	}
 	pod.Metrics.Range(func(metricName string, record MetricRecord) bool {
-		deletePodGaugeMetric(pod.Pod, "", metricName, record.Value.GetLabelValues())
+		fn("", metricName, record)
 		return true
 	})
 	pod.ModelMetrics.Range(func(key string, record MetricRecord) bool {
 		modelName, metricName := parseModelMetricKey(key)
+		fn(modelName, metricName, record)
+		return true
+	})
+}
+
+func (c *Store) deletePodGaugeMetrics(pod *Pod) {
+	forEachPodMetricRecord(pod, func(modelName, metricName string, record MetricRecord) {
 		deletePodGaugeMetric(pod.Pod, modelName, metricName, record.Value.GetLabelValues())
+	})
+}
+
+func (c *Store) deletePodCounterMetrics(pod *Pod) {
+	forEachPodMetricRecord(pod, func(modelName, metricName string, record MetricRecord) {
+		def, ok := metrics.Metrics[metricName]
+		if !ok || def.MetricType.Raw != metrics.Counter {
+			return
+		}
+		metrics.DeleteEngineMetricFromPrometheus(&types.RoutingContext{Model: modelName}, pod.Pod, metricName, record.Value.GetLabelValues())
+	})
+}
+
+func clearPodCounterRecords(pod *Pod) {
+	if pod == nil {
+		return
+	}
+	pod.Metrics.Range(func(metricName string, _ MetricRecord) bool {
+		if def, ok := metrics.Metrics[metricName]; ok && def.MetricType.Raw == metrics.Counter {
+			pod.Metrics.Delete(metricName)
+		}
+		return true
+	})
+	pod.ModelMetrics.Range(func(key string, _ MetricRecord) bool {
+		_, metricName := parseModelMetricKey(key)
+		if def, ok := metrics.Metrics[metricName]; ok && def.MetricType.Raw == metrics.Counter {
+			pod.ModelMetrics.Delete(key)
+		}
 		return true
 	})
 }
 
 func deletePodGaugeMetric(pod *v1.Pod, modelName, metricName string, extra map[string]string) {
-	definition, ok := metrics.Metrics[metricName]
-	if !ok || definition.MetricType.Raw == metrics.Counter {
+	if _, ok := metrics.Metrics[metricName]; !ok {
 		return
 	}
 	metrics.DeleteEngineMetricFromPrometheus(&types.RoutingContext{Model: modelName}, pod, metricName, extra)
