@@ -60,6 +60,19 @@ type CandidateFinder interface {
 	FindCandidates(ctx *RoutingContext, readyPods PodList, max int) []*v1.Pod
 }
 
+// CandidateSelector is implemented by routers (such as the exclusive PD router)
+// that run their own topology-aware candidate stage instead of the flat non-PD
+// candidate stage. SelectCandidates must not read per-pod state from Redis and
+// must not mutate or append to readyPods. When it narrows readyPods, it returns
+// the narrowed slice and a non-empty metric path label (such as "ranked" or
+// "random_no_ranked_slot") for aibrix_routing_candidate_selections_total. When
+// the stage is bypassed (for example k <= 0, small fleet, or an incompatible
+// mode), it returns readyPods unchanged and an empty path.
+type CandidateSelector interface {
+	Router
+	SelectCandidates(ctx *RoutingContext, readyPods []*v1.Pod, k int) (candidates []*v1.Pod, path string)
+}
+
 // QueueRouter defines the interface for routers that contains built-in queue and
 // offers queue status query.
 type QueueRouter interface {

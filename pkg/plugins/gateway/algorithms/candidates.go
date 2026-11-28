@@ -83,7 +83,9 @@ func candidateRankedSlots(k int) int { return k / 2 }
 // standard-deviation check, the blend's normalization) then compare it with the sample, not the
 // fleet. A new strategy is kept off the candidate stage until it is added here.
 // Strategies that keep a global view (vtc's fairness, the queue router, session pins, external
-// and throughput routers, and the exclusive pd and slo routers) always see every ready pod.
+// and throughput routers, and the exclusive slo routers) always see every ready pod. The
+// exclusive pd router runs its own RoleSet-aligned candidate stage via types.CandidateSelector
+// (SelectRouterCandidates, RFC #3620).
 var candidateSafeStrategies = map[string]bool{
 	string(RouterLoadBalance):            true,
 	string(RouterPrefixCache):            true,
@@ -150,6 +152,38 @@ func SelectCandidatesFromPodList(ctx *types.RoutingContext, c cache.Cache, route
 		return nil
 	}
 	return selectCandidatesWithMetric(ctx, c, router, readyPodList.All(), readyPodList, ctx.RoutingOverrides().Candidate.K, filterScout, true)
+}
+
+// SelectRouterCandidates runs router's own topology-aware candidate stage when
+// router implements types.CandidateSelector and AIBRIX_ROUTING_CANDIDATE_K (or
+// routingConfig.candidate.k) is positive. It records
+// aibrix_routing_candidate_selections_total{model,path} whenever the router
+// narrows readyPods (len(candidates) < len(readyPods)).
+func SelectRouterCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
+	if ctx == nil {
+		return readyPods
+	}
+	selector, ok := router.(types.CandidateSelector)
+	if !ok {
+		return readyPods
+	}
+	k := ctx.RoutingOverrides().Candidate.K
+	if k <= 0 {
+		return readyPods
+	}
+	candidates, path := selector.SelectCandidates(ctx, readyPods, k)
+	if len(candidates) < len(readyPods) {
+		if path == "" {
+			path = candidatePathNoEstimate
+		}
+		recordCandidateSelection(ctx.Model, path)
+		if klog.V(5).Enabled() {
+			klog.V(5).InfoS("router candidate stage", "request_id", ctx.RequestID,
+				"ready_pods", len(readyPods), "candidates", len(candidates),
+				"path", path, "strategy", ctx.ResolvedStrategy)
+		}
+	}
+	return candidates
 }
 
 // ReselectCandidates is SelectCandidates for a second pass over the same decision, such as the

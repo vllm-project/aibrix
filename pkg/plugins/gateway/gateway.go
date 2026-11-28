@@ -1045,19 +1045,14 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	}
 
 	if isExclusive {
-		// For exclusive strategies the set is the full ready set, and the filter runs before
-		// engine validation so a request that will be rejected for saturation is not failed on
-		// a pod it never uses. Under PD, only routable decode (and combined) pods are admitted
-		// against aibrix:rrq:*, so prefill/encode/non-HTTP workers are partitioned out of the
-		// Redis inflight check and reattached when capacity remains (#3619).
-		if isPD {
-			if readyPods, err = s.narrowPDToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet); err != nil {
-				return "", err
-			}
-		} else {
-			if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet); err != nil {
-				return "", err
-			}
+		// For exclusive strategies the inflight filter runs before engine validation so a
+		// request that will be rejected for saturation is not failed on a pod it never uses.
+		// Under PD, first run PD's RoleSet-aligned candidate stage (RFC #3620 Phase 2) to
+		// bound prefill and decode+combined targets to K without Redis reads, then filter
+		// only routable decode/combined pods against aibrix:rrq:* (#3619) with
+		// InflightScopeCandidates iff the candidate stage shrank readyPods.
+		if readyPods, err = s.narrowExclusiveToInflightCapacity(routeCtx, router, readyPods, isPD); err != nil {
+			return "", err
 		}
 		if isPD {
 			engine, err := routing.ValidateAndGetLLMEngine(readyPods)

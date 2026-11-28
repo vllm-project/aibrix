@@ -2064,7 +2064,7 @@ func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext
 // promptLengthBucketingDecodePods, combinedPods).
 func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyPods []*v1.Pod, promptLength int) ([]*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod) {
 	bucketingEnabled := effectivePromptLengthBucketing(routingCtx)
-	var cfgCache map[string]*types.RoutingConfig
+	var cfgCache pd.RoutingConfigCache
 
 	var combinedPods []*v1.Pod
 	if bucketingEnabled {
@@ -2073,7 +2073,7 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 			if !ok || roleID == PDRolePrefill || roleID == PDRoleDecode || roleID == PDRoleEncode {
 				continue
 			}
-			cfg := pd.ResolvePodRoutingConfig(routingCtx, pod, &cfgCache)
+			cfg := cfgCache.Resolve(routingCtx, pod)
 			if pd.IsCombinedRoutingConfig(cfg) && pd.IsPromptLengthInBucket(cfg, promptLength) {
 				combinedPods = append(combinedPods, pod)
 			}
@@ -2091,12 +2091,12 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 		if bucketingEnabled {
 			var bucketPrefills, bucketDecodes []*v1.Pod
 			for _, pod := range b.prefills {
-				if pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routingCtx, pod, &cfgCache), promptLength) {
+				if pd.IsPromptLengthInBucket(cfgCache.Resolve(routingCtx, pod), promptLength) {
 					bucketPrefills = append(bucketPrefills, pod)
 				}
 			}
 			for _, pod := range b.decodes {
-				if pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routingCtx, pod, &cfgCache), promptLength) {
+				if pd.IsPromptLengthInBucket(cfgCache.Resolve(routingCtx, pod), promptLength) {
 					bucketDecodes = append(bucketDecodes, pod)
 				}
 			}
@@ -2183,9 +2183,9 @@ func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
 }
 
 // promptLenBucketBounds returns the prompt-length range a pod's profile
-// declares, with the whole range as the default: a pod that declares none is
-// not bucket-scoped. A negative minimum or a non-positive maximum falls back to
-// its default, mirroring the pod-side tolerance of a partially filled range.
+// declares, with [0, math.MaxInt32] as the default: a pod that declares none is
+// not bucket-scoped. A non-positive minimum or maximum falls back to its
+// default, mirroring the pod-side tolerance of a partially filled range.
 func promptLenBucketBounds(cfg *types.RoutingConfig) (int, int) {
 	return pd.PromptLenBucketBounds(cfg)
 }

@@ -27,6 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
@@ -214,6 +215,22 @@ func (s *Server) narrowToInflightCapacity(routeCtx *types.RoutingContext, pods [
 	return nil, errReplicaInflightExceeded
 }
 
+// narrowExclusiveToInflightCapacity applies optional router-owned candidate narrowing
+// (for PD, RFC #3620 Phase 2) and then enforces the per-replica inflight cap for
+// exclusive strategies.
+func (s *Server) narrowExclusiveToInflightCapacity(routeCtx *types.RoutingContext, router types.Router, readyPods []*v1.Pod, isPD bool) ([]*v1.Pod, error) {
+	if !isPD {
+		return s.narrowToInflightCapacity(routeCtx, readyPods, inflight.InflightScopeFleet)
+	}
+	readyBeforeCandidates := len(readyPods)
+	readyPods = routing.SelectRouterCandidates(routeCtx, router, readyPods)
+	scope := inflight.InflightScopeFleet
+	if len(readyPods) < readyBeforeCandidates {
+		scope = inflight.InflightScopeCandidates
+	}
+	return s.narrowPDToInflightCapacity(routeCtx, readyPods, scope)
+}
+
 // narrowPDToInflightCapacity applies the per-replica inflight cap to the pods PD routing can
 // actually admit and track in aibrix:rrq:* -- routable decode pods in rolesets that also have
 // a routable prefill pod, plus routable combined pods when prompt-length bucketing is enabled.
@@ -264,7 +281,7 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 	if bucketing {
 		promptLength, _ = routeCtx.PromptLength()
 	}
-	var cfgCache map[string]*types.RoutingConfig
+	var cfgCache pd.RoutingConfigCache
 
 	var prefillRolesets map[string]struct{}
 	for _, pod := range pods {
@@ -278,7 +295,7 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 		}
 		hasLabeledPD = true
 		if roleID == pd.RolePrefill && pd.IsPodWithHTTPServer(pod) {
-			if bucketing && !pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache), promptLength) {
+			if bucketing && !pd.IsPromptLengthInBucket(cfgCache.Resolve(routeCtx, pod), promptLength) {
 				continue
 			}
 			if prefillRolesets == nil {
@@ -301,7 +318,7 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 			switch roleID {
 			case pd.RoleDecode:
 				if _, ok := prefillRolesets[roleSetID]; ok {
-					if !bucketing || pd.IsPromptLengthInBucket(pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache), promptLength) {
+					if !bucketing || pd.IsPromptLengthInBucket(cfgCache.Resolve(routeCtx, pod), promptLength) {
 						targets = append(targets, pod)
 						continue
 					}
@@ -312,7 +329,7 @@ func partitionPDInflightTargets(routeCtx *types.RoutingContext, pods []*v1.Pod) 
 				// Covers combined spillover pods and any future non-prefill/decode roles
 				// (excluding encoders, which never run through AdmitTarget).
 				if bucketing && !encode.IsEncoder(pod) {
-					cfg := pd.ResolvePodRoutingConfig(routeCtx, pod, &cfgCache)
+					cfg := cfgCache.Resolve(routeCtx, pod)
 					if pd.IsCombinedRoutingConfig(cfg) && pd.IsPromptLengthInBucket(cfg, promptLength) {
 						targets = append(targets, pod)
 						continue

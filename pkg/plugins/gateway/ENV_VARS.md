@@ -263,11 +263,18 @@ pods); in simulation (`algorithms/candidatesim/RESULTS.md`), `K=64` with `prefix
 remote-running refresh also carries roughly 7–16% mean/median latency overhead in that mid-size
 band (more under heavy-tailed load, while `prefix=false` stays within 1–4%). Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
 
-The stage applies only when every strategy in the resolved strategy, including the auto-blend,
+The flat candidate stage applies only when every strategy in the resolved strategy, including the auto-blend,
 is candidate-safe: it judges pods only by the pods it is given, with no fleet-wide state of its
 own. These are `least-request`, `least-request-top-k`, `load-balance`, `prefix-cache`, `random`,
-`power-of-two` and the other `least-*` strategies. Any other strategy, such as `vtc-basic`,
-`session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`, keeps every ready
+`power-of-two` and the other `least-*` strategies. The exclusive `pd` router runs its own
+RoleSet-aligned two-level candidate stage (`algorithms/pd/router/candidate_stage.go`, RFC #3620)
+using the same `AIBRIX_ROUTING_CANDIDATE_K` knob: it bypasses fleets with `N_p ≤ K && N_d + N_c ≤ K`
+or when `AIBRIX_BUCKET_SERVE` is enabled, guarantees RoleSet pairing (≥1 prefill and ≥1 decode per
+kept RoleSet) and encoder preservation, and bounds `|P_cand| ≤ K` and `|D_cand| + |C_cand| ≤ K` so
+downstream Redis `aibrix:rrq:*` reads and scoring stay `O(K)` (note: prefix-cache seeding still
+builds an eligible-prefill key set in `O(N_p)` so `MatchPrefix` can find holders across the fleet
+without leaking filtered or blacklisted pods). Any other strategy, such as `vtc-basic`,
+`session-affinity`, the queue router, `external`, `throughput` or `slo*`, keeps every ready
 pod. It also does nothing when there are K ready pods or fewer. When a per-replica inflight cap is
 set, its saturation filter runs on the candidate set, not on every ready pod, so the capped
 deployment keeps the bounded read; if every candidate is at the cap, the request returns the usual
