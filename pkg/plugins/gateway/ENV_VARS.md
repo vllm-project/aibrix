@@ -271,7 +271,9 @@ RoleSet-aligned two-level candidate stage (`algorithms/pd/router/candidate_stage
 using the same `AIBRIX_ROUTING_CANDIDATE_K` knob: it bypasses fleets with `N_p ≤ K && N_d + N_c ≤ K`
 or when `AIBRIX_BUCKET_SERVE` is enabled, guarantees RoleSet pairing (≥1 prefill and ≥1 decode per
 kept RoleSet) and encoder preservation, and bounds `|P_cand| ≤ K` and `|D_cand| + |C_cand| ≤ K` so
-downstream Redis `aibrix:rrq:*` reads stay `≤ K`. Any other strategy, such as `vtc-basic`,
+downstream Redis `aibrix:rrq:*` reads and scoring stay `O(K)` (note: prefix-cache seeding still
+builds an eligible-prefill key set in `O(N_p)` so `MatchPrefix` can find holders across the fleet
+without leaking filtered or blacklisted pods). Any other strategy, such as `vtc-basic`,
 `session-affinity`, the queue router, `external`, `throughput` or `slo*`, keeps every ready
 pod. It also does nothing when there are K ready pods or fewer. When a per-replica inflight cap is
 set, its saturation filter runs on the candidate set, not on every ready pod, so the capped

@@ -30,10 +30,11 @@ import (
 )
 
 const (
-	pdCandidatePathRanked       = "ranked"
-	pdCandidatePathNoRankedSlot = "random_no_ranked_slot"
-	pdCandidateScoutFactor      = 4
-	pdRolesetLoadSampleCap      = 4
+	pdCandidatePathRanked         = "ranked"
+	pdCandidatePathEstimateFailed = "random_estimate_failed"
+	pdCandidatePathNoRankedSlot   = "random_no_ranked_slot"
+	pdCandidateScoutFactor        = 4
+	pdRolesetLoadSampleCap        = 4
 )
 
 var _ types.CandidateSelector = (*pdRouter)(nil)
@@ -93,9 +94,13 @@ func (r *pdRouter) SelectCandidates(ctx *types.RoutingContext, readyPods []*v1.P
 		return readyPods, ""
 	}
 
-	prefillPol, decodePol, err := r.effectiveScorePolicies(ctx)
-	if err != nil {
-		return readyPods, ""
+	prefillPol, decodePol, policyErr := r.effectiveScorePolicies(ctx)
+	if policyErr != nil {
+		// Do not fall through to the full ready set on an invalid routingConfig
+		// decodeScorePolicy: narrow with default policies so narrowPDToInflightCapacity
+		// still stays O(K) before Route surfaces the exact config error.
+		prefillPol = nil
+		decodePol = loadBalancingDecodePolicy
 	}
 	if decodePol == nil {
 		decodePol = loadBalancingDecodePolicy
@@ -104,6 +109,8 @@ func (r *pdRouter) SelectCandidates(ctx *types.RoutingContext, readyPods []*v1.P
 	path := pdCandidatePathRanked
 	if k == 1 {
 		path = pdCandidatePathNoRankedSlot
+	} else if policyErr != nil {
+		path = pdCandidatePathEstimateFailed
 	}
 	inflightLimit := pdInflightCap(ctx)
 
@@ -117,7 +124,11 @@ func (r *pdRouter) SelectCandidates(ctx *types.RoutingContext, readyPods []*v1.P
 	var matchedPods map[string]int
 	var prefillKeys map[*v1.Pod]string
 	if k >= 2 {
-		matchedPods, prefillKeys = seedPDPrefillCandidates(ctx, prefillPol, pools.eligible, pools.totalP)
+		var seedFailed bool
+		matchedPods, prefillKeys, seedFailed = seedPDPrefillCandidates(ctx, prefillPol, pools.eligible, pools.totalP)
+		if seedFailed && path == pdCandidatePathRanked {
+			path = pdCandidatePathEstimateFailed
+		}
 		attachRolesetPrefixMatches(pools.eligible, prefillKeys, matchedPods, prefillPol, pdOverrides.MinMatchPct)
 	}
 
@@ -133,7 +144,11 @@ func (r *pdRouter) SelectCandidates(ctx *types.RoutingContext, readyPods []*v1.P
 	prefillQuotas := allocateRolesetQuotas(keptRolesets, prefillBudget, true)
 	decodeQuotas := allocateRolesetQuotas(keptRolesets, decodeBudget, false)
 
-	out := make([]*v1.Pod, 0, prefillBudget+decodeBudget+combinedBudget)
+	totalEncoders := 0
+	for i := range keptRolesets {
+		totalEncoders += len(keptRolesets[i].encoders)
+	}
+	out := make([]*v1.Pod, 0, prefillBudget+decodeBudget+combinedBudget+totalEncoders)
 	for i := range keptRolesets {
 		rs := &keptRolesets[i]
 		pPods := r.selectPrefillCandidatesForRoleset(
@@ -262,15 +277,18 @@ func splitPDTargetBudget(k, totalP, totalD, totalC int) (prefillBudget, decodeBu
 // seedPDPrefillCandidates delegates prefix-holder discovery to the effective
 // prefill policy itself so tokenization and index lookups always use the exact
 // same tokenizer and prefixCacheIndexer instance that Prepare will score with.
+// Note: building readyKeySet scans eligible prefill pods (O(N_p)) so
+// MatchPrefix can discover prefix holders across the fleet without leaking
+// filtered or blacklisted pods; downstream Redis reads and scoring remain O(K).
 func seedPDPrefillCandidates(
 	ctx *types.RoutingContext,
 	prefillPol pd.PrefillScorePolicy,
 	eligible []pdCandidateRoleset,
 	totalP int,
-) (map[string]int, map[*v1.Pod]string) {
+) (map[string]int, map[*v1.Pod]string, bool) {
 	seedable, ok := prefillPol.(pd.PrefixSeedablePrefillPolicy)
 	if !ok || totalP == 0 {
-		return nil, nil
+		return nil, nil, false
 	}
 	prefillKeys := make(map[*v1.Pod]string, totalP)
 	readyKeySet := make(map[string]struct{}, totalP)
@@ -283,9 +301,9 @@ func seedPDPrefillCandidates(
 	}
 	matchedPods, _, seeded := seedable.SeedPrefixMatch(ctx, readyKeySet)
 	if !seeded {
-		return nil, prefillKeys
+		return nil, prefillKeys, true
 	}
-	return matchedPods, prefillKeys
+	return matchedPods, prefillKeys, false
 }
 
 func effectivePrefixMatchPct(rawMatch int, prefillPol pd.PrefillScorePolicy, minMatchPct float64) int {
@@ -612,6 +630,12 @@ func (r *pdRouter) selectPrefillCandidatesForRoleset(
 	out := make([]*v1.Pod, 0, quota)
 	picked := make(map[*v1.Pod]struct{}, quota)
 	nRanked := roleRankedSlots(quota, k, rs.isRanked)
+	// Even when Level 1 marked this roleset as an exploration slot with quota==1,
+	// force-include a local prefix-cache holder if one exists so tied/shared prefix
+	// fleets do not randomly drop holders inside a kept roleset.
+	if nRanked == 0 && k >= 2 && rs.bestMatchPct > 0 {
+		nRanked = 1
+	}
 	if nRanked > 0 {
 		scout := scoutPrefillPods(rs.prefills, quota, prefillKeys, matchedPods, prefillPol, minMatchPct)
 		scores := make([]pdCandidateScore, len(scout))
@@ -706,6 +730,14 @@ func (r *pdRouter) selectDecodeCandidatesForRoleset(
 			picked[pod] = struct{}{}
 			out = append(out, pod)
 		}
+	} else if k >= 2 && inflightLimit > 0 {
+		// Even on a quota==1 exploration roleset, steer the single decode slot away
+		// from in-memory saturated replicas (randomly among unsaturated scouted pods,
+		// falling back to unfiltered if all scouted pods are at cap).
+		scout := samplePodSubset(rs.decodes, pdCandidateScoutFactor*quota)
+		approx := approxRunningForPods(r.cache, scout)
+		softPool := softExcludeInflightSaturated(scout, approx, inflightLimit)
+		samplePods(softPool, quota, picked, &out)
 	}
 	samplePods(rs.decodes, quota, picked, &out)
 	return out

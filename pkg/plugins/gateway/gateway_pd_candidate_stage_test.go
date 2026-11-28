@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -289,5 +290,150 @@ func TestSelectTargetPod_PDCandidateStageInflightScope429AndBucketing(t *testing
 		assert.Contains(t, err.Error(), "no prompt-length bucket matches")
 		assert.EqualValues(t, 0, reads.rrqHGetAlls.Load()-rrqBefore)
 		assert.Equal(t, beforeSel, candidateSelectionsFor(t, model))
+	})
+
+	t.Run("invalid_decodeScorePolicy_still_bounds_redis_to_k_before_error", func(t *testing.T) {
+		const model = "pd-cand-invalid-decode-policy"
+		mr := miniredis.RunT(t)
+		reads := &fleetReadCounter{}
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
+		t.Cleanup(func() { _ = client.Close() })
+		require.NoError(t, client.Ping(context.Background()).Err())
+
+		pods := makeLargePDFleet(50, 5, host, port, "") // 250P + 250D
+		store := cache.InitWithPods(cache.New(client, nil, nil), pods, model)
+		t.Cleanup(store.Close)
+		rm := routing.NewRouterManagerWithCache(store)
+		rm.Init()
+		s := &Server{cache: store, routerManager: rm}
+
+		raw := json.RawMessage(`{"decodeScorePolicy":"invalid_policy","candidate":{"k":64}}`)
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "hello", "req-bad-dec", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1000,
+			RoutingConfig:    raw,
+			Routing:          configprofiles.ParseRoutingConfig(raw),
+		}
+
+		rrqBefore := reads.rrqHGetAlls.Load()
+		_, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown decodeScorePolicy")
+		assert.LessOrEqual(t, reads.rrqHGetAlls.Load()-rrqBefore, int64(64),
+			"invalid decodeScorePolicy must not fall through to full-fleet O(N) Redis reads")
+	})
+
+	t.Run("partial_saturation_soft_exclude_succeeds_and_sampled_saturation_returns_candidates_429", func(t *testing.T) {
+		const model = "pd-cand-partial-sat"
+		mr := miniredis.RunT(t)
+		reads := &fleetReadCounter{}
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
+		t.Cleanup(func() { _ = client.Close() })
+		require.NoError(t, client.Ping(context.Background()).Err())
+
+		pods := makeLargePDFleet(1, 20, host, port, "") // 1rs x 20P/20D
+		store := cache.InitWithPods(cache.New(client, nil, nil), pods, model)
+		t.Cleanup(store.Close)
+		rm := routing.NewRouterManagerWithCache(store)
+		rm.Init()
+		s := &Server{cache: store, routerManager: rm}
+
+		// Part A: Saturate 16 of 20 decodes via this gateway's store (known to local approx).
+		// Soft-exclude steers ranked slots to the 4 idle decodes -> succeeds with <= 4 HGETALLs.
+		satCount := 0
+		for _, pod := range pods {
+			if pod.Labels[pd.RoleLabel] != pd.RoleDecode {
+				continue
+			}
+			if satCount < 16 {
+				satCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "seed", "seed-local-"+pod.Name, "user")
+				satCtx.SetTargetPod(pod)
+				store.AddRequestCount(satCtx, satCtx.RequestID, model)
+				satCtx.Delete()
+				satCount++
+			}
+		}
+
+		raw := json.RawMessage(`{"candidate":{"k":4}}`)
+		ctx := types.NewRoutingContext(context.Background(), routing.RouterPD, model, "hello", "req-partial-ok", "user")
+		t.Cleanup(ctx.Delete)
+		ctx.ReqPath = "/v1/chat/completions"
+		ctx.ReqBody = []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			RequestsInflight: 1,
+			RoutingConfig:    raw,
+			Routing:          configprofiles.ParseRoutingConfig(raw),
+		}
+		rrqBefore := reads.rrqHGetAlls.Load()
+		addr, err := s.selectTargetPod(context.Background(), ctx, &utils.PodArray{Pods: pods}, "")
+		require.NoError(t, err, "in-memory soft-exclude must steer ranked slots to idle decodes")
+		require.NotEmpty(t, addr)
+		assert.EqualValues(t, 4, reads.rrqHGetAlls.Load()-rrqBefore)
+
+		// Part B: Initialize store2 before the peer gateway burst so store2's in-memory
+		// approx lags the peer's counts (within one 1s remote-running sweep interval).
+		// Then saturate 19 of 20 decodes from peerStore sharing mr2, leaving 1 idle
+		// unsampled decode in the fleet. When a K=4 sample lands on 4 peer-saturated
+		// decodes, narrowPDToInflightCapacity returns 429 with scope="candidates" and
+		// only 4 Redis HGETALLs.
+		mr2 := miniredis.RunT(t)
+		const remoteModel = "pd-cand-partial-sat-remote"
+
+		reads2 := &fleetReadCounter{}
+		client2 := redis.NewClient(&redis.Options{Addr: mr2.Addr(), Dialer: reads2.dial})
+		t.Cleanup(func() { _ = client2.Close() })
+		require.NoError(t, client2.Ping(context.Background()).Err())
+
+		store2 := cache.InitWithPods(cache.New(client2, nil, nil), pods, remoteModel)
+		t.Cleanup(store2.Close)
+		rm2 := routing.NewRouterManagerWithCache(store2)
+		rm2.Init()
+		s2 := &Server{cache: store2, routerManager: rm2}
+
+		// Register a distinct live peer gateway in aibrix:rrq:gateways (with a fresh ms
+		// heartbeat) and mark 19/20 decodes at cap=1 in Redis under that peer's hash field.
+		peerClient := redis.NewClient(&redis.Options{Addr: mr2.Addr()})
+		t.Cleanup(func() { _ = peerClient.Close() })
+		require.NoError(t, peerClient.ZAdd(context.Background(), "aibrix:rrq:gateways", redis.Z{
+			Score:  float64(time.Now().UnixMilli() + 60_000),
+			Member: "peer-gw-other",
+		}).Err())
+		remoteSat := 0
+		for _, pod := range pods {
+			if pod.Labels[pd.RoleLabel] != pd.RoleDecode {
+				continue
+			}
+			if remoteSat < 19 {
+				key := "aibrix:rrq:" + utils.GeneratePodKey(pod.Namespace, pod.Name)
+				require.NoError(t, peerClient.HSet(context.Background(), key, "peer-gw-other", 1).Err())
+				remoteSat++
+			}
+		}
+
+		sawCandidates429 := false
+		for trial := 0; trial < 20; trial++ {
+			tCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, remoteModel, "hello", fmt.Sprintf("req-remote-sat-%d", trial), "user")
+			tCtx.ReqPath = "/v1/chat/completions"
+			tCtx.ReqBody = []byte(`{"model":"` + remoteModel + `","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+			tCtx.ConfigProfile = &types.ResolvedConfigProfile{
+				RequestsInflight: 1,
+				RoutingConfig:    raw,
+				Routing:          configprofiles.ParseRoutingConfig(raw),
+			}
+			beforeCand := inflightRejectionCount(t, remoteModel, inflight.InflightScopeCandidates)
+			rrqB := reads2.rrqHGetAlls.Load()
+			_, err := s2.selectTargetPod(context.Background(), tCtx, &utils.PodArray{Pods: pods}, "")
+			tCtx.Delete()
+			assert.EqualValues(t, 4, reads2.rrqHGetAlls.Load()-rrqB, "must only query K=4 sampled decodes in Redis")
+			if errors.Is(err, errReplicaInflightExceeded) {
+				assert.Equal(t, beforeCand+1, inflightRejectionCount(t, remoteModel, inflight.InflightScopeCandidates))
+				sawCandidates429 = true
+				break
+			}
+		}
+		assert.True(t, sawCandidates429, "sampled saturation on a partially saturated fleet must return 429 with scope=candidates")
 	})
 }

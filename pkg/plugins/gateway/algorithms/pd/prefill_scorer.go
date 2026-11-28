@@ -197,27 +197,28 @@ func matchPDPrefix(
 	readyPodsMap map[string]struct{},
 	needTokenCount bool,
 ) (matchedPods map[string]int, hashes []uint64, tokenCount int, err error) {
-	if routingCtx != nil && indexer != nil {
-		if snap := routingCtx.SeededPrefixMatch(); snap != nil &&
-			snap.Index == indexer &&
-			snap.Model == routingCtx.Model &&
-			snap.LoRAID == pdSeededPrefixLoRAID {
-			tokens := routingCtx.PrefixTokens()
-			if !needTokenCount || len(tokens) > 0 || routingCtx.PrefixText() == "" {
-				covered := true
-				projected := make(map[string]int, min(len(readyPodsMap), len(snap.Matches)))
-				for key := range readyPodsMap {
-					if _, ok := snap.Pods[key]; !ok {
-						covered = false
-						break
-					}
-					if pct, ok := snap.Matches[key]; ok {
-						projected[key] = pct
-					}
+	if routingCtx == nil || tok == nil || indexer == nil {
+		return nil, nil, 0, fmt.Errorf("prefix match requires non-nil routing context, tokenizer, and indexer")
+	}
+	if snap := routingCtx.SeededPrefixMatch(); snap != nil &&
+		snap.Index == indexer &&
+		snap.Model == routingCtx.Model &&
+		snap.LoRAID == pdSeededPrefixLoRAID {
+		tokens := routingCtx.PrefixTokens()
+		if !needTokenCount || len(tokens) > 0 || routingCtx.PrefixText() == "" {
+			covered := true
+			projected := make(map[string]int, min(len(readyPodsMap), len(snap.Matches)))
+			for key := range readyPodsMap {
+				if _, ok := snap.Pods[key]; !ok {
+					covered = false
+					break
 				}
-				if covered {
-					return projected, snap.Hashes[:len(snap.Hashes):len(snap.Hashes)], len(tokens), nil
+				if pct, ok := snap.Matches[key]; ok {
+					projected[key] = pct
 				}
+			}
+			if covered {
+				return projected, snap.Hashes[:len(snap.Hashes):len(snap.Hashes)], len(tokens), nil
 			}
 		}
 	}

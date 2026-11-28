@@ -685,3 +685,112 @@ func TestPDSelectCandidates_BoundedScoutRetainsPrefixHoldersBeyond8K(t *testing.
 		assert.LessOrEqual(t, d+c, 8)
 	})
 }
+
+func TestPDSelectCandidates_QuotaOneExplorationKeepsHoldersAndSoftExcludes(t *testing.T) {
+	t.Run("tied_multi_holder_fleet_quota_one_exploration_retains_local_holders", func(t *testing.T) {
+		const model = "tied-holders-model"
+		const prompt = "tied shared prefix prompt across rolesets"
+
+		idx := prefixcacheindexer.NewPrefixHashTable()
+		rawTokens, err := tokenizer.NewCharacterTokenizer().TokenizeInputText(prompt)
+		require.NoError(t, err)
+		hashes := idx.GetPrefixHashes(rawTokens)
+
+		// 10 rolesets, each with 3 prefills and 1 decode -> minPerRS=1, K=4 keeps
+		// 4 rolesets (2 ranked + 2 exploration), each with prefill quota=1.
+		// Every roleset has exactly 1 prefix holder among its 3 prefills (all tied).
+		var pods []*v1.Pod
+		holders := make(map[string]bool, 10)
+		for rs := 0; rs < 10; rs++ {
+			rsID := fmt.Sprintf("rs-%02d", rs)
+			for rep := 0; rep < 3; rep++ {
+				name := fmt.Sprintf("p-%02d-%d", rs, rep)
+				pods = append(pods, makePDPod(name, rsID, PDRolePrefill, nil))
+				if rep == 0 {
+					idx.AddPrefix(hashes, model, utils.GeneratePodKey("", name))
+					holders[name] = true
+				}
+			}
+			pods = append(pods, makePDPod(fmt.Sprintf("d-%02d-0", rs), rsID, PDRoleDecode, nil))
+		}
+
+		pol := pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), idx)
+		r := newCandidateTestRouter(nil, pol, pd.LoadBalancingDecodePolicy{}, idx)
+
+		for trial := 0; trial < 20; trial++ {
+			ctx := types.NewRoutingContext(context.Background(), RouterPD, model, prompt, fmt.Sprintf("req-tied-%d", trial), "user")
+			cands, path := r.SelectCandidates(ctx, pods, 4)
+			ctx.Delete()
+			assert.Equal(t, pdCandidatePathRanked, path)
+			pCnt, dCnt, _, _, _ := assertPDPairingAndBudget(t, cands, 4, -1)
+			assert.Equal(t, 4, pCnt)
+			assert.Equal(t, 4, dCnt)
+			for _, p := range cands {
+				if p.Labels[PDRoleIdentifier] == PDRolePrefill {
+					assert.True(t, holders[p.Name], "trial %d: quota=1 exploration roleset must still retain its local prefix holder, got %s", trial, p.Name)
+				}
+			}
+		}
+	})
+
+	t.Run("quota_one_exploration_decode_soft_excludes_saturated", func(t *testing.T) {
+		// 10 rolesets, each with 1 prefill and 4 decodes; K=3 keeps decodeBudget < 4 so
+		// minPerRS=1 and targetRolesets=3 (1 ranked + 2 exploration) with decode quota=1
+		// per roleset. In every roleset, 3 of 4 decodes are at cap=10 and 1 is idle (0).
+		var pods []*v1.Pod
+		approx := make(map[string]int64, 40)
+		for rs := 0; rs < 10; rs++ {
+			rsID := fmt.Sprintf("rs-%02d", rs)
+			pods = append(pods, makePDPod(fmt.Sprintf("p-%02d-0", rs), rsID, PDRolePrefill, nil))
+			for rep := 0; rep < 4; rep++ {
+				name := fmt.Sprintf("d-%02d-%d", rs, rep)
+				pods = append(pods, makePDPod(name, rsID, PDRoleDecode, nil))
+				if rep == 0 {
+					approx[utils.GeneratePodKey("", name)] = 0
+				} else {
+					approx[utils.GeneratePodKey("", name)] = 10
+				}
+			}
+		}
+		tc := &candidateStageTestCache{Cache: cache.NewForTest(), approxCounts: approx}
+		r := newCandidateTestRouter(tc, pd.NewLeastRequestPrefillPolicy(), pd.LoadBalancingDecodePolicy{}, nil)
+
+		for trial := 0; trial < 20; trial++ {
+			ctx := types.NewRoutingContext(context.Background(), RouterPD, "m-exp-dec", "hi", fmt.Sprintf("req-exp-dec-%d", trial), "user")
+			ctx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: 10}
+			cands, path := r.SelectCandidates(ctx, pods, 3)
+			ctx.Delete()
+			assert.Equal(t, pdCandidatePathRanked, path)
+			pCnt, dCnt, _, _, _ := assertPDPairingAndBudget(t, cands, 3, -1)
+			assert.Equal(t, 3, pCnt)
+			assert.Equal(t, 3, dCnt)
+			for _, p := range cands {
+				if p.Labels[PDRoleIdentifier] == PDRoleDecode {
+					assert.Less(t, approx[utils.GeneratePodKey(p.Namespace, p.Name)], int64(10),
+						"trial %d: quota=1 exploration roleset must steer decode slot away from saturated pod %s", trial, p.Name)
+				}
+			}
+		}
+	})
+
+	t.Run("invalid_decode_policy_narrows_instead_of_full_fleet_and_nil_policy_prepare_errors", func(t *testing.T) {
+		r := newCandidateTestRouter(nil, nil, nil, nil)
+		pods := makeFleetWithEncoders(20, 5, 0) // 100P + 100D
+		ctx := types.NewRoutingContext(context.Background(), RouterPD, "m-bad-pol", "hi", "req-bad-pol", "user")
+		defer ctx.Delete()
+		ctx.ConfigProfile = &types.ResolvedConfigProfile{
+			Routing: &types.RoutingConfig{DecodeScorePolicy: "nonexistent_policy"},
+		}
+
+		cands, path := r.SelectCandidates(ctx, pods, 8)
+		assert.Equal(t, pdCandidatePathEstimateFailed, path)
+		pCnt, dCnt, _, _, _ := assertPDPairingAndBudget(t, cands, 8, -1)
+		assert.Equal(t, 8, pCnt)
+		assert.Equal(t, 8, dCnt)
+
+		// Nil tokenizer/indexer in Prepare must return an error rather than panic.
+		brokenPol := pd.NewPrefixCachePrefillPolicy(nil, nil)
+		_, err := brokenPol.Prepare(ctx, pods[:1], map[string]struct{}{"p": {}})
+		require.Error(t, err)
+	})
+}
