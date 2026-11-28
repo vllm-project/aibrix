@@ -131,6 +131,15 @@ msgstr "在测试环境中安装 AIBrix"
 msgid "Install Individual AIBrix Components"
 msgstr "安装单个 AIBrix 组件"
 
+#: ../../source/getting_started/installation/installation.rst:137
+msgid ""
+"Each component below installs into the ``aibrix-system`` namespace, which "
+"its manifests don't create. Create the namespace first if it doesn't "
+"exist:"
+msgstr ""
+"以下各组件都会安装到 ``aibrix-system`` 命名空间，但其清单不会创建该命名空间。"
+"如果该命名空间尚不存在，请先创建："
+
 #: ../../source/getting_started/installation/installation.rst:139
 msgid "Autoscaler"
 msgstr "Autoscaler"
@@ -218,42 +227,89 @@ msgid ""
 "support"
 msgstr "``stormservice-controller`` ：支持 P/D 和 AFD 的多节点编排"
 
-#: ../../source/getting_started/installation/installation.rst:198
+#: ../../source/getting_started/installation/installation.rst:199
+msgid ""
+"The manager serves an admission webhook only when one of the controllers "
+"for its API group is enabled. ``model-adapter-controller``, ``model-"
+"claim-controller`` and ``model-warmup-controller`` enable the ``model`` "
+"group; ``stormservice-controller``, ``kv-cache-controller`` and "
+"``distributed-inference-controller`` enable the ``orchestration`` group; "
+"``pod-autoscaler-controller`` enables both the ``autoscaling`` and "
+"``orchestration`` groups, because it reads and scales StormService; "
+"``model-route-controller`` enables both the ``model`` and "
+"``orchestration`` groups, because it watches ModelAdapter and "
+"RayClusterFleet. The Deployment webhook is served regardless of "
+"``--controllers``. The manager skips the other webhooks at startup and "
+"logs each one."
+msgstr ""
+"只有当某个 API 组的控制器之一被启用时，管理器才会提供该组的准入 webhook。 "
+"``model-adapter-controller`` 、 ``model-claim-controller`` 和 "
+"``model-warmup-controller`` 启用 ``model`` 组； ``stormservice-controller`` 、 "
+"``kv-cache-controller`` 和 ``distributed-inference-controller`` 启用 "
+"``orchestration`` 组； ``pod-autoscaler-controller`` 会读取并扩缩 StormService，"
+"因此同时启用 ``autoscaling`` 组和 ``orchestration`` 组； "
+"``model-route-controller`` 会监听 ModelAdapter 和 RayClusterFleet，因此同时启用 "
+"``model`` 组和 ``orchestration`` 组。无论 ``--controllers`` 如何设置，都会提供 "
+"Deployment webhook。管理器会在启动时跳过其余 webhook，并为每个被跳过的 webhook "
+"输出一条日志。"
+
+#: ../../source/getting_started/installation/installation.rst:201
+msgid ""
+"If the installed webhook configuration still lists a skipped webhook, its"
+" ``failurePolicy`` decides what the API server does. Webhooks with "
+"``failurePolicy: Ignore`` admit objects without their validation and "
+"defaulting. The ModelWarmup webhook uses ``failurePolicy: Fail``, so the "
+"API server rejects creating or updating a ModelWarmup while none of the "
+"controllers that enable the ``model`` group is enabled."
+msgstr ""
+"如果已安装的 webhook 配置中仍列出被跳过的 webhook，API 服务器的处理方式由其 "
+"``failurePolicy`` 决定。使用 ``failurePolicy: Ignore`` 的 webhook 会放行对象，"
+"不进行其校验和默认值设置。ModelWarmup webhook 使用 ``failurePolicy: Fail`` ，"
+"因此在启用 ``model`` 组的控制器都未启用时，API 服务器会拒绝创建或更新 ModelWarmup。"
+
+#: ../../source/getting_started/installation/installation.rst:203
 msgid "What's next?"
 msgstr "下一步"
 
-#: ../../source/getting_started/installation/installation.rst:201
+#: ../../source/getting_started/installation/installation.rst:206
 msgid ":doc:`../quickstart`: deploy your first model"
 msgstr ":doc:`../quickstart` ：部署第一个模型"
 
-#: ../../source/getting_started/installation/installation.rst:202
+#: ../../source/getting_started/installation/installation.rst:207
 msgid ""
 ":doc:`../../production/model-deployment`: production model deployment "
 "guidance"
 msgstr ":doc:`../../production/model-deployment` ：生产环境模型部署指南"
 
-#: ../../source/getting_started/installation/installation.rst:203
+#: ../../source/getting_started/installation/installation.rst:208
 msgid ":doc:`../../production/gateway`: production gateway configuration"
 msgstr ":doc:`../../production/gateway` ：生产环境网关配置"
 
-#: ../../source/getting_started/installation/installation.rst:204
+#: ../../source/getting_started/installation/installation.rst:209
 msgid ":doc:`../../production/observability`: metrics, dashboards, and telemetry"
 msgstr ":doc:`../../production/observability` ：指标、仪表盘和遥测"
 
 #: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:17
 msgid ""
-"The current checkout pins Envoy Gateway v1.9.4 with Envoy v1.39.6. The "
-"`upstream compatibility matrix "
+"The current checkout pins Envoy Gateway v1.9.4 with Envoy v1.39.6. This "
+"checkout dependency stack requires Kubernetes v1.33 or newer; the `upstream "
+"compatibility matrix "
 "<https://gateway.envoyproxy.io/news/releases/matrix/>`_ lists Kubernetes "
-"v1.33 through v1.36 and Gateway API v1.6.1 for this release line. This is "
-"the upstream-tested range, not a claim that every AIBrix workload has been "
-"tested on every Kubernetes version. Older externally installed Envoy Gateway"
-" releases are not validated by this migration."
+"v1.33 through v1.36 and Gateway API v1.6.1 for this release line. AIBrix "
+"has validated installs and upgrades on Kubernetes v1.34 (installation CI). "
+"Older clusters should stay on a released AIBrix bundle until they can move. "
+"Feature-specific floors (e.g. AWS DRA / Trainium) may be higher. This is "
+"not a claim that every AIBrix workload is certified on every version in "
+"that range. Older externally installed Envoy Gateway releases are not "
+"validated by this migration."
 msgstr ""
-"当前检出的代码将 Envoy Gateway 固定为 v1.9.4，将 Envoy 固定为 v1.39.6。`上游兼容性矩阵 "
+"当前检出的代码将 Envoy Gateway 固定为 v1.9.4，将 Envoy 固定为 v1.39.6。该检出依赖技术栈要求 "
+"Kubernetes v1.33 或更高版本；`上游兼容性矩阵 "
 "<https://gateway.envoyproxy.io/news/releases/matrix/>`_ 列出了该版本系列对应的 "
-"Kubernetes v1.33 至 v1.36 和 Gateway API v1.6.1。这是上游测试覆盖的范围，并不表示每个 AIBrix "
-"工作负载都已在每个 Kubernetes 版本上测试过。本次迁移不验证外部安装的较旧 Envoy Gateway 版本。"
+"Kubernetes v1.33 至 v1.36 和 Gateway API v1.6.1。AIBrix 已在 Kubernetes v1.34"
+"（安装 CI）上验证了安装与升级。更旧的集群应继续使用已发布的 AIBrix 版本包，直到可以升级。"
+"特定功能的最低版本要求（如 AWS DRA / Trainium）可能更高。这并不表示每个 AIBrix "
+"工作负载都在该范围内的每个版本上得到认证。本次迁移不验证外部安装的较旧 Envoy Gateway 版本。"
 
 #: ../aibrix-3507/docs/source/getting_started/installation/installation.rst:24
 msgid ""
@@ -412,8 +468,12 @@ msgstr ""
 "检查才能作为迁移证据。这些检查不能证明升级零停机。"
 
 
-msgid "The new dependency bundle fails during CRD installation on Kubernetes v1.31, before AIBrix application tests run. Validation on Kubernetes v1.34 does not establish the minimum supported Kubernetes version."
-msgstr "新的依赖包在 Kubernetes v1.31 上安装 CRD 时就会失败，尚未运行 AIBrix 应用测试。在 Kubernetes v1.34 上的验证不能证明最低受支持的 Kubernetes 版本。"
+msgid ""
+"Clusters older than Kubernetes v1.33 are unsupported for the new dependency"
+" bundle: v1.31 rejects the new CRDs' CEL ``format`` rules during CRD "
+"installation, before AIBrix application tests run. Validation on Kubernetes"
+" v1.34 does not establish the minimum supported Kubernetes version."
+msgstr "低于 Kubernetes v1.33 的集群不支持新的依赖包：v1.31 在安装 CRD 时就会拒绝新 CRD 的 CEL ``format`` 规则，尚未运行 AIBrix 应用测试。在 Kubernetes v1.34 上的验证不能证明最低受支持的 Kubernetes 版本。"
 
 msgid "This procedure validates a forward upgrade only. An in-place downgrade of the bundled Gateway API CRDs is not validated. The target bundle installs the ``safe-upgrades.gateway.networking.k8s.io`` admission policy, which rejects Gateway API CRDs older than v1.5. Reapplying the old dependency bundle or running Helm rollback is not a complete rollback procedure. Do not delete CRDs to roll back: their resources can be lost. Plan a cluster-admin-owned recovery procedure before upgrading. Rolling back only the controller while retaining the newer CRDs is also not validated here."
 msgstr "此流程只验证向前升级，未验证随包提供的 Gateway API CRD 的原地降级。目标依赖包会安装 ``safe-upgrades.gateway.networking.k8s.io`` 准入策略，拒绝低于 v1.5 的 Gateway API CRD。重新应用旧依赖包或运行 Helm 回滚并不构成完整的回滚流程。不要通过删除 CRD 来回滚，因为其中的资源可能丢失。升级前应制定由集群管理员负责的恢复流程。本文也未验证保留新版 CRD、仅回滚控制器的方案。"

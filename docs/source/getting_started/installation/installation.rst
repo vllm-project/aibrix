@@ -14,12 +14,16 @@ Install AIBrix on Cloud Kubernetes Clusters
 .. attention::
     AIBrix requires `Envoy Gateway <https://gateway.envoyproxy.io/>`_ for request routing.
 
-    The current checkout pins Envoy Gateway v1.9.4 with Envoy v1.39.6. The
+    The current checkout pins Envoy Gateway v1.9.4 with Envoy v1.39.6. This
+    checkout dependency stack requires Kubernetes v1.33 or newer; the
     `upstream compatibility matrix <https://gateway.envoyproxy.io/news/releases/matrix/>`_
     lists Kubernetes v1.33 through v1.36 and Gateway API v1.6.1 for this release
-    line. This is the upstream-tested range, not a claim that every AIBrix
-    workload has been tested on every Kubernetes version. Older externally
-    installed Envoy Gateway releases are not validated by this migration.
+    line. AIBrix has validated installs and upgrades on Kubernetes v1.34
+    (installation CI). Older clusters should stay on a released AIBrix bundle
+    until they can move. Feature-specific floors (e.g. AWS DRA / Trainium) may
+    be higher. This is not a claim that every AIBrix workload is certified on
+    every version in that range. Older externally installed Envoy Gateway
+    releases are not validated by this migration.
 
     Release bundles install their own pinned dependencies; these checkout
     versions do not change an already published release bundle.
@@ -31,7 +35,7 @@ Install AIBrix on Cloud Kubernetes Clusters
 
 .. warning::
 
-    The new dependency bundle fails during CRD installation on Kubernetes v1.31, before AIBrix application tests run. Validation on Kubernetes v1.34 does not establish the minimum supported Kubernetes version.
+    Clusters older than Kubernetes v1.33 are unsupported for the new dependency bundle: v1.31 rejects the new CRDs' CEL ``format`` rules during CRD installation, before AIBrix application tests run. Validation on Kubernetes v1.34 does not establish the minimum supported Kubernetes version.
 
 Stable Version
 ~~~~~~~~~~~~~~
@@ -333,6 +337,12 @@ Install AIBrix in testing Environments
 Install Individual AIBrix Components
 ------------------------------------
 
+Each component below installs into the ``aibrix-system`` namespace, which its manifests don't create. Create the namespace first if it doesn't exist:
+
+.. code:: bash
+
+    kubectl create namespace aibrix-system
+
 
 Autoscaler
 ~~~~~~~~~~
@@ -393,6 +403,11 @@ Available controllers:
 - ``model-claim-controller``: Multiple models sharing GPUs through ModelClaim (experimental)
 - ``model-warmup-controller``: Node preparation ahead of use through ModelWarmup (experimental)
 - ``stormservice-controller``: Multi-node orchestration with P/D and AFD support
+
+.. note::
+    The manager serves an admission webhook only when one of the controllers for its API group is enabled. ``model-adapter-controller``, ``model-claim-controller`` and ``model-warmup-controller`` enable the ``model`` group; ``stormservice-controller``, ``kv-cache-controller`` and ``distributed-inference-controller`` enable the ``orchestration`` group; ``pod-autoscaler-controller`` enables both the ``autoscaling`` and ``orchestration`` groups, because it reads and scales StormService; ``model-route-controller`` enables both the ``model`` and ``orchestration`` groups, because it watches ModelAdapter and RayClusterFleet. The Deployment webhook is served regardless of ``--controllers``. The manager skips the other webhooks at startup and logs each one.
+
+    If the installed webhook configuration still lists a skipped webhook, its ``failurePolicy`` decides what the API server does. Webhooks with ``failurePolicy: Ignore`` admit objects without their validation and defaulting. The ModelWarmup webhook uses ``failurePolicy: Fail``, so the API server rejects creating or updating a ModelWarmup while none of the controllers that enable the ``model`` group is enabled.
 
 .. card:: What's next?
    :class-card: sd-border-1

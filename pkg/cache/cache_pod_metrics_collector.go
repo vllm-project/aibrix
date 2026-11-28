@@ -57,24 +57,31 @@ func (pod *Pod) gatewayMetricLabelValues() []string {
 	return pod.gatewayMetricLabels
 }
 
-// podGatewayMetricsCollector exports this gateway's running-request estimate
-// for ready, non-quarantined pods. It retains no historical series.
+// podGatewayMetricsCollector exports this gateway's per-pod gauges at scrape
+// time: the running-request estimate and the 1-minute drain rate. It derives
+// the series from the pods currently in the cache, so a deleted or relabeled
+// pod retains no historical series.
 type podGatewayMetricsCollector struct {
-	store *Store
-	desc  *prometheus.Desc
+	store         *Store
+	runningDesc   *prometheus.Desc
+	drainRateDesc *prometheus.Desc
 }
 
 func newPodGatewayMetricsCollector(store *Store) *podGatewayMetricsCollector {
 	return &podGatewayMetricsCollector{
 		store: store,
-		desc: prometheus.NewDesc(metrics.RealtimeNumRequestsRunning,
+		runningDesc: prometheus.NewDesc(metrics.RealtimeNumRequestsRunning,
 			"This gateway's estimate of in-flight requests for the target pod, including recent counts from other gateways",
+			podGatewayMetricLabelNames, nil),
+		drainRateDesc: prometheus.NewDesc(metrics.RealtimeRunningRequestsDrainRate1m,
+			"1-minute rolling rate of requests completed per second on an inference pod, as tracked by the gateway",
 			podGatewayMetricLabelNames, nil),
 	}
 }
 
 func (c *podGatewayMetricsCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.desc
+	ch <- c.runningDesc
+	ch <- c.drainRateDesc
 }
 
 func (c *podGatewayMetricsCollector) Collect(ch chan<- prometheus.Metric) {
@@ -83,18 +90,26 @@ func (c *podGatewayMetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		if pod == nil || pod.Pod == nil || !utils.FilterReadyPod(pod.Pod) || c.store.isPodQuarantined(pod.Pod) {
 			return true
 		}
-		value, ready := c.store.runningRequestsEstimate(pod, now)
-		if !ready {
-			return true
+		labelValues := pod.gatewayMetricLabelValues()
+		if value, ready := c.store.runningRequestsEstimate(pod, now); ready {
+			c.emit(ch, c.runningDesc, value, labelValues)
 		}
-		metric, err := prometheus.NewConstMetric(c.desc, prometheus.GaugeValue, value, pod.gatewayMetricLabelValues()...)
-		if err != nil {
-			klog.ErrorS(err, "Skipping pod gauge with invalid labels", "metric", c.desc, "namespace", pod.Namespace, "pod", pod.Name)
-			return true
+		if record, ok := pod.Metrics.Load(metrics.RealtimeRunningRequestsDrainRate1m); ok {
+			if value, ok := record.Value.(*metrics.SimpleMetricValue); ok && value != nil {
+				c.emit(ch, c.drainRateDesc, value.Value, labelValues)
+			}
 		}
-		ch <- metric
 		return true
 	})
+}
+
+func (c *podGatewayMetricsCollector) emit(ch chan<- prometheus.Metric, desc *prometheus.Desc, value float64, labelValues []string) {
+	metric, err := prometheus.NewConstMetric(desc, prometheus.GaugeValue, value, labelValues...)
+	if err != nil {
+		klog.ErrorS(err, "Skipping pod gauge with invalid labels", "metric", desc, "labels", labelValues)
+		return
+	}
+	ch <- metric
 }
 
 func initPodGatewayMetricsCollector(store *Store, registerer prometheus.Registerer, stopCh <-chan struct{}) error {

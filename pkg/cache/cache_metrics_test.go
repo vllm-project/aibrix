@@ -15,9 +15,12 @@ limitations under the License.
 package cache
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"math"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -26,6 +29,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -701,7 +706,7 @@ func TestUpdatePodMetricsNonBlocking(t *testing.T) {
 	defer restore()
 
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 2),
+		podMetricsJobs: make(chan podMetricsJob, 2),
 	}
 
 	for i := range 5 {
@@ -774,7 +779,7 @@ func TestUpdatePodMetricsDedupesQueuedPods(t *testing.T) {
 	defer restore()
 
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 10),
+		podMetricsJobs: make(chan podMetricsJob, 10),
 	}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
 	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
@@ -789,7 +794,7 @@ func TestUpdatePodMetricsDedupesQueuedPods(t *testing.T) {
 
 func TestPodMetricsSchedulingUIDChangeClearsState(t *testing.T) {
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 10),
+		podMetricsJobs: make(chan podMetricsJob, 10),
 	}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
 	recreated := newReadyMetricsPod("pod-0", "uid-1")
@@ -802,7 +807,7 @@ func TestPodMetricsSchedulingUIDChangeClearsState(t *testing.T) {
 
 func TestPodMetricsSchedulingCompletesAndAllowsRequeue(t *testing.T) {
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 10),
+		podMetricsJobs: make(chan podMetricsJob, 10),
 	}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
 
@@ -899,7 +904,7 @@ func TestUpdatePodMetricsSkipsBackoffPods(t *testing.T) {
 	defer restore()
 
 	store := &Store{
-		podMetricsJobs: make(chan *Pod, 2),
+		podMetricsJobs: make(chan podMetricsJob, 2),
 	}
 	backoffPod := newReadyMetricsPod("pod-backoff", "uid-backoff")
 	readyPod := newReadyMetricsPod("pod-ready", "uid-ready")
@@ -1020,7 +1025,7 @@ func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
 			defer restore()
 
 			store := &Store{
-				podMetricsJobs: make(chan *Pod, scenario.queueSize),
+				podMetricsJobs: make(chan podMetricsJob, scenario.queueSize),
 			}
 			now := time.Now()
 			for i := range scenario.pods {
@@ -1035,11 +1040,11 @@ func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
 			b.ResetTimer()
 			var enqueuedTotal int
 			for range b.N {
-				store.podMetricsJobs = make(chan *Pod, scenario.queueSize)
+				store.podMetricsJobs = make(chan podMetricsJob, scenario.queueSize)
 				store.updatePodMetrics()
 				enqueuedTotal += len(store.podMetricsJobs)
 				for len(store.podMetricsJobs) > 0 {
-					store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+					store.finishPodMetricsScheduling((<-store.podMetricsJobs).Pod)
 				}
 			}
 			b.StopTimer()
@@ -1178,6 +1183,482 @@ func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) 
 
 	_, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
 	require.False(t, ok, "a single sample has no window, so no capacity estimate yet")
+}
+
+// seedOutputRateHistory gives the pod's completion-counter history one baseline snapshot age ago,
+// so the next update has a window to take deltas over.
+func seedOutputRateHistory(t *testing.T, pod *Pod, tokens, busySeconds, requests, finished float64, age time.Duration) {
+	t.Helper()
+	setOutputRateHistory(t, pod, outputRateSnapshot{
+		counters: outputRateCounters{tokens: tokens, busySeconds: busySeconds, requests: requests, finished: finished},
+		at:       time.Now().Add(-age),
+	})
+}
+
+func setOutputRateHistory(t *testing.T, pod *Pod, history ...outputRateSnapshot) {
+	t.Helper()
+	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	rateCalculator.mu.Lock()
+	if rateCalculator.outputRate == nil {
+		rateCalculator.outputRate = make(map[string][]outputRateSnapshot)
+	}
+	rateCalculator.outputRate[key] = history
+	rateCalculator.mu.Unlock()
+	t.Cleanup(func() { rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name) })
+}
+
+func outputRateHistoryLen(pod *Pod) int {
+	rateCalculator.mu.Lock()
+	defer rateCalculator.mu.Unlock()
+	return len(rateCalculator.outputRate[utils.GeneratePodKey(pod.Namespace, pod.Name)])
+}
+
+// setOutputCounters sets the pod's completion counters: output tokens, the time those requests
+// spent on the pod, how many requests had output tokens, and how many requests finished at all.
+func setOutputCounters(pod *Pod, tokens int64, busy time.Duration, requests, finished int64) {
+	atomic.StoreInt64(&pod.completedOutputTokens, tokens)
+	atomic.StoreInt64(&pod.completedOutputBusyNanos, int64(busy))
+	atomic.StoreInt64(&pod.completedOutputRequests, requests)
+	atomic.StoreInt64(&pod.completedRequests, finished)
+}
+
+// storeWithMinSamples is a store whose per-request rate needs n requests in a window.
+func storeWithMinSamples(n int) *Store {
+	return &Store{outputRateMinSamples: &n}
+}
+
+func podMetric(t *testing.T, pod *Pod, name string) (float64, bool) {
+	t.Helper()
+	v, ok := pod.Metrics.Load(name)
+	if !ok {
+		return 0, false
+	}
+	return v.Value.GetSimpleValue(), true
+}
+
+func perRequestRate(t *testing.T, pod *Pod) float64 {
+	t.Helper()
+	v, ok := podMetric(t, pod, metrics.RealtimeOutputTokensPerRequestSecondEWMA)
+	require.True(t, ok)
+	return v
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_IndependentOfTrafficShare is the #3450
+// property: two identical pods, one of which got 3x the traffic, measure the same per-request rate,
+// while RealtimeOutputTokenRateEWMA reads 3x higher on the busier one.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_IndependentOfTrafficShare(t *testing.T) {
+	c := &Store{}
+	busy := namespacedTestPod("default", "share-busy")
+	idle := namespacedTestPod("default", "share-idle")
+	for _, pod := range []*Pod{busy, idle} {
+		seedOutputRateHistory(t, pod, 0, 0, 0, 0, 30*time.Second)
+		seedCompletedOutputTokensHistory(t, pod, 0, 30*time.Second)
+	}
+	// Over 30 s each request decodes at 46 tokens/s. busy carried ~5 requests at a time, idle ~1.7.
+	setOutputCounters(busy, 46*150, 150*time.Second, 216, 216)
+	setOutputCounters(idle, 46*50, 50*time.Second, 72, 72)
+
+	for _, pod := range []*Pod{busy, idle} {
+		c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+		c.updateRealtimeOutputTokenRateEWMA(pod)
+	}
+
+	require.InDelta(t, 46, perRequestRate(t, busy), 0.5)
+	require.InDelta(t, 46, perRequestRate(t, idle), 0.5)
+	total := func(pod *Pod) float64 {
+		v, ok := podMetric(t, pod, metrics.RealtimeOutputTokenRateEWMA)
+		require.True(t, ok)
+		return v
+	}
+	require.InDelta(t, 3, total(busy)/total(idle), 0.05, "the total-rate signal follows the traffic share")
+}
+
+// A saturated pod's requests queue, so each spends longer on the pod for the same tokens and the
+// estimate falls. A faster pod's requests finish sooner and the estimate rises.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_FallsWithQueueingRisesWithSpeed(t *testing.T) {
+	c := &Store{}
+	slow := namespacedTestPod("default", "rate-saturated")
+	fast := namespacedTestPod("default", "rate-fast")
+	for _, pod := range []*Pod{slow, fast} {
+		seedOutputRateHistory(t, pod, 0, 0, 0, 0, 30*time.Second)
+	}
+	setOutputCounters(slow, 3000, 150*time.Second, 94, 94) // 20 tokens per request-second
+	setOutputCounters(fast, 3000, 30*time.Second, 94, 94)  // 100
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(slow)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(fast)
+
+	require.InDelta(t, 20, perRequestRate(t, slow), 0.5)
+	require.InDelta(t, 100, perRequestRate(t, fast), 1)
+}
+
+// TestOutputRateDeltas1m: every delta is taken against the same snapshot, the one closest to a
+// minute ago and not the oldest; a call within the snapshot interval adds no snapshot; a counter
+// that went backwards resets them all.
+func TestOutputRateDeltas1m(t *testing.T) {
+	c := &Store{}
+	pod := namespacedTestPod("default", "deltas")
+	now := time.Now()
+	setOutputRateHistory(t, pod,
+		outputRateSnapshot{counters: outputRateCounters{tokens: 100, busySeconds: 4, requests: 3, finished: 5}, at: now.Add(-150 * time.Second)},
+		outputRateSnapshot{counters: outputRateCounters{tokens: 300, busySeconds: 9, requests: 8, finished: 12}, at: now.Add(-58 * time.Second)},
+	)
+
+	cur := outputRateCounters{tokens: 760, busySeconds: 19, requests: 18, finished: 27}
+	for i := 0; i < 2; i++ { // the second call, in the same tick, reads the same baseline
+		d, ok := c.outputRateDeltas1m(pod, cur)
+		require.True(t, ok)
+		require.Equal(t, outputRateCounters{tokens: 460, busySeconds: 10, requests: 10, finished: 15}, d)
+		require.Equal(t, 3, outputRateHistoryLen(pod))
+	}
+
+	reset := outputRateCounters{tokens: 50, busySeconds: 2, requests: 20, finished: 30} // tokens went backwards
+	d, ok := c.outputRateDeltas1m(pod, reset)
+	require.True(t, ok)
+	require.Equal(t, reset, d)
+}
+
+// TestOutputRateBaseMatchesBaseSnapshot1m: the completion-counter history picks its baseline and
+// prunes with its own helpers; they must agree with the single-series ones on any history.
+func TestOutputRateBaseMatchesBaseSnapshot1m(t *testing.T) {
+	rng := rand.New(rand.NewSource(3450))
+	now := time.Now()
+	for trial := 0; trial < 500; trial++ {
+		n := 2 + rng.Intn(60)
+		single := make([]MetricSnapshot, n)
+		group := make([]outputRateSnapshot, n)
+		age := time.Duration(rng.Int63n(int64(400 * time.Second)))
+		for i := n - 1; i >= 0; i-- { // newest last
+			at := now.Add(-age)
+			single[i] = MetricSnapshot{Value: float64(i), Timestamp: at}
+			group[i] = outputRateSnapshot{counters: outputRateCounters{tokens: float64(i)}, at: at}
+			age += time.Duration(rng.Int63n(int64(9*time.Second))) + time.Millisecond
+		}
+
+		single = cleanupOldSnapshots(single, now, window1mHistoryMaxAge, window1mHistoryMaxCount)
+		group = pruneOutputRateHistory(group, now)
+		require.Len(t, group, len(single), "trial %d: pruned length", trial)
+		for i := range single {
+			require.Equal(t, single[i].Value, group[i].counters.tokens, "trial %d: kept snapshot %d", trial, i)
+		}
+		if len(single) < 2 {
+			continue
+		}
+		require.Equal(t, baseSnapshot1m(single, now).Value, group[outputRateBaseIndex1m(group, now)].counters.tokens, "trial %d: baseline", trial)
+	}
+}
+
+// No result before there are two snapshots, or while the baseline is younger than the minimum.
+func TestOutputRateDeltas1mNeedsHistory(t *testing.T) {
+	c := &Store{}
+	pod := namespacedTestPod("default", "deltas-young")
+	t.Cleanup(func() { rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name) })
+
+	_, ok := c.outputRateDeltas1m(pod, outputRateCounters{tokens: 32, busySeconds: 1, requests: 1, finished: 1})
+	require.False(t, ok, "first snapshot")
+	require.Equal(t, 1, outputRateHistoryLen(pod))
+
+	seedOutputRateHistory(t, pod, 0, 0, 0, 0, 6*time.Second)
+	_, ok = c.outputRateDeltas1m(pod, outputRateCounters{tokens: 32, busySeconds: 1, requests: 1, finished: 1})
+	require.False(t, ok, "baseline 6 s old")
+}
+
+// Deleting a pod drops its completion-counter history with its other rate histories.
+func TestPurgeEntriesForPodDropsOutputRateHistory(t *testing.T) {
+	pod := namespacedTestPod("default", "purge")
+	other := namespacedTestPod("other", "purge")
+	seedOutputRateHistory(t, pod, 1, 1, 1, 1, 30*time.Second)
+	seedOutputRateHistory(t, other, 1, 1, 1, 1, 30*time.Second)
+
+	rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name)
+
+	require.Equal(t, 0, outputRateHistoryLen(pod))
+	require.Equal(t, 1, outputRateHistoryLen(other), "a same-named pod in another namespace keeps its history")
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_WindowNeedsMinSamples: a window updates the
+// estimate only if enough requests with output tokens completed in it.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_WindowNeedsMinSamples(t *testing.T) {
+	c := storeWithMinSamples(8)
+	pod := namespacedTestPod("default", "rate-min-samples")
+	seedOutputRateHistory(t, pod, 0, 0, 0, 0, 30*time.Second)
+
+	// 7 requests in the window: 7 x 32 tokens over 7 x 0.8 s on the pod.
+	setOutputCounters(pod, 7*32, 7*800*time.Millisecond, 7, 7)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+	_, ok := podMetric(t, pod, metrics.RealtimeOutputTokensPerRequestSecondEWMA)
+	require.False(t, ok, "7 of 8 samples in the window: no estimate")
+
+	setOutputCounters(pod, 8*32, 8*800*time.Millisecond, 8, 8)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+	require.InDelta(t, 40, perRequestRate(t, pod), 0.5)
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_LifetimeSamplesDoNotCount: the threshold
+// counts the window, not the pod's lifetime. A pod that completed many requests long ago and
+// one request in this window keeps its previous estimate; that one request, which here is far
+// off the pod's rate, does not move it.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_LifetimeSamplesDoNotCount(t *testing.T) {
+	c := storeWithMinSamples(8)
+	pod := namespacedTestPod("default", "rate-after-idle")
+	seedOutputRateHistory(t, pod, 16000, 400, 500, 500, 30*time.Second) // 500 requests before the window
+	require.NoError(t, c.updatePodRecord(pod, "", metrics.RealtimeOutputTokensPerRequestSecondEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: 40}))
+
+	setOutputCounters(pod, 16000+32, 400*time.Second+8*time.Second, 501, 501) // one request at 4 tokens/s
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+
+	require.Equal(t, 40.0, perRequestRate(t, pod))
+}
+
+// With the threshold at 0 a window with one completed request updates the estimate.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_MinSamplesZero(t *testing.T) {
+	c := storeWithMinSamples(0)
+	pod := namespacedTestPod("default", "rate-min-samples-off")
+	seedOutputRateHistory(t, pod, 0, 0, 0, 0, 30*time.Second)
+	setOutputCounters(pod, 32, 800*time.Millisecond, 1, 1)
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+
+	require.InDelta(t, 40, perRequestRate(t, pod), 0.5)
+}
+
+// The default is pinned so a change to it is deliberate, and a store without an override uses
+// the process default.
+func TestOutputRateMinSamplesDefault(t *testing.T) {
+	require.Equal(t, 8, outputRateMinSamplesDefault)
+	require.Equal(t, outputRateMinSamplesFromEnv, (&Store{}).minOutputRateSamples())
+	require.Equal(t, 3, storeWithMinSamples(3).minOutputRateSamples())
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_IdlePodKeepsValuesAndTheirAge pins what an
+// idle pod reports: nothing finished in the window, so both values stay as they were, with the
+// time of their last update. The fraction here is from an incident ten minutes ago. A reader
+// that does not check the record's age takes it for the last minute.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_IdlePodKeepsValuesAndTheirAge(t *testing.T) {
+	c := &Store{}
+	pod := namespacedTestPod("default", "rate-idle")
+	seedOutputRateHistory(t, pod, 500, 10, 15, 25, 30*time.Second)
+	setOutputCounters(pod, 500, 10*time.Second, 15, 25) // nothing new
+	then := time.Now().Add(-10 * time.Minute)
+	require.NoError(t, c.updatePodRecordAt(pod, "", metrics.RealtimeOutputTokensPerRequestSecondEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: 42}, then))
+	require.NoError(t, c.updatePodRecordAt(pod, "", metrics.RealtimeRequestsWithoutOutputTokensFraction1m, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: 0.4}, then))
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+
+	for name, want := range map[string]float64{
+		metrics.RealtimeOutputTokensPerRequestSecondEWMA:      42,
+		metrics.RealtimeRequestsWithoutOutputTokensFraction1m: 0.4,
+	} {
+		record, ok := pod.Metrics.Load(name)
+		require.True(t, ok, name)
+		require.Equal(t, want, record.Value.GetSimpleValue(), name)
+		require.True(t, record.Timestamp.Equal(then), "%s keeps the time of its last update", name)
+	}
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_WeighsByElapsedTime: the gate makes updates
+// irregular, so the EWMA weighs a new window by the time since the estimate was last updated,
+// not by one refresh interval. After 30 s without an update (tau 10 s) the old estimate keeps
+// 5% of the weight; one refresh interval after an update it keeps 90%.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_WeighsByElapsedTime(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		elapsed time.Duration
+		want    float64
+	}{
+		{"30 s since the last update", 30 * time.Second, 40 + 60*(1-math.Exp(-3))},
+		{"one refresh interval", podMetricRefreshInterval, 40 + 60*(1-math.Exp(-podMetricRefreshInterval.Seconds()/10))},
+		{"updated just now: never less than one interval", 0, 40 + 60*(1-math.Exp(-podMetricRefreshInterval.Seconds()/10))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := storeWithMinSamples(8)
+			pod := namespacedTestPod("default", "rate-ewma")
+			seedOutputRateHistory(t, pod, 0, 0, 0, 0, 30*time.Second)
+			require.NoError(t, c.updatePodRecordAt(pod, "", metrics.RealtimeOutputTokensPerRequestSecondEWMA, metrics.PodMetricScope,
+				&metrics.SimpleMetricValue{Value: 40}, time.Now().Add(-tc.elapsed)))
+			setOutputCounters(pod, 3200, 32*time.Second, 100, 100) // this window: 100 tokens per request-second
+
+			c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+
+			require.InDelta(t, tc.want, perRequestRate(t, pod), 0.05)
+		})
+	}
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_AbortedRequestsAreNotInTheRate documents a
+// known bias and the metric that makes it visible. 100 requests finish in the window. 60 complete
+// with 32 tokens after 0.8 s. 40 are abandoned after 5 s without output tokens: they are the
+// slowest requests on the pod, and they are in neither the tokens nor the time. The rate is
+// that of the 60 survivors, so the pod reads as fast as an unloaded one.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_AbortedRequestsAreNotInTheRate(t *testing.T) {
+	c := &Store{}
+	pod := namespacedTestPod("default", "rate-aborts")
+	seedOutputRateHistory(t, pod, 0, 0, 0, 0, 30*time.Second)
+	setOutputCounters(pod, 60*32, 60*800*time.Millisecond, 60, 100)
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+
+	require.InDelta(t, 40, perRequestRate(t, pod), 0.5, "the 40 abandoned requests do not lower the rate")
+	without, ok := podMetric(t, pod, metrics.RealtimeRequestsWithoutOutputTokensFraction1m)
+	require.True(t, ok)
+	require.InDelta(t, 0.4, without, 1e-9, "but their share is recorded")
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_DependsOnRequestMix pins the other known
+// bias: the time is the whole request, so two pods with the same decode speed read differently
+// when they serve different mixes. Both decode at 100 tokens/s after 0.3 s before the first
+// token. One serves 32-token answers, the other 512-token ones, and the second reads 1.8x faster.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_DependsOnRequestMix(t *testing.T) {
+	c := &Store{}
+	short := namespacedTestPod("default", "mix-short-answers")
+	long := namespacedTestPod("default", "mix-long-answers")
+	for _, pod := range []*Pod{short, long} {
+		seedOutputRateHistory(t, pod, 0, 0, 0, 0, 30*time.Second)
+	}
+	setOutputCounters(short, 40*32, 40*620*time.Millisecond, 40, 40)  // 0.3 s + 32/100 s each
+	setOutputCounters(long, 10*512, 10*5420*time.Millisecond, 10, 10) // 0.3 s + 512/100 s each
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(short)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(long)
+
+	require.InDelta(t, 51.6, perRequestRate(t, short), 0.1)
+	require.InDelta(t, 94.5, perRequestRate(t, long), 0.1)
+}
+
+// TestReadOutputRateCountersIsConsistent: donePodStats adds a request's tokens, time and sample
+// under the pod's stats lock, and the metrics tick reads them under the same lock, so it never
+// sees one without the others. Every request here adds exactly 20 tokens and one sample.
+func TestReadOutputRateCountersIsConsistent(t *testing.T) {
+	const modelName, namespace, podName = "test-model", "default", "decode-0"
+	cache := NewForTest()
+	pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+	cache.addPod(pod)
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+
+	const writers, perWriter = 4, 300
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				requestID := fmt.Sprintf("w%d-r%d", w, i)
+				ctx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+				ctx.SetTargetPod(pod)
+				term := cache.AddRequestCount(ctx, requestID, modelName)
+				cache.DoneRequestTrace(ctx, requestID, modelName, 10, 20, term)
+			}
+		}(w)
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+
+	reads := 0
+	for running := true; running; {
+		select {
+		case <-done:
+			running = false
+		default:
+		}
+		counters := cache.readOutputRateCounters(metaPod)
+		require.Equal(t, 20*counters.requests, counters.tokens, "a read saw tokens without their sample, or the reverse")
+		require.Equal(t, counters.requests, counters.finished)
+		reads++
+	}
+	counters := cache.readOutputRateCounters(metaPod)
+	require.Equal(t, float64(writers*perWriter), counters.requests)
+	require.Equal(t, float64(20*writers*perWriter), counters.tokens)
+	require.Positive(t, counters.busySeconds)
+	require.Positive(t, reads)
+}
+
+const benchPods = 5000
+
+// seedBenchHistories gives each of benchPods pods a full completion-counter history and a full
+// history for each of names (the single-series rate histories a pod already has), and returns
+// the pods.
+func seedBenchHistories(b *testing.B, names ...string) []*Pod {
+	b.Helper()
+	fleet := make([]*Pod, benchPods)
+	start := time.Now().Add(-window1mHistoryMaxAge + 10*time.Second)
+	rateCalculator.mu.Lock()
+	if rateCalculator.outputRate == nil {
+		rateCalculator.outputRate = make(map[string][]outputRateSnapshot)
+	}
+	for i := range fleet {
+		fleet[i] = namespacedTestPod("bench", fmt.Sprintf("pod-%d", i))
+		group := make([]outputRateSnapshot, 0, window1mHistoryMaxCount)
+		for k := 0; k < window1mHistoryMaxCount-2; k++ {
+			at := start.Add(time.Duration(k) * window1mSnapshotInterval)
+			group = append(group, outputRateSnapshot{counters: outputRateCounters{tokens: float64(k * 100), busySeconds: float64(k), requests: float64(k * 3), finished: float64(k * 3)}, at: at})
+		}
+		rateCalculator.outputRate[utils.GeneratePodKey(fleet[i].Namespace, fleet[i].Name)] = group
+		for _, name := range names {
+			history := make([]MetricSnapshot, 0, window1mHistoryMaxCount)
+			for k := 0; k < window1mHistoryMaxCount-2; k++ {
+				history = append(history, MetricSnapshot{Value: float64(k * 100), Timestamp: start.Add(time.Duration(k) * window1mSnapshotInterval)})
+			}
+			rateCalculator.history[rateHistoryKey(fleet[i], "", name)] = history
+		}
+	}
+	rateCalculator.mu.Unlock()
+	b.Cleanup(func() {
+		for _, pod := range fleet {
+			rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name)
+		}
+	})
+	return fleet
+}
+
+// BenchmarkOutputRateDeltas1m is outputRateDeltas1m for one pod of a 5,000-pod fleet with full
+// histories, under the process-wide rateCalculator lock. One metrics tick calls it once per pod.
+// BenchmarkCalculateRate1m is the existing single-series helper on the same fleet.
+func BenchmarkOutputRateDeltas1m(b *testing.B) {
+	c := &Store{}
+	fleet := seedBenchHistories(b)
+	cur := outputRateCounters{tokens: 5000, busySeconds: 120, requests: 150, finished: 160}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.outputRateDeltas1m(fleet[i%benchPods], cur)
+	}
+}
+
+func BenchmarkCalculateRate1m(b *testing.B) {
+	c := &Store{}
+	fleet := seedBenchHistories(b, "bench_rate")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.calculateRate1m(fleet[i%benchPods], "bench_rate", 5000)
+	}
+}
+
+// BenchmarkPurgeEntriesForPod is one pod deletion on a 5,000-pod fleet: a scan of every
+// single-series history key (two per pod today: completed requests and completed output tokens)
+// under the process-wide lock, plus one delete of the pod's completion-counter history, which
+// adds no keys to that scan. A rolling restart of N pods does this N times.
+func BenchmarkPurgeEntriesForPod(b *testing.B) {
+	fleet := seedBenchHistories(b, "completed_requests", "completed_output_tokens")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pod := fleet[i%benchPods]
+		rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name)
+
+		// Put the pod's entries back, off the clock, so every iteration scans a full map.
+		b.StopTimer()
+		rateCalculator.mu.Lock()
+		rateCalculator.history[rateHistoryKey(pod, "", "completed_requests")] = []MetricSnapshot{{}}
+		rateCalculator.history[rateHistoryKey(pod, "", "completed_output_tokens")] = []MetricSnapshot{{}}
+		rateCalculator.outputRate[utils.GeneratePodKey(pod.Namespace, pod.Name)] = []outputRateSnapshot{{}}
+		rateCalculator.mu.Unlock()
+		b.StartTimer()
+	}
 }
 
 func namespacedTestPod(namespace, name string) *Pod {
@@ -1324,6 +1805,119 @@ func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
 	require.False(t, ok)
 }
 
+func seedPodGaugeLifecycleMetrics(t *testing.T, store *Store, pod *Pod, model, sourceMetric, derivedMetric string) {
+	t.Helper()
+	extra := map[string]string{"model_name": model}
+	rawValue := &metrics.SimpleMetricValue{Value: 3, Labels: extra}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metrics.NumRequestsRunning, rawValue, extra)
+	require.NoError(t, store.updatePodRecord(pod, model, metrics.NumRequestsRunning, metrics.PodModelMetricScope, rawValue))
+
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(pod, model, sourceMetric)] = []MetricSnapshot{{Value: 1000, Timestamp: time.Now().Add(-time.Second)}}
+	rateCalculator.mu.Unlock()
+	sourceValue := &metrics.SimpleMetricValue{Value: 1100, Labels: extra}
+	store.updateThroughputToksPerS(pod, model, sourceMetric, sourceValue)
+	require.NoError(t, store.updatePodRecord(pod, model, sourceMetric, metrics.PodModelMetricScope, sourceValue))
+	derived, ok := pod.ModelMetrics.Load(store.getPodModelMetricName(model, derivedMetric))
+	require.True(t, ok)
+	require.Equal(t, extra, derived.Value.GetLabelValues())
+
+	histogramValue := &metrics.HistogramMetricValue{
+		Sum: 1.2, Count: 2, Buckets: map[string]float64{"0.300000": 0, "0.800000": 2, "+Inf": 2}, Labels: extra,
+	}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metrics.TimeToFirstTokenSeconds, histogramValue, extra)
+	require.NoError(t, store.updatePodRecord(pod, model, metrics.TimeToFirstTokenSeconds, metrics.PodModelMetricScope, histogramValue))
+
+	for _, metricName := range []string{metrics.NumRequestsRunning, derivedMetric, metrics.TimeToFirstTokenSeconds + "_p50"} {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": pod.Namespace, "pod": pod.Name, "model": model,
+		})
+		require.True(t, ok, "%s must be exported before the pod lifecycle event", metricName)
+	}
+}
+
+func TestDeletePodRemovesRawAndDerivedGauges(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("prefill-gauge-delete", "inference", "old-model", "10.0.0.1")
+	original.Status.Phase = v1.PodRunning
+	store.addPod(original)
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	purgeRateHistory(t, pod)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "old-model", metrics.PromptTokenTotal, metrics.AvgPromptThroughputToksPerS)
+
+	store.deletePod(original)
+
+	for _, metricName := range []string{metrics.NumRequestsRunning, metrics.AvgPromptThroughputToksPerS, metrics.TimeToFirstTokenSeconds + "_p50"} {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "old-model",
+		})
+		require.False(t, ok, "%s must not survive pod deletion", metricName)
+	}
+}
+
+func TestUpdatePodRemovesRelabeledRawAndDerivedGauges(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("decode-gauge-relabel", "inference", "old-model", "10.0.0.1")
+	original.Status.Phase = v1.PodRunning
+	store.addPod(original)
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	purgeRateHistory(t, pod)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "old-model", metrics.GenerationTokenTotal, metrics.AvgGenerationThroughputToksPerS)
+
+	updated := original.DeepCopy()
+	updated.Labels[constants.ModelLabelName] = "new-model"
+	store.updatePod(original, updated)
+
+	for _, metricName := range []string{metrics.NumRequestsRunning, metrics.AvgGenerationThroughputToksPerS, metrics.TimeToFirstTokenSeconds + "_p50"} {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "old-model",
+		})
+		require.False(t, ok, "%s must not survive a model relabel", metricName)
+	}
+
+	pod, ok = store.metaPods.Load(utils.GeneratePodKey(updated.Namespace, updated.Name))
+	require.True(t, ok)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "new-model", metrics.GenerationTokenTotal, metrics.AvgGenerationThroughputToksPerS)
+}
+
+func TestUpdatePodKeepsGaugesWhenModelUnchanged(t *testing.T) {
+	store := NewForTest()
+	original := requestTrackerTestPod("prefill-gauge-update", "inference", "model", "10.0.0.1")
+	original.Status.Phase = v1.PodRunning
+	store.addPod(original)
+	pod, ok := store.metaPods.Load(utils.GeneratePodKey(original.Namespace, original.Name))
+	require.True(t, ok)
+	purgeRateHistory(t, pod)
+	seedPodGaugeLifecycleMetrics(t, store, pod, "model", metrics.PromptTokenTotal, metrics.AvgPromptThroughputToksPerS)
+
+	updated := original.DeepCopy()
+	updated.Status.PodIP = "10.0.0.2"
+	store.updatePod(original, updated)
+
+	metricNames := []string{metrics.NumRequestsRunning, metrics.AvgPromptThroughputToksPerS, metrics.TimeToFirstTokenSeconds + "_p50"}
+	for _, metricName := range metricNames {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "model",
+		})
+		require.True(t, ok, "%s must survive an unrelated pod update", metricName)
+	}
+
+	store.deletePod(updated)
+	for _, metricName := range metricNames {
+		family := metricFamilyFromHTTP(t, scrapeGatewayMetrics(t).Body, metricName)
+		_, ok := gaugeValueForLabels(family, map[string]string{
+			"namespace": original.Namespace, "pod": original.Name, "model": "model",
+		})
+		require.False(t, ok, "%s must be removed when the updated pod is deleted before another scrape", metricName)
+	}
+}
+
 // fakeQuarantine quarantines the pods named in the set.
 type fakeQuarantine map[string]bool
 
@@ -1366,7 +1960,7 @@ func TestUpdatePodMetricsSkipsQuarantinedPods(t *testing.T) {
 	restore := captureCounterCalls(&counters)
 	defer restore()
 
-	store := &Store{podMetricsJobs: make(chan *Pod, 10)}
+	store := &Store{podMetricsJobs: make(chan podMetricsJob, 10)}
 	for _, name := range []string{"pod-0", "pod-1"} {
 		pod := newReadyMetricsPod(name, "uid-"+name)
 		store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
@@ -1375,7 +1969,7 @@ func TestUpdatePodMetricsSkipsQuarantinedPods(t *testing.T) {
 	store.updatePodMetrics()
 	require.Equal(t, 2, len(store.podMetricsJobs), "without a checker every ready pod is scraped")
 	for len(store.podMetricsJobs) > 0 {
-		store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+		store.finishPodMetricsScheduling((<-store.podMetricsJobs).Pod)
 	}
 
 	var checker PodQuarantineChecker = fakeQuarantine{"pod-1": true}
@@ -1426,4 +2020,183 @@ func TestUpdateModelReplicaMetricsSkipsQuarantinedPods(t *testing.T) {
 	store.updateModelReplicaMetrics()
 	require.ElementsMatch(t, []string{"pod-0", "pod-1"}, emitted)
 	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+}
+
+// seedCompletedRequestsHistory plants a rate-window baseline for the pod's
+// completed_requests counter so calculateRate1m has a snapshot far enough in
+// the past (it discards windows shorter than 10s) without sleeping.
+func seedCompletedRequestsHistory(t *testing.T, pod *Pod, baseline float64, age time.Duration) {
+	t.Helper()
+	key := rateHistoryKey(pod, "", "completed_requests")
+	rateCalculator.mu.Lock()
+	rateCalculator.history[key] = []MetricSnapshot{{Value: baseline, Timestamp: time.Now().Add(-age)}}
+	rateCalculator.mu.Unlock()
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, key)
+		rateCalculator.mu.Unlock()
+	})
+}
+
+// scrapeGatewayMetrics renders the gateway plugin's /metrics response in
+// process: a promhttp handler over the default registry, the same gatherer the
+// gateway serves (gateway.go mounts promhttp on the default registry), invoked
+// through a recorder so the test needs no listening port.
+func scrapeGatewayMetrics(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	return recorder
+}
+
+// scrapeHandler renders a /metrics response from an isolated test registry.
+func scrapeHandler(t *testing.T, handler http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	return recorder
+}
+
+// metricFamilyFromHTTP parses a /metrics response and returns the named family,
+// nil when the endpoint does not export it at all.
+func metricFamilyFromHTTP(t *testing.T, body io.Reader, metricName string) *dto.MetricFamily {
+	t.Helper()
+	var parser expfmt.TextParser
+	families, err := parser.TextToMetricFamilies(body)
+	require.NoError(t, err)
+	return families[metricName]
+}
+
+// gaugeValueForLabels returns the value of the gauge series whose labels
+// include wantLabels.
+func gaugeValueForLabels(family *dto.MetricFamily, wantLabels map[string]string) (float64, bool) {
+	if family == nil {
+		return 0, false
+	}
+	for _, m := range family.Metric {
+		labels := make(map[string]string, len(m.Label))
+		for _, lp := range m.Label {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		matched := true
+		for name, want := range wantLabels {
+			if labels[name] != want {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			if g := m.GetGauge(); g != nil {
+				return g.GetValue(), true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// Regression for #3501: updateRealtimeRunningRequestsDrainRate1m always tried
+// to export realtime_running_requests_drain_rate_1m, but the metric had no
+// definition entry, so EmitMetricToPrometheus dropped it and the gateway's
+// /metrics response never carried the series. Thirty requests completed over a
+// seeded ~30s window must export a gauge of ~1 request per second, with the
+// model label following the pod's own metadata.
+func TestUpdateRealtimeRunningRequestsDrainRate1m_ExportsDrainRateGauge(t *testing.T) {
+	tests := []struct {
+		name        string
+		podName     string
+		labels      map[string]string
+		annotations map[string]string
+		wantModel   string
+	}{
+		{
+			name:      "model label comes from the pod label",
+			podName:   "drain-gauge-label",
+			labels:    map[string]string{constants.ModelLabelName: "test-model"},
+			wantModel: "test-model",
+		},
+		{
+			name:        "model label falls back to the pod annotation",
+			podName:     "drain-gauge-annotation",
+			annotations: map[string]string{constants.ModelLabelName: "org/model-with-slashes"},
+			wantModel:   "org/model-with-slashes",
+		},
+		{
+			name:    "model label is empty when the pod has neither",
+			podName: "drain-gauge-empty",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := namespacedTestPod(testNamespace, tt.podName)
+			pod.Labels = tt.labels
+			pod.Annotations = tt.annotations
+			pod.Status.PodIP = "10.0.0.1"
+			pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+			store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+
+			seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+			atomic.StoreInt64(&pod.completedRequests, 30) // 30 completions over the ~30s window
+
+			store.updateRealtimeRunningRequestsDrainRate1m(pod)
+			handler := runningRequestsMetricsHandler(t, store)
+
+			family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+			require.NotNil(t, family, "the gateway /metrics response must export %s", metrics.RealtimeRunningRequestsDrainRate1m)
+			require.Equal(t, dto.MetricType_GAUGE, family.GetType())
+
+			wantLabels := map[string]string{
+				"namespace":   testNamespace,
+				"pod":         pod.Name,
+				"model":       tt.wantModel,
+				"gateway_pod": metrics.GatewayPodName(),
+			}
+			value, ok := gaugeValueForLabels(family, wantLabels)
+			require.True(t, ok, "series with labels %v must be exported", wantLabels)
+			require.InDelta(t, 1.0, value, 0.05, "30 completions over the seeded ~30s window")
+		})
+	}
+}
+
+// A later update that computes a zero rate must report zero on the same series,
+// not keep the last non-zero value (#3501).
+func TestUpdateRealtimeRunningRequestsDrainRate1m_ZeroRateReportsZeroOnSameSeries(t *testing.T) {
+	store := &Store{}
+	pod := namespacedTestPod(testNamespace, "drain-gauge-zero")
+	pod.Labels = map[string]string{constants.ModelLabelName: "test-model-zero"}
+	pod.Status.PodIP = "10.0.0.1"
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+
+	wantLabels := map[string]string{
+		"namespace":   testNamespace,
+		"pod":         pod.Name,
+		"model":       "test-model-zero",
+		"gateway_pod": metrics.GatewayPodName(),
+	}
+
+	// 30 completions over the ~30s window: the gauge reports ~1 request per second.
+	seedCompletedRequestsHistory(t, pod, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedRequests, 30)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+	handler := runningRequestsMetricsHandler(t, store)
+
+	family := metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	value, ok := gaugeValueForLabels(family, wantLabels)
+	require.True(t, ok, "the series must be exported before the rate reaches zero")
+	require.InDelta(t, 1.0, value, 0.05)
+
+	// A later window with no further completions computes a zero rate.
+	seedCompletedRequestsHistory(t, pod, 30, 30*time.Second)
+	store.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+	family = metricFamilyFromHTTP(t, scrapeHandler(t, handler).Body, metrics.RealtimeRunningRequestsDrainRate1m)
+	value, ok = gaugeValueForLabels(family, wantLabels)
+	require.True(t, ok, "the series must stay exported when the rate reaches zero")
+	require.Equal(t, 0.0, value)
 }

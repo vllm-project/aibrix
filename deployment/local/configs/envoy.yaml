@@ -53,6 +53,10 @@ static_resources:
                           route:
                             cluster: gateway_http
                             timeout: 10s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
 
                         # Inference endpoints - routed via ORIGINAL_DST using target-pod header
                         - match:
@@ -76,6 +80,10 @@ static_resources:
                           route:
                             cluster: gateway_http
                             timeout: 10s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
 
                         # Catch-all
                         - match:

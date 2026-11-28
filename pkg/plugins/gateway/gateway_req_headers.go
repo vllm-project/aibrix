@@ -32,6 +32,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/constants"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -55,7 +56,7 @@ func videoCreateRematchHeaders(reqHeaders map[string]string, requestPath string,
 		strings.TrimSpace(reqHeaders[HeaderRoutingStrategy]) != "" {
 		return nil
 	}
-	return buildEnvoyProxyHeaders(nil, HeaderRoutingStrategy, string(routing.RouterLeastRequest))
+	return errresp.BuildEnvoyProxyHeaders(nil, HeaderRoutingStrategy, string(routing.RouterLeastRequest))
 }
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext, int64) {
@@ -109,7 +110,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	}
 
 	// check API key
-	if s.apiKeyAuth != nil && s.apiKeyAuth.token != "" {
+	if s.apiKeyAuth != nil && s.apiKeyAuth.Token != "" {
 		authHeaderValue := ""
 		for key, value := range reqHeaders {
 			if strings.EqualFold(key, authorizationKey) {
@@ -117,9 +118,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 				break
 			}
 		}
-		if !s.apiKeyAuth.isAuthorized(authHeaderValue) {
+		if !s.apiKeyAuth.IsAuthorized(authHeaderValue) {
 			klog.V(2).InfoS("rejecting request with invalid gateway API key", "requestID", requestID, "header", "Authorization")
-			return generateErrorResponse(
+			return errresp.GenerateErrorResponse(
 				envoyTypePb.StatusCode_Unauthorized,
 				nil,
 				"Incorrect API key provided",
@@ -143,7 +144,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	// alias. In particular POST /v1/videos/ must not reach response rewriting
 	// after having missed multipart parsing and create pinning.
 	if isUnsupportedVideoTrailingSlash(requestPath) {
-		return buildErrorResponse(
+		return errresp.BuildErrorResponse(
 			envoyTypePb.StatusCode_NotFound,
 			"video paths do not support a trailing slash",
 			"", "", HeaderErrorRequestBodyProcessing, "true"), user, rpm, routingCtx, term
@@ -166,7 +167,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 		if isVideoListRequest(requestPath, reqHeaders[methodKey]) {
 			options, err := parseVideoListOptions(requestPath)
 			if err != nil {
-				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+				return errresp.BuildErrorResponse(envoyTypePb.StatusCode_BadRequest,
 					err.Error(), "", "", HeaderErrorRequestBodyProcessing, "true"), user, rpm, routingCtx, term
 			}
 			return s.handleVideoListHeaders(ctx, requestID, asyncJobOwnerFromRoutingContext(routingCtx), options), user, rpm, routingCtx, term
@@ -266,7 +267,7 @@ func (s *Server) resolveUserForRequest(ctx context.Context, requestID, username 
 	user, err := utils.GetUser(ctx, user, s.redisClient)
 	if err != nil {
 		klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
-		return utils.User{}, 0, generateErrorResponse(
+		return utils.User{}, 0, errresp.GenerateErrorResponse(
 			envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorUser, RawValue: []byte("true"),

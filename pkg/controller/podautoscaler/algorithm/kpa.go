@@ -173,7 +173,7 @@ func (a *KPAAlgorithm) desiredPodCounts(currentPodCount, loadPodCount float64, c
 	downTolerance := context.GetDownFluctuationTolerance()
 	// Original scaling rate calculations
 	readyPodsCount := math.Max(0, currentPodCount)                                      // A little sanitizing.
-	maxScaleUp := math.Max(1, ceilPodCount(context.GetMaxScaleUpRate()*readyPodsCount)) // Keep scale up non zero
+	maxScaleUp := math.Max(1, CeilPodCount(context.GetMaxScaleUpRate()*readyPodsCount)) // Keep scale up non zero
 	maxScaleDown := floorPodCount(readyPodsCount / context.GetMaxScaleDownRate())       // Make scale down zero-able
 
 	// Establish scale-up and scale-down thresholds using tolerances
@@ -208,14 +208,14 @@ func (a *KPAAlgorithm) desiredPodCounts(currentPodCount, loadPodCount float64, c
 	// Calculate desired replicas based on tolerance-adjusted targets
 	var dspc, dppc float64
 	if outsideTolerance(observedStableValue) {
-		dspc = ceilPodCount(load * observedStableValue / targetValue)
+		dspc = CeilPodCount(load * observedStableValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count
 		dspc = currentPodCount
 	}
 
 	if outsideTolerance(observedPanicValue) {
-		dppc = ceilPodCount(load * observedPanicValue / targetValue)
+		dppc = CeilPodCount(load * observedPanicValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count
 		dppc = currentPodCount

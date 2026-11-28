@@ -54,7 +54,7 @@ func TestMetricFreshnessCollectionScale(t *testing.T) {
 				defer server.Close()
 				_, port, err := net.SplitHostPort(server.Listener.Addr().String())
 				require.NoError(t, err)
-				c := &Store{engineMetricsFetcher: metrics.NewEngineMetricsFetcher(), podMetricsJobs: make(chan *Pod, 100)}
+				c := &Store{engineMetricsFetcher: metrics.NewEngineMetricsFetcher(), podMetricsJobs: make(chan podMetricsJob, 100)}
 				pods := make([]*Pod, count)
 				for i := range pods {
 					name := fmt.Sprintf("scale-%d-%d-%d", count, latency/time.Millisecond, i)

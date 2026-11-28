@@ -32,15 +32,8 @@ type pdRolesetBucket struct {
 func groupPDPodsByRoleset(readyPods []*v1.Pod) map[string]*pdRolesetBucket {
 	byRoleset := make(map[string]*pdRolesetBucket)
 	for _, pod := range readyPods {
-		roleSetID, hasRoleset := pod.Labels[PDRoleSetIdentifier]
-		if !hasRoleset {
-			continue
-		}
-		roleID, hasRole := pod.Labels[PDRoleIdentifier]
-		if !hasRole {
-			continue
-		}
-		if !pd.IsPodWithHTTPServer(pod) {
+		roleSetID, roleID, ok := pd.RoutablePDLabels(pod)
+		if !ok {
 			continue
 		}
 		switch roleID {
@@ -91,7 +84,7 @@ func fleetExpectedRoleCounts(byRoleset map[string]*pdRolesetBucket) (maxPrefill,
 }
 
 func isPDRolesetEligible(b *pdRolesetBucket) bool {
-	return roleReplicaCardinality(b.prefills) > 0 && roleReplicaCardinality(b.decodes) > 0
+	return pd.IsRolesetEligible(len(b.prefills), len(b.decodes))
 }
 
 // eligiblePDRolesets returns rolesets with at least one routable prefill and decode pod.

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,22 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	v1 "k8s.io/api/core/v1"
 )
+
+var (
+	// trackerKeyNonceBase/Seq produce the per-request suffix for TrackerKey. See newTrackerKey.
+	trackerKeyNonceBase = rand.Uint32()
+	trackerKeyNonceSeq  atomic.Uint32
+)
+
+// newTrackerKey derives a process-unique key for a request's gateway-internal load trackers from
+// its requestID. requestID is NOT guaranteed unique: when the client sends a traceparent,
+// RequestID is the 32-hex trace id, which a retrying or fan-out client reuses, so two concurrent
+// requests can share it. A fixed-width nonce suffix (process-random high half, monotonic counter
+// low half) makes every request distinct while keeping requestID as the human-readable, greppable
+// prefix. This mirrors the engine rid hardening in algorithms/pd/engine/request_id.go.
+func newTrackerKey(requestID string) string {
+	return fmt.Sprintf("%s-%08x%08x", requestID, trackerKeyNonceBase, trackerKeyNonceSeq.Add(1))
+}
 
 var (
 	nilPod     = &v1.Pod{}
@@ -105,6 +122,8 @@ type PodScorer interface {
 
 // PostRouteUpdater defines the interface for strategies that need to update
 // internal state after a target pod has been selected.
+// readyPodList may wrap a shared read-only snapshot (for example on the
+// single-candidate fast path); implementations must not mutate or append to it.
 type PostRouteUpdater interface {
 	PostRouteUpdate(ctx *RoutingContext, readyPodList PodList, targetPod *v1.Pod) error
 }
@@ -126,11 +145,16 @@ type RoutingContext struct {
 	Model            string
 	// BaseModel is the served base-model name when Model is a LoRA adapter.
 	// Empty for base-model requests.
-	BaseModel      string
-	Engine         string
-	Stream         bool
-	Message        string
-	RequestID      string
+	BaseModel string
+	Engine    string
+	Stream    bool
+	Message   string
+	RequestID string
+	// trackerKey is a process-unique key for this request's gateway-internal PD load trackers.
+	// Unlike RequestID (which equals the client traceparent trace id when one is sent), it is
+	// always unique, so a shared trace id cannot collide one request's load accounting with
+	// another's. Set once in reset; read via TrackerKey.
+	trackerKey     string
 	User           *string
 	Span           trace.Span // record attrs for main span
 	RequestTime    time.Time  // Time when the routing context is created.
@@ -582,6 +606,9 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Message = message
 	r.PrefixMatchText = ""
 	r.RequestID = requestID
+	// Mint a process-unique tracker key from the (now final) requestID. Done here, after
+	// RequestID is set and on every pool reuse, so each request gets its own key.
+	r.trackerKey = newTrackerKey(requestID)
 	if user != "" {
 		r.User = &user
 	} else {
@@ -640,6 +667,19 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// are bounded, and the goroutine releases the leg's abort context when it
 	// exits (PDLegState.FinishDecodeAbort).
 	r.pdLeg.Store(newPDLegState())
+}
+
+// TrackerKey returns a process-unique key for this request's gateway-internal PD load trackers
+// (the prefill/decode request trackers, the token-load ledger and the prefix credits). Callers
+// must key those maps by this, not by RequestID: RequestID equals the client traceparent trace
+// id when one is sent, so concurrent or retried requests can share it and corrupt one pod's load
+// accounting. RequestID stays the client-facing/propagated id for logs, headers and the engine rid.
+//
+// It is valid only on a context built via NewRoutingContext (which mints the key in reset). A
+// bare &RoutingContext{} -- e.g. the model-less contexts the metrics helpers construct -- has an
+// empty key, which is unsafe to use as a tracker key; those contexts never reach the trackers.
+func (r *RoutingContext) TrackerKey() string {
+	return r.trackerKey
 }
 
 func (r *RoutingContext) debugWait() {

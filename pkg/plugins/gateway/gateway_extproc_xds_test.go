@@ -25,7 +25,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"sigs.k8s.io/yaml"
 )
 
 // The manifest tests next door assert on the input Envoy Gateway is given. What
@@ -42,10 +41,6 @@ import (
 //
 // hack/extproc-xds/README.md regenerates the golden.
 const generatedXDSPath = "testdata/envoy_gateway_v1.9.4_xds.json"
-
-// gatewayManifestPath holds the Gateway and the EnvoyPatchPolicy that adds the
-// pinning routes.
-const gatewayManifestPath = "../../../config/gateway/gateway.yaml"
 
 // extProcFilterPrefix is how Envoy Gateway names the filters it generates for an
 // EnvoyExtensionPolicy's extProc entries.
@@ -345,57 +340,6 @@ func TestGeneratedXDS_ExtProcFiltersAreRouteScoped(t *testing.T) {
 	assert.Equal(t, 3, extProcFilters, "the shared, videos and videos-streaming policies each generate one filter")
 }
 
-// patchedRoute is the route an EnvoyPatchPolicy JSONPatch inserts.
-type patchedRoute struct {
-	Name                 string                     `json:"name"`
-	TypedPerFilterConfig map[string]json.RawMessage `json:"typed_per_filter_config"`
-}
-
-// loadPatchedRoutes reads the routes the EnvoyPatchPolicy adds to the generated
-// RouteConfiguration. They are ordinary Envoy config, not Gateway API, so the
-// manifest test next door cannot see them at all.
-func loadPatchedRoutes(t *testing.T) map[string]patchedRoute {
-	t.Helper()
-	raw, err := os.ReadFile(gatewayManifestPath)
-	require.NoError(t, err)
-
-	routes := map[string]patchedRoute{}
-	for _, doc := range regexp.MustCompile(`(?m)^---\s*$`).Split(string(raw), -1) {
-		if strings.TrimSpace(doc) == "" {
-			continue
-		}
-		var policy struct {
-			Kind string `json:"kind"`
-			Spec struct {
-				JSONPatches []struct {
-					Type      string `json:"type"`
-					Operation struct {
-						Path string `json:"path"`
-						// Raw, because the same list also patches a listener with a
-						// bare boolean value.
-						Value json.RawMessage `json:"value"`
-					} `json:"operation"`
-				} `json:"jsonPatches"`
-			} `json:"spec"`
-		}
-		require.NoError(t, yaml.Unmarshal([]byte(doc), &policy))
-		if policy.Kind != "EnvoyPatchPolicy" {
-			continue
-		}
-		for _, patch := range policy.Spec.JSONPatches {
-			if !strings.HasSuffix(patch.Type, "route.v3.RouteConfiguration") {
-				continue
-			}
-			var route patchedRoute
-			require.NoError(t, yaml.Unmarshal(patch.Operation.Value, &route))
-			require.NotEmpty(t, route.Name)
-			routes[route.Name] = route
-		}
-	}
-	require.NotEmpty(t, routes, "no EnvoyPatchPolicy route patches found, so pinned requests would not reach the original-destination cluster")
-	return routes
-}
-
 // TestGeneratedXDS_MatchesDeployedManifest is the drift check. The golden is a
 // snapshot: editing a manifest without regenerating it would leave these tests
 // asserting about configuration nobody deploys. Comparing the two directly means
@@ -427,9 +371,7 @@ func TestGeneratedXDS_MatchesDeployedManifest(t *testing.T) {
 	// The path matches have to line up too: a new match in the manifest that the
 	// golden has never seen is precisely the drift that hides a precedence change.
 	generated := map[string]bool{}
-	byName := map[string]xdsRoute{}
 	for _, route := range xds.routes {
-		byName[route.Name] = route
 		switch {
 		case route.Match.Path != "":
 			generated["Exact:"+route.Match.Path] = true
@@ -446,21 +388,9 @@ func TestGeneratedXDS_MatchesDeployedManifest(t *testing.T) {
 		}
 	}
 
-	// And so do the patched pinning routes, which decide the response phase.
-	for name, patched := range loadPatchedRoutes(t) {
-		route, ok := byName[name]
-		require.True(t, ok, "patched route %q is missing from the golden - regenerate it, see hack/extproc-xds/README.md", name)
-		assert.Equal(t, keysOf(patched.TypedPerFilterConfig), keysOf(route.TypedPerFilterConfig),
-			"patched route %q enables different filters than the golden has it enabling", name)
-	}
-}
-
-func keysOf(m map[string]json.RawMessage) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	return keys
+	// The rendered EnvoyPatchPolicy and its default golden are compared by
+	// TestKustomizeGatewayReferences in test/e2e/installation, after Kustomize
+	// has resolved names and namespace. Raw YAML still contains variables.
 }
 
 // Metadata endpoints must bypass ext_proc, including after translator upgrades.

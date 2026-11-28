@@ -739,6 +739,14 @@ func TestModelAdapterDeletionCleansUpOwnedResources(t *testing.T) {
 		}))
 }
 
+// e2eLoraArtifactPath is the artifactURL of the adapters these tests create. It is a local path
+// rather than a huggingface:// URL on purpose: the runtime sidecar downloads every other artifact
+// URL from the network, once for each pod, before the engine loads it, and the controller loads the
+// pods of an adapter one after another and reports none of them until it has tried them all. A local
+// path is loaded in place with no download, and the mock engine accepts any path, so the time these
+// tests take no longer depends on the network (#3547).
+const e2eLoraArtifactPath = "/models/e2e-lora"
+
 func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
 	return &modelv1alpha1.ModelAdapter{
 		ObjectMeta: v1.ObjectMeta{
@@ -756,7 +764,7 @@ func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
 					constants.ModelLabelAdapterEnabled: "true",
 				},
 			},
-			ArtifactURL: "huggingface://yard1/llama-2-7b-sql-lora-test",
+			ArtifactURL: e2eLoraArtifactPath,
 			AdditionalConfig: map[string]string{
 				"api-key": "test-key-1234567890",
 			},

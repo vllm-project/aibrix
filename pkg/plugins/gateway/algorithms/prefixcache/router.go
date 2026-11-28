@@ -479,7 +479,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	// Compute request counts once; reused by pod selection and log calls.
 	podRequestCount := routeutil.RequestCounts(ctx, p.cache, readyPods)
 
-	matchedPods, prefixHashes = p.matchPrefix(ctx, readyPods, tokens, false)
+	matchedPods, prefixHashes = p.matchPrefixList(ctx, readyPodList, tokens, false)
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes, "cached_blocks", p.prefixCacheIndexer.Len())
 	}
@@ -600,7 +600,7 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 		return fmt.Errorf("sync indexer not available for KV sync routing")
 	}
 	indexModel, loraID := k.indexContext(modelName)
-	_, prefixHashes := k.matchPrefix(ctx, pods, tokens, indexModel, loraID, false)
+	_, prefixHashes := k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, false)
 	if len(prefixHashes) == 0 {
 		return nil
 	}
@@ -627,12 +627,18 @@ func (p prefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodList type
 		return nil, nil, err
 	}
 
-	matchedPods, _ := p.matchPrefix(ctx, pods, tokens, remember)
+	matchedPods, _ := p.matchPrefixList(ctx, readyPodList, tokens, remember)
 
-	for i, pod := range pods {
-		matchPercent := matchedPods[utils.GeneratePodKey(pod.Namespace, pod.Name)]
-		scores[i] = float64(matchPercent)
-		scored[i] = true
+	if len(matchedPods) > 0 {
+		for i, pod := range pods {
+			matchPercent := matchedPods[utils.GeneratePodKey(pod.Namespace, pod.Name)]
+			scores[i] = float64(matchPercent)
+			scored[i] = true
+		}
+	} else {
+		for i := range scored {
+			scored[i] = true
+		}
 	}
 
 	return scores, scored, nil
@@ -646,35 +652,77 @@ func (p prefixCacheRouter) CandidateScores(ctx *types.RoutingContext, readyPodLi
 	return p.scoreAll(ctx, readyPodList, true)
 }
 
+func (p prefixCacheRouter) matchForCandidates(ctx *types.RoutingContext, readyPodList types.PodList) (map[string]int, error) {
+	if p.kvSyncRouter != nil {
+		return p.kvSyncRouter.matchForCandidates(ctx, readyPodList)
+	}
+	tokens, err := p.tokenize(ctx, readyPodList)
+	if err != nil {
+		return nil, err
+	}
+	matchedPods, _ := p.matchPrefixList(ctx, readyPodList, tokens, true)
+	return matchedPods, nil
+}
+
+// matchedCandidate pairs a prefix-holding pod with its match percentage for ranking.
+type matchedCandidate struct {
+	pod   *v1.Pod
+	score int
+}
+
 // FindCandidates implements types.CandidateFinder: up to max ready pods that hold a cached
 // prefix of this request, longest match first. Holders of the same match length are
 // interchangeable here, so they are shuffled and a hot prefix spreads over all its holders. The
 // lookup covers every ready pod and is kept on ctx, so CandidateScores and ScoreAll on any of
 // them reuse it.
+//
+// When readyPodList is a *utils.PodArray snapshot, both the ready key set and holder-to-pod
+// lookup come from its lazy KeySet/ByKey caches, keeping FindCandidates O(holders log holders)
+// rather than scanning or allocating O(N) over the entire fleet.
 func (p prefixCacheRouter) FindCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
-	if max <= 0 {
+	if max <= 0 || readyPodList == nil {
 		return nil
 	}
-	scores, scored, err := p.scoreAll(ctx, readyPodList, true)
+	matchedPods, err := p.matchForCandidates(ctx, readyPodList)
 	if err != nil {
 		klog.V(4).ErrorS(err, "prefix-cache candidate lookup skipped", "request_id", ctx.RequestID)
 		return nil
 	}
-	pods := readyPodList.All()
-	matched := make([]int, 0, max)
-	for i := range pods {
-		if scored[i] && scores[i] > 0 {
-			matched = append(matched, i)
+	if len(matchedPods) == 0 {
+		return nil
+	}
+
+	var byKey map[string]*v1.Pod
+	if arr, ok := readyPodList.(*utils.PodArray); ok && arr != nil {
+		byKey = arr.ByKey()
+	} else {
+		pods := readyPodList.All()
+		byKey = make(map[string]*v1.Pod, len(pods))
+		for _, pod := range pods {
+			byKey[utils.GeneratePodKey(pod.Namespace, pod.Name)] = pod
 		}
 	}
-	rand.Shuffle(len(matched), func(a, b int) { matched[a], matched[b] = matched[b], matched[a] })
-	sort.SliceStable(matched, func(a, b int) bool { return scores[matched[a]] > scores[matched[b]] })
-	if len(matched) > max {
-		matched = matched[:max]
+
+	holders := make([]matchedCandidate, 0, len(matchedPods))
+	for podKey, matchPercent := range matchedPods {
+		if matchPercent <= 0 {
+			continue
+		}
+		if pod := byKey[podKey]; pod != nil {
+			holders = append(holders, matchedCandidate{pod: pod, score: matchPercent})
+		}
 	}
-	found := make([]*v1.Pod, len(matched))
-	for j, i := range matched {
-		found[j] = pods[i]
+	if len(holders) == 0 {
+		return nil
+	}
+	rand.Shuffle(len(holders), func(a, b int) { holders[a], holders[b] = holders[b], holders[a] })
+	sort.SliceStable(holders, func(a, b int) bool { return holders[a].score > holders[b].score })
+	if len(holders) > max {
+		holders = holders[:max]
+	}
+	found := make([]*v1.Pod, len(holders))
+	for i, h := range holders {
+		found[i] = h.pod
 	}
 	return found
 }
@@ -687,6 +735,27 @@ func (p prefixCacheRouter) Polarity() types.Polarity {
 // ScoreAll computes the scores for all ready pods in a single batch operation for KV sync router.
 func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	return k.scoreAll(ctx, readyPodList, false)
+}
+
+func (k *kvSyncPrefixCacheRouter) matchForCandidates(ctx *types.RoutingContext, readyPodList types.PodList) (map[string]int, error) {
+	pods := readyPodList.All()
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName, _ = constants.ModelNameFromMetadata(pods[0].Labels, pods[0].Annotations)
+	}
+
+	indexModel, loraID := k.indexContext(modelName)
+
+	tokens, err := k.tokenize(ctx, readyPodList)
+	if err != nil {
+		return nil, err
+	}
+
+	if k.syncIndexer == nil {
+		return nil, fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	matchedPods, _ := k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, true)
+	return matchedPods, nil
 }
 
 func (k *kvSyncPrefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodList types.PodList, remember bool) ([]float64, []bool, error) {
@@ -709,13 +778,19 @@ func (k *kvSyncPrefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodLi
 	if k.syncIndexer == nil {
 		return nil, nil, fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	matchedPods, _ := k.matchPrefix(ctx, pods, tokens, indexModel, loraID, remember)
+	matchedPods, _ := k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, remember)
 
-	for i, pod := range pods {
-		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-		matchPercent := matchedPods[podKey]
-		scores[i] = float64(matchPercent)
-		scored[i] = true
+	if len(matchedPods) > 0 {
+		for i, pod := range pods {
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			matchPercent := matchedPods[podKey]
+			scores[i] = float64(matchPercent)
+			scored[i] = true
+		}
+	} else {
+		for i := range scored {
+			scored[i] = true
+		}
 	}
 
 	return scores, scored, nil
@@ -977,7 +1052,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		recordRoutingError(modelName, "sync_indexer_unavailable", true)
 		return "", fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	matchedPods, prefixHashes = k.matchPrefix(ctx, readyPods, tokens, indexModel, loraID, false)
+	matchedPods, prefixHashes = k.matchPrefixList(ctx, readyPodList, tokens, indexModel, loraID, false)
 
 	podRequestCount := routeutil.RequestCounts(ctx, k.cache, readyPods)
 

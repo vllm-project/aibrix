@@ -69,7 +69,7 @@ func (c *Store) updateRecentMean(pod *Pod, model, metric string, metricValue met
 		_ = c.updatePodRecord(pod, model, name, metrics.PodModelMetricScope, &metrics.SimpleMetricValue{Value: mean})
 		return
 	}
-	pod.ModelMetrics.Delete(c.getPodModelMetricName(model, name))
+	pod.modelMetricStore(model).Delete(c.getPodModelMetricName(model, name))
 }
 
 // calculateMean1m returns the mean of the observations a cumulative histogram received

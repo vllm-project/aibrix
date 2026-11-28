@@ -1,0 +1,58 @@
+# Teach Kustomize the resource references in Gateway API and Envoy Gateway CRDs.
+nameReference:
+- kind: GatewayClass
+  group: gateway.networking.k8s.io
+  fieldSpecs:
+  - kind: Gateway
+    group: gateway.networking.k8s.io
+    path: spec/gatewayClassName
+- kind: Gateway
+  group: gateway.networking.k8s.io
+  fieldSpecs:
+  - kind: HTTPRoute
+    group: gateway.networking.k8s.io
+    path: spec/parentRefs/name
+  - kind: EnvoyPatchPolicy
+    group: gateway.envoyproxy.io
+    path: spec/targetRef/name
+  - kind: ClientTrafficPolicy
+    group: gateway.envoyproxy.io
+    path: spec/targetRefs/name
+- kind: EnvoyProxy
+  group: gateway.envoyproxy.io
+  fieldSpecs:
+  - kind: GatewayClass
+    group: gateway.networking.k8s.io
+    path: spec/parametersRef/name
+- kind: HTTPRoute
+  group: gateway.networking.k8s.io
+  fieldSpecs:
+  - kind: EnvoyExtensionPolicy
+    group: gateway.envoyproxy.io
+    path: spec/targetRef/name
+  - kind: EnvoyExtensionPolicy
+    group: gateway.envoyproxy.io
+    path: spec/targetRefs/name
+- kind: Service
+  version: v1
+  fieldSpecs:
+  - kind: HTTPRoute
+    group: gateway.networking.k8s.io
+    path: spec/rules/backendRefs/name
+  - kind: EnvoyExtensionPolicy
+    group: gateway.envoyproxy.io
+    path: spec/extProc/backendRefs/name
+
+namespace:
+- kind: GatewayClass
+  group: gateway.networking.k8s.io
+  path: spec/parametersRef/namespace
+  create: true
+
+varReference:
+- kind: EnvoyPatchPolicy
+  group: gateway.envoyproxy.io
+  path: spec/jsonPatches/name
+- kind: EnvoyPatchPolicy
+  group: gateway.envoyproxy.io
+  path: spec/jsonPatches/operation/path

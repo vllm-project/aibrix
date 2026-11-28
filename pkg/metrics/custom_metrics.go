@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 var (
@@ -52,12 +54,15 @@ const (
 	PodMetricsEnqueueDroppedTotal = "aibrix_pod_metrics_enqueue_dropped_total"
 	PodMetricsFetchFailuresTotal  = "aibrix_pod_metrics_fetch_failures_total"
 
+	MetricsEmitDroppedTotal = "aibrix_metrics_emit_dropped_total"
+
 	PodMetricsDropReasonQueueFull            = "queue_full"
 	PodMetricsDropReasonBackoff              = "backoff"
 	PodMetricsDropReasonAlreadyQueued        = "already_queued"
 	PodMetricsFetchFailureReasonFetchError   = "fetch_error"
 	podMetricsEnqueueDroppedTotalDescription = "Total number of pod metrics enqueue attempts dropped by the gateway cache."
 	podMetricsFetchFailuresTotalDescription  = "Total number of pod metrics fetch failures observed by the gateway cache."
+	metricsEmitDroppedTotalDescription       = "Total number of metric emits dropped by EmitMetricToPrometheus because the metric had no definition entry."
 )
 
 // GatewayPodName returns the gateway pod name used as the gateway_pod metric label.
@@ -83,6 +88,22 @@ func IncrementPodMetricsFetchFailure(engineType, reason string) {
 		[]string{"engine_type", "reason"},
 		engineType,
 		reason,
+	)
+}
+
+// IncrementMetricsEmitDropped counts an emit that EmitMetricToPrometheus dropped
+// because the metric had no definition entry. The metric label names the dropped
+// series, so a misregistered metric shows up here instead of vanishing silently
+// (#3506). Emitted metrics never call this for themselves: the dropped-emit
+// counter goes through IncrementCounterMetric directly, not through
+// EmitMetricToPrometheus, so it cannot recurse.
+func IncrementMetricsEmitDropped(metricName string) {
+	IncrementCounterMetric(
+		MetricsEmitDroppedTotal,
+		metricsEmitDroppedTotalDescription,
+		1,
+		[]string{"metric"},
+		metricName,
 	)
 }
 
@@ -284,6 +305,11 @@ func SetHistogramMetric(name string, help string, value *HistogramMetricValue, l
 		customHistogramsMu.Unlock()
 	}
 
+	// Different engines can expose the same histogram family with different
+	// extra labels. Reuse the label schema registered for the family.
+	if !slices.Equal(collector.labelNames, labelNames) {
+		labelValues = orderedGaugeLabelValues(collector.labelNames, labelNames, labelValues)
+	}
 	collector.Set(value, labelValues...)
 }
 
@@ -435,6 +461,12 @@ func projectLabelValues(wantNames, gotNames, gotValues []string) []string {
 func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metricName string, metricValue MetricValue, extra map[string]string) {
 	metricDef, exists := Metrics[metricName]
 	if !exists {
+		// Count and log the drop instead of returning silently: an emit for a
+		// name without a definition entry otherwise vanishes, and the next
+		// missing gateway gauge is found by an operator rather than by CI
+		// (#3498, #3501, #3506).
+		IncrementMetricsEmitDropped(metricName)
+		klog.V(4).InfoS("dropping metric emit: metric has no definition entry", "metric", metricName)
 		return
 	}
 
@@ -461,6 +493,41 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 				}
 				SetGaugeMetric(metricName+q.suffix, GetMetricHelp(metricName), value, labelNames, labelValues...)
 			}
+		}
+	}
+}
+
+// DeleteEngineMetricFromPrometheus removes one retired engine series and any
+// percentile gauges emitted alongside it.
+func DeleteEngineMetricFromPrometheus(ctx *types.RoutingContext, pod *v1.Pod, name string, extra map[string]string) {
+	def, ok := Metrics[name]
+	if !ok {
+		return
+	}
+	labelNames, labelValues := buildMetricLabels(pod, ctx, extra)
+	switch def.MetricType.Raw {
+	case Gauge:
+		DeleteGaugeMetric(name, labelNames, labelValues...)
+	case Counter:
+		customCountersMu.RLock()
+		counter := customCounters[name]
+		canonicalNames := customCounterLabelNames[name]
+		customCountersMu.RUnlock()
+		if counter != nil {
+			counter.DeleteLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...)
+		}
+	case Histogram:
+		customHistogramsMu.RLock()
+		collector := customHistograms[name]
+		customHistogramsMu.RUnlock()
+		if collector != nil {
+			values := orderedGaugeLabelValues(collector.labelNames, labelNames, labelValues)
+			collector.mu.Lock()
+			delete(collector.data, strings.Join(values, "\xff"))
+			collector.mu.Unlock()
+		}
+		for _, suffix := range []string{"_p50", "_p90", "_p99"} {
+			DeleteGaugeMetric(name+suffix, labelNames, labelValues...)
 		}
 	}
 }

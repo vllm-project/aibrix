@@ -72,6 +72,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/errresp"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -97,11 +98,7 @@ const (
 // its own AIBRIX_DECODE_ABORT_TIMEOUT deadline on the request context, and a
 // client-level Timeout would silently cap a longer per-profile value.
 var decodeAbortClient = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	},
+	Transport: pd.NewHTTPTransport(),
 }
 
 // decodeFirstMessageTimeout is the watchdog's budget for this particular
@@ -266,7 +263,7 @@ func (s *Server) handleDecodeWatchdog(srv extProcPb.ExternalProcessor_ProcessSer
 			what = "sent response headers but no body within "
 			closeErr = status.Errorf(codes.DeadlineExceeded, "pd decode leg sent headers but no body within %s", timeout)
 		}
-		resp := buildErrorResponse(envoyTypePb.StatusCode_GatewayTimeout,
+		resp := errresp.BuildErrorResponse(envoyTypePb.StatusCode_GatewayTimeout,
 			"decode pod "+decodePod+" "+what+timeout.String(),
 			"", "",
 			HeaderErrorPDDecode, "true",

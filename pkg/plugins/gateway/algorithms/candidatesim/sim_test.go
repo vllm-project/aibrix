@@ -446,6 +446,7 @@ func (s *sim) candidates(g, group int, universe []int, allowed map[int]bool) []i
 		}
 		return union(s.prefixSeeds(g, group, allowed), order[:k])
 	case policyBlendRanked:
+		// Keep in sync with evalSim.selectKOnly in default_eval_test.go.
 		if n <= k {
 			return universe
 		}
@@ -644,6 +645,7 @@ func (s *sim) work() float64 {
 	return s.rng.ExpFloat64() * s.cfg.MeanWork
 }
 
+// Keep in sync with evalSim.runEval in default_eval_test.go.
 func (s *sim) run() result {
 	cfg := s.cfg
 	totalCap := 0.0
@@ -928,13 +930,14 @@ func TestCandidateSelectionKOnly(t *testing.T) {
 	}
 	live := func(p policy) policy { p.LiveScoring, p.GateSample = true, true; return p }
 	policies := []policy{
-		{Kind: policyFull},
+		{Kind: policyFull, LiveScoring: true},
 		live(policy{Kind: policyRandomSeeded, K: 16}),
 		live(policy{Kind: policyBlendRanked, K: 16}),
 		live(policy{Kind: policyScoutRecommend, K: 16}),
 		live(policy{Kind: policyRandomSeeded, K: 32}),
 		live(policy{Kind: policyBlendRanked, K: 32}),
 		live(policy{Kind: policyScoutRecommend, K: 32}),
+		live(policy{Kind: policyBlendRanked, K: 64}),
 		// Ranking three quarters of the slots: the sample stops resembling the fleet, the gate
 		// on the sample fires against hot prefix holders, and prefix-on runs can destabilize.
 		live(policy{Kind: policyBlendRanked, K: 32, Ranked: 24}),
@@ -958,10 +961,16 @@ func TestCandidateSelectionKOnly(t *testing.T) {
 		for ki, seed := range seeds {
 			results[si][ki] = make([]result, len(policies))
 			for pi, pol := range policies {
+				delay := sc.delay
+				if pol.Kind == policyFull {
+					// Full scoring reads exact counts from Redis on every request (K=0),
+					// matching TestCandidateSelectionLiveStage2.
+					delay = 0
+				}
 				cfg := simConfig{
 					Pods: pods, Gateways: 4, Utilization: 0.85, MeanWork: 200,
 					PrefixOn: sc.prefixOn, PrefixGroups: 2000, PrefixPerPod: 32, PrefixSaving: 0.3,
-					SignalDelay: sc.delay, Step: 5 * time.Millisecond,
+					SignalDelay: delay, Step: 5 * time.Millisecond,
 					Warmup: 3 * time.Second, Duration: 15 * time.Second,
 					PrefixSeedMax: 16, SeedRandom: true, Seed: seed,
 					ImbalanceMinGap: 8, ImbalanceFactor: 2,

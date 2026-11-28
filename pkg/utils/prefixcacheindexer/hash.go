@@ -136,6 +136,8 @@ func (c *PrefixHashTable) EnableDeltaSync() {
 // returns map[podkey]%prefixmatch along with all prefix hashes. readyPods and the
 // returned map use the same pod keys that AddPrefix stored, namespace/name
 // (utils.GeneratePodKey), so same-named pods in different namespaces stay apart.
+// readyPods may be a shared read-only map (such as PodArray.KeySet) and must not
+// be modified.
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	prefixHashes := getPrefixHashes(c.seed, tokens)
 	return c.seqSearchPrefix(prefixHashes, model, readyPods)

@@ -1,0 +1,17 @@
+# Keep ModelRouter's route placement and Gateway reference aligned with the
+# Gateway in this installation. The variables are defined by config/gateway.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        env:
+        - name: AIBRIX_GATEWAY_NAMESPACE
+          value: $(AIBRIX_GATEWAY_NAMESPACE)
+        - name: AIBRIX_GATEWAY_NAME
+          value: $(AIBRIX_GATEWAY_NAME)

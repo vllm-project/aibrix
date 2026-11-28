@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -86,8 +87,30 @@ func (s *modelClaimState) get(model string) []modelClaimBinding {
 	for _, binding := range byPod {
 		out = append(out, binding)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].podKey < out[j].podKey })
+	sort.Slice(out, func(i, j int) bool {
+		leftPriority := modelClaimBindingPriority(out[i].binding.State)
+		rightPriority := modelClaimBindingPriority(out[j].binding.State)
+		if leftPriority != rightPriority {
+			return leftPriority > rightPriority
+		}
+		return out[i].podKey < out[j].podKey
+	})
 	return out
+}
+
+func modelClaimBindingPriority(state string) int {
+	switch state {
+	case constants.ModelClaimRoutingStateActive:
+		return 4
+	case constants.ModelClaimRoutingStateActivating:
+		return 3
+	case constants.ModelClaimRoutingStateSleeping:
+		return 2
+	case constants.ModelClaimRoutingStateFailed:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // setClaim records a claim, in place of what was known of it before. A claim
@@ -124,9 +147,8 @@ func (s *modelClaimState) claim(model string) (modelClaimRecord, bool) {
 	return record, found
 }
 
-// ModelClaimBinding returns one deterministic advertisement for a served
-// model. ModelClaim currently enforces one replica, while deterministic
-// ordering keeps this safe if duplicate served names temporarily coexist.
+// ModelClaimBinding returns the advertisement most likely to serve the model
+// soonest. Pod key order breaks ties between bindings in the same state.
 func (c *Store) ModelClaimBinding(modelName string) (*v1.Pod, utils.ModelClaimBinding, bool) {
 	for _, known := range c.modelClaims.get(modelName) {
 		metaPod, found := c.metaPods.Load(known.podKey)

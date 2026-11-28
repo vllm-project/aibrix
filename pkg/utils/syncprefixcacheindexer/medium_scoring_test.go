@@ -310,6 +310,8 @@ func TestPodInfoWeight(t *testing.T) {
 		{"STORAGE in group 3", tierBit(MediumStorage, 3), 0.25},
 		{"GPU in a group past the tracked ones", tierBit(MediumGPU, maxTrackedGroups+2), 1.0},
 		{"CPU in group 1, GPU in group 2", tierBit(MediumCPU, 1) | tierBit(MediumGPU, 2), 1.0},
+		{"SGLang host memory", tierBit("CPU_PINNED", 0), 0.5},
+		{"SGLang disk", tierBit("DISK", 0), 0.25},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

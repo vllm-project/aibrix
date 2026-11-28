@@ -36,6 +36,9 @@ const (
 // only pods with stormservice.orchestration.aibrix.ai/pod-group-index="0" (corresponding to node_rank=0) run the HTTP server.
 // Pods without the label are also selected for backward compatibility.
 func IsPodWithHTTPServer(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
 	podGroupIndex, exists := pod.Labels[PodGroupIndexLabel]
 	if !exists {
 		// No PodGroupIndex label means single-node or old setup - include it
@@ -43,4 +46,24 @@ func IsPodWithHTTPServer(pod *v1.Pod) bool {
 	}
 	// Only include pods from node_rank=0 which have the HTTP server
 	return podGroupIndex == "0"
+}
+
+// RoutablePDLabels returns pod's PD roleset and role labels when it carries
+// both labels and runs an HTTP server (node_rank=0 or single-node).
+func RoutablePDLabels(pod *v1.Pod) (roleSetID, roleID string, ok bool) {
+	if pod == nil {
+		return "", "", false
+	}
+	roleSetID, hasRoleset := pod.Labels[RoleSetLabel]
+	roleID, hasRole := pod.Labels[RoleLabel]
+	if !hasRoleset || !hasRole || !IsPodWithHTTPServer(pod) {
+		return "", "", false
+	}
+	return roleSetID, roleID, true
+}
+
+// IsRolesetEligible reports whether a PD roleset has at least one routable
+// prefill pod and at least one routable decode pod.
+func IsRolesetEligible(prefillCount, decodeCount int) bool {
+	return prefillCount > 0 && decodeCount > 0
 }

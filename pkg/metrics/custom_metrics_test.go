@@ -330,3 +330,90 @@ func TestEmitHistogramWithoutObservationsExportsNoQuantiles(t *testing.T) {
 		assert.Equal(t, 0, podQuantileSeries(t, TimeToFirstTokenSeconds+q, served.Name), q)
 	}
 }
+
+func TestEngineHistogramsWithDifferentLabelsExportAndRetireIndependently(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	previousRegisterer := prometheus.DefaultRegisterer
+	previousHistograms := customHistograms
+	prometheus.DefaultRegisterer = registry
+	customHistograms = make(map[string]*histogramCollector)
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer = previousRegisterer
+		customHistograms = previousHistograms
+	})
+
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "warm", Namespace: "test"}}
+	first := &types.RoutingContext{Model: "first"}
+	second := &types.RoutingContext{Model: "second"}
+	firstLabels := map[string]string{"model_name": "first", "engine": "0"}
+	secondLabels := map[string]string{"model_name": "second"}
+	value := &HistogramMetricValue{Count: 1, Sum: 0.1, Buckets: map[string]float64{"1": 1}}
+	EmitMetricToPrometheus(first, pod, TimeToFirstTokenSeconds, value, firstLabels)
+	EmitMetricToPrometheus(second, pod, TimeToFirstTokenSeconds, value, secondLabels)
+
+	readModels := func() []string {
+		families, err := registry.Gather()
+		assert.NoError(t, err)
+		var models []string
+		for _, family := range families {
+			if family.GetName() != TimeToFirstTokenSeconds {
+				continue
+			}
+			for _, sample := range family.Metric {
+				for _, label := range sample.Label {
+					if label.GetName() == "model" {
+						models = append(models, label.GetValue())
+					}
+				}
+			}
+		}
+		return models
+	}
+	assert.ElementsMatch(t, []string{"first", "second"}, readModels())
+	DeleteEngineMetricFromPrometheus(second, pod, TimeToFirstTokenSeconds, secondLabels)
+	assert.Equal(t, []string{"first"}, readModels())
+}
+
+// A metric name without a definition entry must not vanish silently: the emit is
+// counted on aibrix_metrics_emit_dropped_total with the dropped name as the
+// metric label, while a registered name emits normally and never touches the
+// drop counter (#3506).
+func TestEmitMetricToPrometheus_DroppedEmitCounted(t *testing.T) {
+	droppedName := "test_emit_without_definition"
+	_, registered := Metrics[droppedName]
+	assert.False(t, registered, "fixture metric must not have a definition entry")
+
+	type counterCall struct {
+		name        string
+		value       float64
+		labelNames  []string
+		labelValues []string
+	}
+	var counterCalls []counterCall
+	originalCounterFn := IncrementCounterMetricFnForTest
+	defer func() { IncrementCounterMetricFnForTest = originalCounterFn }()
+	IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		counterCalls = append(counterCalls, counterCall{name: name, value: value, labelNames: labelNames, labelValues: labelValues})
+	}
+
+	var gaugeCalls []string
+	originalGaugeFn := SetGaugeMetricFnForTest
+	defer func() { SetGaugeMetricFnForTest = originalGaugeFn }()
+	SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		gaugeCalls = append(gaugeCalls, name)
+	}
+
+	// A registered name emits its gauge and never touches the drop counter.
+	EmitMetricToPrometheus(nil, nil, NumRequestsRunning, &SimpleMetricValue{Value: 3}, nil)
+	assert.Equal(t, []string{NumRequestsRunning}, gaugeCalls)
+	assert.Empty(t, counterCalls)
+
+	// A name without a definition entry is dropped, and the drop is counted.
+	EmitMetricToPrometheus(nil, nil, droppedName, &SimpleMetricValue{Value: 3}, nil)
+	assert.Len(t, counterCalls, 1)
+	assert.Equal(t, MetricsEmitDroppedTotal, counterCalls[0].name)
+	assert.Equal(t, 1.0, counterCalls[0].value)
+	assert.Equal(t, []string{"metric"}, counterCalls[0].labelNames)
+	assert.Equal(t, []string{droppedName}, counterCalls[0].labelValues)
+	assert.Len(t, gaugeCalls, 1, "the dropped emit must not reach any metric path")
+}

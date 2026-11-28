@@ -72,11 +72,6 @@ const (
 	// bounds how long a pod must be idle before it is pruned.
 	tokenLoadJanitorInterval = 60 * time.Second
 
-	// bytesPerTokenEstimate is the prompt-size heuristic used when the router
-	// has no token count for the request: one token per four bytes of request
-	// body, the same estimate the vLLM PD proxy examples use.
-	bytesPerTokenEstimate = 4
-
 	// maxCorrectedDecodeCost bounds a cost accepted by CorrectDecodeCost. No
 	// prompt comes near it; a larger reported prompt length is treated as
 	// malformed, because adding values near the float64 limit overflows a
@@ -350,12 +345,6 @@ func (t *TokenLoadTracker) PrefillCostWithRequestCost(promptTokens int, requestC
 		promptTokens = 0
 	}
 	return requestCost + float64(promptTokens)
-}
-
-// EstimatePromptTokens estimates the prompt length of a request from its body
-// size when no token count is available.
-func EstimatePromptTokens(reqBody []byte) int {
-	return len(reqBody) / bytesPerTokenEstimate
 }
 
 // Sources of the NewTokens estimate, for logs.

@@ -156,6 +156,9 @@ type podStatsRecord struct {
 	pod         *Pod
 	port        int
 	pendingLoad float64
+	// startedAt is when addPodStats took this request onto the pod. donePodStats adds the time
+	// since then to completedOutputBusyNanos.
+	startedAt time.Time
 	// ctx is this attempt's owner. Used to delete the attempt-scoped primary
 	// key from a nil-ctx donePodStats (which only has the requestID alias).
 	// nil is a valid value and never matches a real ctx.
@@ -178,6 +181,18 @@ type podStatsRecord struct {
 	// channel close synchronizes-with the receive that observes it, so no separate
 	// lock/atomic is needed (see the Go memory model).
 	runningReqIncrOK bool
+}
+
+// outputBusyNanos is the time this request spent on the pod, or 0 when its output tokens are not
+// known: a request counted in the time but not in the tokens would bias the per-request rate down.
+func (r *podStatsRecord) outputBusyNanos(outputTokens int64) int64 {
+	if outputTokens <= 0 || r.startedAt.IsZero() {
+		return 0
+	}
+	if d := time.Since(r.startedAt); d > 0 {
+		return int64(d)
+	}
+	return 0
 }
 
 func (r *podStatsRecord) take() bool {
@@ -300,7 +315,7 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 			return
 		}
 	}
-	podStats := &podStatsRecord{pod: metaPod, port: port, ctx: ctx, runningReqIncrDone: make(chan struct{})}
+	podStats := &podStatsRecord{pod: metaPod, port: port, ctx: ctx, startedAt: time.Now(), runningReqIncrDone: make(chan struct{})}
 
 	// Update running requests
 	var requests int32
@@ -434,6 +449,8 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 	// was already computed back in addPodStats; only QueueRouter.Route below might
 	// be either, so that alone stays outside).
 	podKey := utils.GeneratePodKey(metaPod.Namespace, metaPod.Name)
+	// Read the clock before taking the lock: the wait for it is not time on the pod.
+	busy := podStats.outputBusyNanos(outputTokens)
 	mu := c.podStatsLockFor(podKey)
 	mu.Lock()
 	target, snap := c.resolvePodOrSnapshotLocked(podKey, metaPod)
@@ -441,6 +458,10 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 		decrementClamped(&snap.runningRequests, metaPod.Name, requestID)
 		atomic.AddInt64(&snap.completedRequests, 1)
 		atomic.AddInt64(&snap.completedOutputTokens, outputTokens)
+		if busy > 0 {
+			atomic.AddInt64(&snap.completedOutputBusyNanos, busy)
+			atomic.AddInt64(&snap.completedOutputRequests, 1)
+		}
 		if podStats.pendingLoad != 0.0 && c.pendingLoadProvider != nil {
 			snap.pendingLoadUtilization.Add(-podStats.pendingLoad)
 		}
@@ -460,6 +481,10 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 	requests := decrementClamped(&metaPod.runningRequests, metaPod.Name, requestID)
 	atomic.AddInt64(&metaPod.completedRequests, 1)
 	atomic.AddInt64(&metaPod.completedOutputTokens, outputTokens)
+	if busy > 0 {
+		atomic.AddInt64(&metaPod.completedOutputBusyNanos, busy)
+		atomic.AddInt64(&metaPod.completedOutputRequests, 1)
+	}
 	metricName := metrics.RealtimeNumRequestsRunning
 	if port > 0 {
 		metricName = metricName + "/" + strconv.Itoa(port)
