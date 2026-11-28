@@ -27,6 +27,7 @@ import (
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	v1alpha1scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -264,22 +265,99 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 	// ensures all mappings are established (addModelAdapter is idempotent).
 	adapterCount := 0
 	if modelInformer != nil {
-		adapters := modelInformer.GetStore().List()
-		adapterCount = len(adapters)
-		for _, obj := range adapters {
-			ev := WatchEvent{Type: EventAdd, Object: obj}
+		adapterCount = reemitModelAdapters(modelInformer.GetStore(), func(ev WatchEvent) {
 			if p.modelListHealth != nil {
 				p.modelListHealth.Apply(ev, handler)
 			} else {
 				handler(ev)
 			}
-		}
+		}, stopCh)
 	}
 
 	klog.InfoS("Kubernetes discovery provider initialized",
 		"pods", len(podInformer.GetStore().List()), "modelAdapters", adapterCount)
 
 	return nil
+}
+
+// reemitModelAdapters replays each ModelAdapter in store as EventAdd and
+// returns how many it emitted. After each emit it re-reads the key and emits
+// a compensating Delete, Add or Update until a re-read matches the object last
+// applied, or stop closes. Each emit is applied synchronously by the handler
+// before the next re-read. client-go updates the store before handlers run on
+// the informer's listener goroutine, so the loop ends only when a re-read
+// matches what was applied: any later store change is ordered after that apply
+// and its notification is delivered after it. Buffered earlier notifications
+// re-assert states in store order, so the last delivered state equals the
+// store's. Stop ends the loop on shutdown.
+func reemitModelAdapters(store cache.Store, emit func(WatchEvent), stop <-chan struct{}) int {
+	emitted := 0
+	for _, key := range store.ListKeys() {
+		current, exists, err := store.GetByKey(key)
+		if err != nil {
+			klog.V(4).InfoS("Skipping ModelAdapter re-emit: cannot read from store", "key", key, "err", err)
+			continue
+		}
+		if !exists {
+			klog.V(4).InfoS("Skipping ModelAdapter re-emit: deleted since snapshot", "key", key)
+			continue
+		}
+		emit(WatchEvent{Type: EventAdd, Object: current})
+		emitted++
+
+		applied := current
+		settled := false
+		for !settled {
+			select {
+			case <-stop:
+				return emitted
+			default:
+			}
+			latest, exists, err := store.GetByKey(key)
+			switch {
+			case err != nil:
+				klog.V(4).InfoS("Stopping ModelAdapter re-emit: cannot read from store", "key", key, "err", err)
+				settled = true
+			case !exists && applied == nil:
+				settled = true
+			case !exists:
+				// A recreate may land before the next read, so keep checking.
+				emit(WatchEvent{Type: EventDelete, Object: applied})
+				applied = nil
+			case applied == nil:
+				emit(WatchEvent{Type: EventAdd, Object: latest})
+				applied = latest
+			default:
+				same, ok := sameAdapterVersion(applied, latest)
+				switch {
+				case !ok:
+					// Without metadata there is no version to compare, so the
+					// key is treated as settled rather than re-emitted forever.
+					settled = true
+				case same:
+					settled = true
+				default:
+					emit(WatchEvent{Type: EventUpdate, Object: latest, OldObject: applied})
+					applied = latest
+				}
+			}
+		}
+	}
+	return emitted
+}
+
+// sameAdapterVersion reports whether a and b are the same ModelAdapter at the
+// same resource version. ok is false if either object has no metadata.
+func sameAdapterVersion(a, b any) (same, ok bool) {
+	am, err := meta.Accessor(a)
+	if err != nil {
+		return false, false
+	}
+	bm, err := meta.Accessor(b)
+	if err != nil {
+		return false, false
+	}
+	return am.GetUID() == bm.GetUID() && am.GetResourceVersion() == bm.GetResourceVersion(), true
 }
 
 // canListModelClaims lists ModelClaims once before they are watched. A role
