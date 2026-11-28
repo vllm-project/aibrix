@@ -24,28 +24,64 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
+// DefaultWebhookNamePrefix is the name prefix that the default install
+// (config/default) and the Helm chart give the webhook objects.
+const DefaultWebhookNamePrefix = "aibrix-"
+
+// Base names of the webhook objects, before the install's name prefix. They
+// match the names in config/webhook and config/internalcert.
 const (
-	serviceName             = "aibrix-webhook-service"
-	secretName              = "aibrix-webhook-server-cert"
-	certDir                 = "/tmp/k8s-webhook-server/serving-certs"
-	validateWebhookConfName = "aibrix-validating-webhook-configuration"
-	mutatingWebhookConfName = "aibrix-mutating-webhook-configuration"
-	caName                  = "aibrix-ca"
-	caOrg                   = "aibrix"
+	serviceBaseName             = "webhook-service"
+	secretBaseName              = "webhook-server-cert"
+	validateWebhookConfBaseName = "validating-webhook-configuration"
+	mutatingWebhookConfBaseName = "mutating-webhook-configuration"
 )
+
+const (
+	certDir = "/tmp/k8s-webhook-server/serving-certs"
+	caName  = "aibrix-ca"
+	caOrg   = "aibrix"
+)
+
+// WebhookNames are the objects the cert rotator reads and updates.
+type WebhookNames struct {
+	Service                        string
+	Secret                         string
+	ValidatingWebhookConfiguration string
+	MutatingWebhookConfiguration   string
+}
+
+// WebhookNamesForPrefix returns the webhook object names for an install whose
+// kustomize namePrefix is prefix.
+func WebhookNamesForPrefix(prefix string) WebhookNames {
+	return WebhookNames{
+		Service:                        prefix + serviceBaseName,
+		Secret:                         prefix + secretBaseName,
+		ValidatingWebhookConfiguration: prefix + validateWebhookConfBaseName,
+		MutatingWebhookConfiguration:   prefix + mutatingWebhookConfBaseName,
+	}
+}
 
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;update
 //+kubebuilder:rbac:groups="admissionregistration.k8s.io",resources=mutatingwebhookconfigurations,verbs=get;list;watch;update
 //+kubebuilder:rbac:groups="admissionregistration.k8s.io",resources=validatingwebhookconfigurations,verbs=get;list;watch;update
 
-// CertsManager creates certs for webhooks.
-func CertsManager(mgr ctrl.Manager, namespace string, setupFinish chan struct{}) error {
+// CertsManager creates certs for webhooks. namePrefix is the install's name
+// prefix for the webhook Service, Secret and webhook configurations.
+func CertsManager(mgr ctrl.Manager, namespace, namePrefix string, setupFinish chan struct{}) error {
+	return cert.AddRotator(mgr, newCertRotator(namespace, namePrefix, setupFinish))
+}
+
+// newCertRotator configures the rotator for the webhook objects that an
+// install with the given name prefix creates in namespace.
+func newCertRotator(namespace, namePrefix string, setupFinish chan struct{}) *cert.CertRotator {
+	names := WebhookNamesForPrefix(namePrefix)
 	// dnsName is the format of <service name>.<namespace>.svc
-	dnsName := fmt.Sprintf("%s.%s.svc", serviceName, namespace)
-	return cert.AddRotator(mgr, &cert.CertRotator{
+	dnsName := fmt.Sprintf("%s.%s.svc", names.Service, namespace)
+	return &cert.CertRotator{
 		SecretKey: types.NamespacedName{
 			Namespace: namespace,
-			Name:      secretName,
+			Name:      names.Secret,
 		},
 		CertDir:        certDir,
 		CAName:         caName,
@@ -55,12 +91,12 @@ func CertsManager(mgr ctrl.Manager, namespace string, setupFinish chan struct{})
 		Webhooks: []cert.WebhookInfo{
 			{
 				Type: cert.Validating,
-				Name: validateWebhookConfName,
+				Name: names.ValidatingWebhookConfiguration,
 			},
 			{
 				Type: cert.Mutating,
-				Name: mutatingWebhookConfName,
+				Name: names.MutatingWebhookConfiguration,
 			},
 		},
-	})
+	}
 }
